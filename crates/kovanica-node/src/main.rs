@@ -836,6 +836,55 @@ fn shutdown_signal() -> impl Future<Output = ()> + Send + 'static {
     }
 }
 
+/// Load bootstrap addresses from `genesis_validators.toml` in data_dir, in declared index order.
+fn load_bootstrap_addresses(config: &NodeConfig) -> Vec<Address> {
+    let toml_path = config.data_dir.join("genesis_validators.toml");
+    if toml_path.exists() {
+        if let Ok(text) = std::fs::read_to_string(&toml_path) {
+            if let Ok(parsed) = toml::from_str::<GenesisValidatorsFile>(&text) {
+                let mut addrs = Vec::new();
+                for v in parsed.validator {
+                    if let Ok(addr) = parse_address_hex(Some(&v.address), config.chain_id) {
+                        addrs.push(addr);
+                    }
+                }
+                return addrs;
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Resolve the miner payout address for internal node mining.
+///
+/// Priority:
+/// 1. Explicit `KOVANICA_MINING_ADDRESS` or `config.mining.address`.
+/// 2. Address of genesis bootstrap validator corresponding to `author` index (0, 1, 2...).
+/// 3. Fallback to validator address or Address::default().
+fn resolve_internal_mining_address(
+    config: &NodeConfig,
+    author: u16,
+    bootstrap_addresses: &[Address],
+    fallback: &Address,
+) -> Address {
+    if let Some(ref addr_str) = config.mining.address {
+        if let Ok(addr) = Address::parse_for_chain(addr_str, config.chain_id) {
+            return addr;
+        } else if let Ok(addr) = parse_address_hex(Some(addr_str), config.chain_id) {
+            return addr;
+        } else {
+            warn!(
+                addr_str,
+                "configured mining address is invalid; falling back to author resolution"
+            );
+        }
+    }
+    if (author as usize) < bootstrap_addresses.len() {
+        return bootstrap_addresses[author as usize];
+    }
+    *fallback
+}
+
 /// Boot the node and run until `shutdown` resolves, then stop it cleanly.
 async fn run_node<F>(config: NodeConfig, shutdown: F) -> Result<()>
 where
@@ -1149,6 +1198,8 @@ where
     let (local_block_tx, local_block_rx) =
         tokio::sync::mpsc::channel(kovanica_rpc::LOCAL_BLOCK_SUBMISSION_CAPACITY);
 
+    let bootstrap_addresses = load_bootstrap_addresses(&config);
+
     let rpc_state = RpcState {
         tx_gossip: Some(rpc_tx_gossip),
         health: node_health.clone(),
@@ -1166,6 +1217,7 @@ where
         block_submission: Some(local_block_tx),
         mining_enabled: config.mining.enabled,
         mining_threads: config.mining.threads,
+        bootstrap_addresses: bootstrap_addresses.clone(),
     };
     let rpc_committee = rpc_state.committee.clone();
     let committee_for_metrics = rpc_state.committee.clone();
@@ -1323,10 +1375,24 @@ where
             } else {
                 0
             };
+            let m_payout_addr = resolve_internal_mining_address(
+                &config,
+                m_author,
+                &bootstrap_addresses,
+                &validator_address,
+            );
             Some(tokio::spawn(async move {
                 miner::run_mining_loop(
-                    m_config, m_chain_id, m_author, m_dag, m_mempool, m_net_tx, m_exec_tx,
-                    m_ghostdag, m_shutdown,
+                    m_config,
+                    m_chain_id,
+                    m_author,
+                    m_payout_addr,
+                    m_dag,
+                    m_mempool,
+                    m_net_tx,
+                    m_exec_tx,
+                    m_ghostdag,
+                    m_shutdown,
                 )
                 .await;
             }))
@@ -12588,13 +12654,15 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             0x207fffff,
             0,
-        );
+        )
+        .with_payout(kovanica_types::Address([1; 32]));
         let mut block_excess = header_excess.to_statement_block(vec![]);
         block_excess.statements = kovanica_types::block::encode_pow_statement(
             1_700_000_000_000,
             0x207fffff,
             0,
             Some(Hash([0xff; 32])),
+            Some(kovanica_types::Address([1; 32])),
         );
 
         let hashes_before_excess = get_pow_hash_evaluations();
@@ -12622,13 +12690,15 @@ mod b1_epoch_restart_repro {
             5_000_000_000_000u64,
             0x207fffff,
             0,
-        );
+        )
+        .with_payout(kovanica_types::Address([1; 32]));
         let mut block_future = header_future.to_statement_block(vec![]);
         block_future.statements = kovanica_types::block::encode_pow_statement(
             5_000_000_000_000u64,
             0x207fffff,
             0,
             Some(Hash([0xbb; 32])),
+            Some(kovanica_types::Address([1; 32])),
         );
 
         let hashes_before_future = get_pow_hash_evaluations();
@@ -12656,13 +12726,15 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             0x207fffff,
             0,
-        );
+        )
+        .with_payout(kovanica_types::Address([1; 32]));
         let mut block_bad_pow = header_bad_pow.to_statement_block(vec![]);
         block_bad_pow.statements = kovanica_types::block::encode_pow_statement(
             1_700_000_000_000,
             0x207fffff,
             0,
             Some(Hash([0x01; 32])),
+            Some(kovanica_types::Address([1; 32])),
         );
 
         let hashes_before_bad_pow = get_pow_hash_evaluations();
@@ -12878,6 +12950,7 @@ mod b1_epoch_restart_repro {
             block_submission: Some(local_block_tx),
             mining_enabled: false,
             mining_threads: 0,
+            bootstrap_addresses: Vec::new(),
         };
 
         // 1. Mine and submit round 0 block (genesis)
@@ -13193,6 +13266,7 @@ mod b1_epoch_restart_repro {
             block_submission: Some(local_block_tx),
             mining_enabled: false,
             mining_threads: 0,
+            bootstrap_addresses: Vec::new(),
         };
 
         let mut worker = MiningWorker::new();
@@ -13356,6 +13430,7 @@ mod b1_epoch_restart_repro {
             block_submission: Some(sat_tx),
             mining_enabled: false,
             mining_threads: 0,
+            bootstrap_addresses: Vec::new(),
         };
 
         let err_sat =

@@ -90,6 +90,8 @@ pub struct WorkTemplate {
     #[serde(default)]
     pub preimage: Option<String>,
     #[serde(default)]
+    pub payout_address: Option<String>,
+    #[serde(default)]
     pub header: Option<BlockHeader>,
 }
 
@@ -166,7 +168,7 @@ impl WorkTemplate {
             refs
         };
 
-        Ok(BlockHeader::new(
+        let mut header = BlockHeader::new(
             self.chain_id,
             self.round,
             self.author,
@@ -175,7 +177,13 @@ impl WorkTemplate {
             self.timestamp,
             target_bits,
             0,
-        ))
+        );
+        if let Some(ref pa) = self.payout_address {
+            if let Ok(addr) = Address::parse_for_chain(pa, self.chain_id) {
+                header.payout = Some(addr);
+            }
+        }
+        Ok(header)
     }
 }
 
@@ -885,6 +893,7 @@ mod tests {
             target_bits: json!("0x207fffff"),
             target: None,
             preimage: None,
+            payout_address: Some(Address([0xcc; 32]).encode()),
             header: None,
         };
 
@@ -926,7 +935,7 @@ mod tests {
 
     #[test]
     fn worker_thread_finds_winning_nonce_on_easy_target() {
-        let candidate = BlockHeader::new(
+        let candidate = BlockHeader::new_with_payout(
             2,
             1,
             0,
@@ -935,6 +944,7 @@ mod tests {
             1_700_000_000,
             0x207fffff, // easy target
             0,
+            kovanica_types::Address([0x42; 32]),
         );
 
         let active_work = Arc::new(RwLock::new(Some(ActiveWork {
@@ -1004,7 +1014,7 @@ mod tests {
 
     #[test]
     fn worker_thread_lifecycle_detects_stale_work_and_switches() {
-        let initial_header = BlockHeader::new(
+        let initial_header = BlockHeader::new_with_payout(
             2,
             1,
             0,
@@ -1013,6 +1023,7 @@ mod tests {
             1_700_000_000,
             0x00000001, // extremely hard target so it won't solve
             0,
+            kovanica_types::Address([0x42; 32]),
         );
 
         let active_work = Arc::new(RwLock::new(Some(ActiveWork {
@@ -1071,7 +1082,7 @@ mod tests {
         assert!(solution_rx.try_recv().is_err());
 
         // Now advertise NEW template with round 2 and easy target
-        let new_header = BlockHeader::new(
+        let new_header = BlockHeader::new_with_payout(
             2,
             2,
             0,
@@ -1080,6 +1091,7 @@ mod tests {
             1_700_000_100,
             0x207fffff, // easy target
             0,
+            kovanica_types::Address([0x42; 32]),
         );
 
         {

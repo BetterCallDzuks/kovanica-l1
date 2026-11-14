@@ -1707,7 +1707,7 @@ fn dispatch_local_rpc(
                         "parents": block.parents.iter().map(|p| format!("0x{}", hex::encode(p.digest.0))).collect::<Vec<_>>(),
                         "transactions_count": block.transactions.len(),
                     });
-                    if let Some((timestamp, target_bits, nonce, pow_hash)) =
+                    if let Some((timestamp, target_bits, nonce, pow_hash, payout)) =
                         kovanica_types::decode_pow_statement(&block.statements)
                     {
                         if let Some(map) = val.as_object_mut() {
@@ -1722,6 +1722,9 @@ fn dispatch_local_rpc(
                                     "pow_hash".to_string(),
                                     serde_json::json!(format!("0x{}", hex::encode(h.0))),
                                 );
+                            }
+                            if let Some(p) = payout {
+                                map.insert("payout".to_string(), serde_json::json!(p.to_string()));
                             }
                         }
                     }

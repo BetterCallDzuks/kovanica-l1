@@ -103,6 +103,7 @@ pub async fn run_mining_loop(
     mining_config: MiningConfig,
     chain_id: u64,
     author: u16,
+    payout_address: kovanica_types::Address,
     dag_store: Arc<DagStore>,
     mempool: Arc<Mempool>,
     network_cmd_tx: mpsc::UnboundedSender<NetworkCommand>,
@@ -117,6 +118,7 @@ pub async fn run_mining_loop(
     info!(
         chain_id,
         author,
+        %payout_address,
         threads = mining_config.threads,
         "Chain 2 PoW mining worker loop started"
     );
@@ -197,7 +199,7 @@ pub async fn run_mining_loop(
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            let header = BlockHeader::new(
+            let header = BlockHeader::new_with_payout(
                 chain_id,
                 round,
                 author,
@@ -206,6 +208,7 @@ pub async fn run_mining_loop(
                 now_ms,
                 target_bits,
                 current_nonce,
+                payout_address,
             );
             current_nonce = current_nonce.wrapping_add(chunk_span);
 

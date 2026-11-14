@@ -383,20 +383,23 @@ The Kovanica node exposes standard JSON-RPC 2.0 endpoints for mining operations:
 
 Fetches candidate work templates for the next DAG block.
 
-- **Parameters:** `[payout_address: string]`
+- **Parameters:** `[payout_address: string]` (required on hybrid chains) or `{"address": "string", "author": optional_u16}`
 - **Response:**
   ```json
   {
-    "chain_id": 5,
+    "chain_id": 2,
     "round": 42,
     "author": 0,
+    "payout_address": "kvnc...",
     "parents": ["0x55aa..."],
     "parent_refs": [{"digest": "0x55aa...", "round": 41}],
     "merkle_root": "0x3344...",
     "timestamp": 1700000000000,
     "target_bits": "0x207fffff",
     "target": "0x000007ffff...",
-    "preimage": "0x4b564e432d504f572d4844522d7631..."
+    "preimage": "0x4b564e432d504f572d4844522d7631...",
+    "transactions_count": 0,
+    "header": { ... }
   }
   ```
 

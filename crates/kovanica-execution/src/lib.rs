@@ -31,7 +31,7 @@ use kovanica_types::emission::{EmissionPolicy, MiningRewardState};
 use kovanica_types::signing::{chain_id, SigningContext};
 use kovanica_types::{
     epoch_for_round, light_vrf_input, Address, Hash, PublicKey, SealCommitteeSnapshotMember,
-    Transaction, TransactionKind,
+    StatementBlock, Transaction, TransactionKind,
 };
 use redb::{ReadableTable, TableDefinition, WriteTransaction};
 use thiserror::Error;
@@ -482,20 +482,28 @@ impl ExecutionContext {
 
                     // Collect unique eligible blocks in canonical consensus order:
                     // blocks in subdag.blocks, followed by subdag.leader if not already in subdag.blocks.
-                    let mut eligible_authors = Vec::new();
+                    let mut eligible_blocks = Vec::new();
                     for block in &subdag.blocks {
-                        eligible_authors.push((block.author, block.digest));
+                        eligible_blocks.push(block);
                     }
                     if !subdag
                         .blocks
                         .iter()
                         .any(|b| b.digest == subdag.leader.digest)
                     {
-                        eligible_authors.push((subdag.leader.author, subdag.leader.digest));
+                        eligible_blocks.push(&subdag.leader);
                     }
 
-                    for (author, _digest) in eligible_authors {
-                        let miner = resolve_miner_address(author, &candidate_staking);
+                    for block in eligible_blocks {
+                        let miner = match resolve_miner_payout_for_block(block, &candidate_staking)
+                        {
+                            Some(addr) => addr,
+                            None => {
+                                // Under hybrid PoW without staking, blocks without an explicit payout
+                                // address receive no reward. No synthetic 2-byte address path.
+                                continue;
+                            }
+                        };
                         let (payout, term_done) =
                             kovanica_staking::calculate_block_reward_no_stake_82m(
                                 mining_state.rewarded_block_count,
@@ -539,22 +547,28 @@ impl ExecutionContext {
                     let mut total_minted = 0u64;
                     let mut miner_recipient = Address::default();
                     for block in &subdag.blocks {
-                        let miner = resolve_miner_address(block.author, &candidate_staking);
-                        let reward_amount = kovanica_params::INITIAL_BLOCK_REWARD;
-                        storage.state().add_balance(&txn, &miner, reward_amount)?;
-                        total_minted = total_minted.saturating_add(reward_amount);
-                        miner_recipient = miner;
+                        if let Some(miner) =
+                            resolve_miner_payout_for_block(block, &candidate_staking)
+                        {
+                            let reward_amount = kovanica_params::INITIAL_BLOCK_REWARD;
+                            storage.state().add_balance(&txn, &miner, reward_amount)?;
+                            total_minted = total_minted.saturating_add(reward_amount);
+                            miner_recipient = miner;
+                        }
                     }
                     if !subdag
                         .blocks
                         .iter()
                         .any(|b| b.digest == subdag.leader.digest)
                     {
-                        let miner = resolve_miner_address(subdag.leader.author, &candidate_staking);
-                        let reward_amount = kovanica_params::INITIAL_BLOCK_REWARD;
-                        storage.state().add_balance(&txn, &miner, reward_amount)?;
-                        total_minted = total_minted.saturating_add(reward_amount);
-                        miner_recipient = miner;
+                        if let Some(miner) =
+                            resolve_miner_payout_for_block(&subdag.leader, &candidate_staking)
+                        {
+                            let reward_amount = kovanica_params::INITIAL_BLOCK_REWARD;
+                            storage.state().add_balance(&txn, &miner, reward_amount)?;
+                            total_minted = total_minted.saturating_add(reward_amount);
+                            miner_recipient = miner;
+                        }
                     }
                     candidate_staking.committed_leader_height =
                         candidate_staking.committed_leader_height.saturating_add(1);
@@ -2080,7 +2094,27 @@ fn ensure_epoch_committee(
     Ok(frozen)
 }
 
+/// Resolve a miner payout address for a block under Hybrid PoW (Chain 2).
+///
+/// Priority:
+/// 1. Explicit 32-byte payout address carried in the block's PoW statements.
+/// 2. If absent and the author is a registered bootstrap validator in staking state, validator address.
+///
+/// Under hybrid PoW without staking, any other block without an explicit payout address
+/// is unresolvable: no synthetic 2-byte address is generated, and the reward is forfeited.
+fn resolve_miner_payout_for_block(
+    block: &StatementBlock,
+    staking: &StakingState,
+) -> Option<Address> {
+    if let Some(addr) = block.payout_address() {
+        Some(addr)
+    } else {
+        staking.authority_validator(block.author).map(|v| v.address)
+    }
+}
+
 /// Resolve a miner payout address from author index under Hybrid PoW (Chain 2).
+#[cfg(test)]
 fn resolve_miner_address(author: u16, staking: &StakingState) -> Address {
     if let Some(val) = staking.authority_validator(author) {
         val.address
@@ -2199,13 +2233,27 @@ mod tests {
     }
 
     fn sample_block_at(author: u16, round: u64) -> StatementBlock {
-        let digest = StatementBlock::compute_digest(author, round, &[], &[]);
+        let mut addr = [0u8; 32];
+        addr[0..2].copy_from_slice(&author.to_le_bytes());
+        sample_block_with_payout(author, round, Address(addr))
+    }
+
+    fn sample_block_with_payout(author: u16, round: u64, payout: Address) -> StatementBlock {
+        let statements = kovanica_types::block::encode_pow_statement(
+            1000,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            Some(payout),
+        );
+        let digest =
+            StatementBlock::compute_digest_statements(author, round, &[], &[], Some(&statements));
         StatementBlock {
             author,
             round,
             parents: Vec::new(),
             transactions: Vec::new(),
-            statements: Vec::new(),
+            statements,
             signature: Signature([0u8; 64]),
             digest,
             merkle_root: Default::default(),
@@ -7055,5 +7103,236 @@ mod tests {
             read_balance(&storage, &delegator),
             before + kovanica_params::MIN_DELEGATION - 1 - 1_000
         );
+    }
+
+    #[test]
+    fn external_miner_receives_exact_reward_and_fees_are_burned() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("ext_miner.redb")).unwrap();
+
+        // Persist NoStake82M policy
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        let sender_key = test_keypair(101);
+        let sender = address_of(&sender_key);
+        let recipient = Address([0x77; 32]);
+        let fresh_miner = Address([0xbb; 32]);
+
+        // Fund sender with 10 KVNC
+        {
+            let txn = storage.begin_write().unwrap();
+            let mut acct = storage
+                .state()
+                .get_account_or_default_write(&txn, &sender)
+                .unwrap();
+            acct.balance = 10_000_000_000;
+            storage.state().set_account(&txn, &sender, &acct).unwrap();
+            txn.commit().unwrap();
+        }
+
+        // Create transaction: transfer 1 KVNC with 0.05 KVNC fee
+        let tx_amount = 1_000_000_000;
+        let tx_fee = 50_000_000;
+        let mut tx = Transaction {
+            sender,
+            nonce: 0,
+            kind: TransactionKind::Transfer {
+                to: recipient,
+                amount: tx_amount,
+            },
+            fee: tx_fee,
+            signature: Signature([0u8; 64]),
+            hash: Hash([0u8; 32]),
+        };
+        tx.hash = tx.signing_hash(&signing_ctx);
+        tx.signature = kovanica_crypto::sign(&sender_key, &tx.hash.0);
+
+        // Build block with fresh miner payout address carrying this transaction
+        let statements = kovanica_types::block::encode_pow_statement(
+            100,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            Some(fresh_miner),
+        );
+        let txs = vec![tx];
+        let digest = StatementBlock::compute_digest_statements(
+            99, // author id is decoupled from payout
+            1,
+            &[],
+            &txs,
+            Some(&statements),
+        );
+        let block = StatementBlock {
+            author: 99,
+            round: 1,
+            parents: Vec::new(),
+            transactions: txs,
+            statements,
+            signature: Signature([0u8; 64]),
+            digest,
+            merkle_root: Default::default(),
+        };
+
+        let subdag = CommittedSubDag {
+            leader: block.clone(),
+            blocks: vec![block],
+            leader_round: 1,
+            leader_author: 99,
+            non_blue: vec![],
+        };
+
+        let res = ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+        assert_eq!(res.reward.unwrap().amount, 2_500_000_000); // exactly 2.5 KVNC
+
+        let read = storage.begin_read().unwrap();
+        // 1. Miner receives exactly the block reward, fees are NOT added to reward
+        let miner_acct = storage.state().get_account(&read, &fresh_miner).unwrap();
+        assert_eq!(miner_acct.balance, 2_500_000_000);
+
+        // 2. Sender had balance deducted by amount + fee
+        let sender_acct = storage.state().get_account(&read, &sender).unwrap();
+        assert_eq!(sender_acct.balance, 10_000_000_000 - tx_amount - tx_fee);
+
+        // 3. Recipient received amount
+        let recip_acct = storage.state().get_account(&read, &recipient).unwrap();
+        assert_eq!(recip_acct.balance, tx_amount);
+
+        // 4. Fees are burned: total supply increased by exactly 2.5 KVNC minus 0.05 KVNC fee burned
+        // 10 KVNC (initial) + 2.5 KVNC (reward) - 0.05 KVNC (burned) = 12.45 KVNC circulating between the 3 accounts
+        let total_circulating = miner_acct.balance + sender_acct.balance + recip_acct.balance;
+        assert_eq!(total_circulating, 12_450_000_000);
+    }
+
+    #[test]
+    fn subdag_pays_multiple_blue_blocks_and_no_red_blocks() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("subdag_blue_red.redb")).unwrap();
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        let miner_blue1 = Address([0x11; 32]);
+        let miner_blue2 = Address([0x22; 32]);
+        let miner_red = Address([0x33; 32]);
+
+        let block_blue1 = sample_block_with_payout(10, 1, miner_blue1);
+        let block_blue2 = sample_block_with_payout(20, 2, miner_blue2);
+        let block_red = sample_block_with_payout(30, 1, miner_red);
+
+        let subdag = CommittedSubDag {
+            leader: block_blue2.clone(),
+            blocks: vec![block_blue1, block_blue2],
+            leader_round: 2,
+            leader_author: 20,
+            non_blue: vec![block_red.reference()],
+        };
+
+        let res = ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+        assert_eq!(res.reward.unwrap().amount, 5_000_000_000); // 2 blue blocks * 2.5 KVNC
+
+        let read = storage.begin_read().unwrap();
+        let acct1 = storage.state().get_account(&read, &miner_blue1).unwrap();
+        let acct2 = storage.state().get_account(&read, &miner_blue2).unwrap();
+        let acct_red = storage
+            .state()
+            .get_account_or_default(&read, &miner_red)
+            .unwrap();
+
+        assert_eq!(acct1.balance, 2_500_000_000);
+        assert_eq!(acct2.balance, 2_500_000_000);
+        assert_eq!(acct_red.balance, 0); // Red block receives 0 reward
+    }
+
+    #[test]
+    fn internal_mining_fallback_pays_bootstrap_address() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("internal_fallback.redb")).unwrap();
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        // Preload bootstrap validator into staking
+        let boot0 = Address([0xaa; 32]);
+        ctx.staking
+            .join_validator(
+                boot0,
+                kovanica_staking::MIN_VALIDATOR_STAKE,
+                0,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        // Block with legacy statements (no payout address encoded)
+        let legacy_statements = kovanica_types::block::encode_pow_statement(
+            100,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            None,
+        );
+        let digest =
+            StatementBlock::compute_digest_statements(0, 1, &[], &[], Some(&legacy_statements));
+        let block = StatementBlock {
+            author: 0,
+            round: 1,
+            parents: Vec::new(),
+            transactions: Vec::new(),
+            statements: legacy_statements,
+            signature: Signature([0u8; 64]),
+            digest,
+            merkle_root: Default::default(),
+        };
+
+        let subdag = CommittedSubDag {
+            leader: block.clone(),
+            blocks: vec![block],
+            leader_round: 1,
+            leader_author: 0,
+            non_blue: vec![],
+        };
+
+        let res = ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+        assert_eq!(res.reward.unwrap().amount, 2_500_000_000);
+
+        let read = storage.begin_read().unwrap();
+        let boot_acct = storage.state().get_account(&read, &boot0).unwrap();
+        assert_eq!(boot_acct.balance, 2_500_000_000);
     }
 }

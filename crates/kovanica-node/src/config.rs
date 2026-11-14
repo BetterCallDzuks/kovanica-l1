@@ -25,6 +25,8 @@ pub struct MiningConfig {
     pub threads: usize,
     /// Explicit mining author index (defaults to node authority index or 0).
     pub author: Option<u16>,
+    /// Explicit miner payout address (base32 or hex). If not set, author index resolves to genesis validator.
+    pub address: Option<String>,
 }
 
 impl Default for MiningConfig {
@@ -33,6 +35,7 @@ impl Default for MiningConfig {
             enabled: false,
             threads: 1,
             author: None,
+            address: None,
         }
     }
 }
@@ -440,6 +443,12 @@ impl NodeConfig {
             match v.trim().parse() {
                 Ok(a) => self.mining.author = Some(a),
                 Err(_) => tracing::warn!(value = %v, "ignoring invalid KOVANICA_MINING_AUTHOR"),
+            }
+        }
+        if let Ok(v) = std::env::var("KOVANICA_MINING_ADDRESS") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.mining.address = Some(trimmed.to_string());
             }
         }
         if let Ok(v) = std::env::var("KOVANICA_SEEDER_ENABLED") {

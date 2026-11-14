@@ -93,7 +93,7 @@ async fn spawn_mock_rpc_server(
                             let response_json = match method {
                                 "kovanica_getWork" => {
                                     gw.fetch_add(1, Ordering::Relaxed);
-                                    let template_header = BlockHeader::new(
+                                    let template_header = BlockHeader::new_with_payout(
                                         HYBRID_TESTNET,
                                         1,
                                         0,
@@ -102,6 +102,7 @@ async fn spawn_mock_rpc_server(
                                         1_700_000_000_000,
                                         0x207fffff, // easy difficulty target (~50% per nonce)
                                         0,
+                                        Address([0x99; 32]),
                                     );
                                     json!({
                                         "jsonrpc": "2.0",

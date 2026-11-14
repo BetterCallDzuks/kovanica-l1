@@ -732,7 +732,13 @@ async fn isolated_hybrid_acceptance_execution_and_recovery() -> Result<()> {
     // Verify that submitting a block with a mismatched target (e.g. production MAX_TARGET_BITS
     // 0x1e0ffff0 vs required target) or invalid PoW via kovanica_submitWork is rejected and
     // leaves persisted state untouched.
-    let work_resp = rpc_call(&client, rpc_observer, "kovanica_getWork", json!([])).await?;
+    let work_resp = rpc_call(
+        &client,
+        rpc_observer,
+        "kovanica_getWork",
+        json!([observer.address.encode()]),
+    )
+    .await?;
     let mut bad_header: kovanica_types::block::BlockHeader = serde_json::from_value(
         work_resp
             .get("result")
@@ -785,7 +791,13 @@ async fn isolated_hybrid_acceptance_execution_and_recovery() -> Result<()> {
     }
 
     // Produce the next block on producer via kovanica_getWork + MiningWorker + kovanica_submitWork
-    let work_val = rpc_call(&client, rpc_producer, "kovanica_getWork", json!([0])).await?;
+    let work_val = rpc_call(
+        &client,
+        rpc_producer,
+        "kovanica_getWork",
+        json!([producer.address.encode()]),
+    )
+    .await?;
     let template_header: kovanica_types::block::BlockHeader = serde_json::from_value(
         work_val
             .get("result")

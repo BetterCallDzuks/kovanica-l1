@@ -62,6 +62,7 @@ fn test_state(storage: Arc<Storage>, events: EventBus) -> RpcState {
         block_submission: None,
         mining_enabled: false,
         mining_threads: 0,
+        bootstrap_addresses: Vec::new(),
     }
 }
 
