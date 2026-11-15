@@ -68,7 +68,7 @@ impl DaaConfig {
     /// Return the consensus DAA parameters for the specified chain.
     ///
     /// - `kovanica-mainnet` (Chain ID 1): canonical mainnet parameters via [`Self::hybrid_default`].
-    /// - `kovanica-testnet` (Chain ID 2): bounded between difficulty floor (`DAA_MAX_TARGET_BITS_TESTNET` = 0x1f00_ffff)
+    /// - `kovanica-testnet` (Chain ID 2): bounded between difficulty floor (`DAA_MAX_TARGET_BITS_TESTNET` = 0x1f7f_ffff)
     ///   and difficulty ceiling (`DAA_MIN_TARGET_BITS_TESTNET` = 0x1e00_ffff).
     /// - `kovanica-devnet` (Chain ID 3) and `local` (Chain ID 1337): uses kovanica-devnet difficulty bounds.
     /// - Any other chain: fallback to [`Self::hybrid_default`].
