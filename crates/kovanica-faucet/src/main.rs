@@ -316,7 +316,8 @@ impl AddressReservation {
 impl Drop for AddressReservation {
     fn drop(&mut self) {
         if !self.committed {
-            self.limiter.rollback_address_at(&self.address, self.timestamp);
+            self.limiter
+                .rollback_address_at(&self.address, self.timestamp);
         }
     }
 }
@@ -1444,9 +1445,7 @@ mod http_tests {
     }
 
     /// Start an in-process JSON-RPC stub and return `(url, dispensed amounts, fail_submit flag)`.
-    async fn stub_node_ext(
-        balance_atoms: u64,
-    ) -> (String, Arc<Mutex<Vec<u64>>>, Arc<Mutex<bool>>) {
+    async fn stub_node_ext(balance_atoms: u64) -> (String, Arc<Mutex<Vec<u64>>>, Arc<Mutex<bool>>) {
         let dispensed = Arc::new(Mutex::new(Vec::new()));
         let fail_submit = Arc::new(Mutex::new(false));
         let stub = StubState {
@@ -1779,7 +1778,10 @@ mod http_tests {
         )
         .await;
         assert_eq!(status3, StatusCode::TOO_MANY_REQUESTS);
-        assert!(body3["message"].as_str().unwrap_or_default().contains("address"));
+        assert!(body3["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("address"));
     }
 
     #[tokio::test]
@@ -1795,10 +1797,22 @@ mod http_tests {
         let addr2 = address.clone();
 
         let req1 = tokio::spawn(async move {
-            post_faucet(&app1, "198.51.100.10:5000", None, json!({ "address": addr1 })).await
+            post_faucet(
+                &app1,
+                "198.51.100.10:5000",
+                None,
+                json!({ "address": addr1 }),
+            )
+            .await
         });
         let req2 = tokio::spawn(async move {
-            post_faucet(&app2, "198.51.100.11:5000", None, json!({ "address": addr2 })).await
+            post_faucet(
+                &app2,
+                "198.51.100.11:5000",
+                None,
+                json!({ "address": addr2 }),
+            )
+            .await
         });
 
         let (res1, res2) = tokio::join!(req1, req2);

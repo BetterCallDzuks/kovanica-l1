@@ -8234,7 +8234,10 @@ mod tests {
             // Miner fee share does not increase cumulative_mining_issued and does not count
             // toward the 82M subsidy cap (fees are redistribution, not issuance); total supply stays within cap.
             assert_eq!(mining_state.cumulative_mining_issued, subsidy);
-            assert!(mining_state.cumulative_mining_issued <= kovanica_params::MINING_SUBSIDY_BUDGET_NO_STAKE_82M);
+            assert!(
+                mining_state.cumulative_mining_issued
+                    <= kovanica_params::MINING_SUBSIDY_BUDGET_NO_STAKE_82M
+            );
         }
 
         // Part 2: Block without payout address -> 100% burned
@@ -8305,7 +8308,10 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(mining_state2.cumulative_mining_issued, subsidy);
-            assert!(mining_state2.cumulative_mining_issued <= kovanica_params::MINING_SUBSIDY_BUDGET_NO_STAKE_82M);
+            assert!(
+                mining_state2.cumulative_mining_issued
+                    <= kovanica_params::MINING_SUBSIDY_BUDGET_NO_STAKE_82M
+            );
         }
     }
 
@@ -8373,7 +8379,10 @@ mod tests {
             // With an explicit payout address, miner receives 0 fee share (100% burned, no split)
             let miner_acct = storage.state().get_account(&read, &miner).unwrap();
             let miner_bal = miner_acct.map_or(0, |a| a.balance);
-            assert_eq!(miner_bal, 0, "miner must receive 0 fee share on kovanica-devnet");
+            assert_eq!(
+                miner_bal, 0,
+                "miner must receive 0 fee share on kovanica-devnet"
+            );
             let fee_state = storage
                 .state()
                 .load_fee_accounting_state(&read)
@@ -8444,7 +8453,10 @@ mod tests {
             // With an explicit payout address, miner receives 0 fee share (100% burned, no split)
             let miner_acct = storage.state().get_account(&read, &miner).unwrap();
             let miner_bal = miner_acct.map_or(0, |a| a.balance);
-            assert_eq!(miner_bal, 0, "miner must receive 0 fee share on local");
+            assert_eq!(
+                miner_bal, 0,
+                "miner must receive 0 fee share on local"
+            );
             let fee_state = storage
                 .state()
                 .load_fee_accounting_state(&read)
