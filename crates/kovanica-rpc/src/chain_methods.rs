@@ -284,7 +284,7 @@ pub(crate) fn block_to_json(block: &StatementBlock) -> Value {
         "statements": to_hex(&block.statements),
         "signature": to_hex(&block.signature.0),
     });
-    if let Some((timestamp, target_bits, nonce, pow_hash)) =
+    if let Some((timestamp, target_bits, nonce, pow_hash, payout)) =
         kovanica_types::decode_pow_statement(&block.statements)
     {
         if let Some(map) = val.as_object_mut() {
@@ -296,6 +296,9 @@ pub(crate) fn block_to_json(block: &StatementBlock) -> Value {
             map.insert("nonce".to_string(), json!(nonce));
             if let Some(h) = pow_hash {
                 map.insert("pow_hash".to_string(), json!(to_hex(&h.0)));
+            }
+            if let Some(p) = payout {
+                map.insert("payout".to_string(), json!(p.to_string()));
             }
         }
     }
@@ -2151,45 +2154,50 @@ pub async fn handle_get_work(params: Value, state: RpcState) -> Result<Value, Rp
             "kovanica_getWork is only available on hybrid PoW networks; node is running on chain_id {chain_id}"
         )));
     }
-    let author: u16 = match params {
+    let (author, payout_addr): (u16, kovanica_types::Address) = match params {
         Value::Object(ref map) => {
-            if let Some(auth) = map.get("author").and_then(|v| v.as_u64()) {
-                auth as u16
-            } else if let Some(addr_str) = map.get("address").and_then(|v| v.as_str()) {
-                addr_str.parse::<u16>().unwrap_or_else(|_| {
-                    if let Ok(addr) = kovanica_types::Address::parse_for_chain(addr_str, chain_id) {
-                        u16::from_le_bytes([addr.0[0], addr.0[1]])
-                    } else {
-                        0
-                    }
-                })
+            let auth = map
+                .get("author")
+                .and_then(|v| v.as_u64())
+                .map(|a| a as u16)
+                .unwrap_or(0);
+            let addr_val = map.get("address").or_else(|| map.get("payout_address"));
+            let addr = if let Some(addr_str) = addr_val.and_then(|v| v.as_str()) {
+                kovanica_types::Address::parse_for_chain(addr_str, chain_id)
+                    .map_err(|e| RpcError::InvalidParams(format!("invalid payout address: {e}")))?
             } else {
-                0
-            }
+                return Err(RpcError::InvalidParams(
+                    "missing required 'address' or 'payout_address' parameter in getWork".into(),
+                ));
+            };
+            (auth, addr)
         }
         Value::Array(ref arr) if !arr.is_empty() => {
-            if let Some(auth) = arr[0].as_u64() {
-                auth as u16
-            } else if let Some(addr_str) = arr[0].as_str() {
-                addr_str.parse::<u16>().unwrap_or_else(|_| {
-                    if let Ok(addr) = kovanica_types::Address::parse_for_chain(addr_str, chain_id) {
-                        u16::from_le_bytes([addr.0[0], addr.0[1]])
-                    } else {
-                        0
-                    }
-                })
+            if let Some(addr_str) = arr[0].as_str() {
+                let addr = kovanica_types::Address::parse_for_chain(addr_str, chain_id)
+                    .map_err(|e| RpcError::InvalidParams(format!("invalid payout address: {e}")))?;
+                let auth = arr
+                    .get(1)
+                    .and_then(|v| v.as_u64())
+                    .map(|a| a as u16)
+                    .unwrap_or(0);
+                (auth, addr)
             } else {
-                0
+                return Err(RpcError::InvalidParams(
+                    "first parameter of getWork must be a valid address string".into(),
+                ));
             }
         }
-        Value::String(ref addr_str) => addr_str.parse::<u16>().unwrap_or_else(|_| {
-            if let Ok(addr) = kovanica_types::Address::parse_for_chain(addr_str, chain_id) {
-                u16::from_le_bytes([addr.0[0], addr.0[1]])
-            } else {
-                0
-            }
-        }),
-        _ => 0,
+        Value::String(ref addr_str) => {
+            let addr = kovanica_types::Address::parse_for_chain(addr_str, chain_id)
+                .map_err(|e| RpcError::InvalidParams(format!("invalid payout address: {e}")))?;
+            (0, addr)
+        }
+        _ => {
+            return Err(RpcError::InvalidParams(
+                "missing required payout address parameter in getWork".into(),
+            ));
+        }
     };
 
     let parent_hashes = kovanica_consensus::select_parents_from_tips(
@@ -2243,7 +2251,7 @@ pub async fn handle_get_work(params: Value, state: RpcState) -> Result<Value, Rp
 
     let target_bytes = kovanica_types::compact_to_target(target_bits);
 
-    let template_header = kovanica_types::BlockHeader::new(
+    let template_header = kovanica_types::BlockHeader::new_with_payout(
         chain_id,
         round,
         author,
@@ -2252,6 +2260,7 @@ pub async fn handle_get_work(params: Value, state: RpcState) -> Result<Value, Rp
         timestamp,
         target_bits,
         0,
+        payout_addr,
     );
     let preimage = template_header.preimage();
 
@@ -2259,6 +2268,7 @@ pub async fn handle_get_work(params: Value, state: RpcState) -> Result<Value, Rp
         "chain_id": chain_id,
         "round": round,
         "author": author,
+        "payout_address": payout_addr.to_string(),
         "parents": parent_hashes.iter().map(|h| format!("0x{}", hex::encode(h.0))).collect::<Vec<_>>(),
         "parent_refs": template_header.parents,
         "merkle_root": format!("0x{}", hex::encode(merkle_root.0)),
@@ -2322,6 +2332,12 @@ pub async fn handle_submit_work(params: Value, state: RpcState) -> Result<Value,
             "chain_id mismatch: header {} != node {}",
             header.chain_id, chain_id
         )));
+    }
+
+    if kovanica_types::signing::chain_id::is_hybrid(chain_id) && header.payout.is_none() {
+        return Err(RpcError::InvalidParams(
+            "hybrid PoW block header missing payout address".into(),
+        ));
     }
 
     let block = header.to_statement_block(Vec::new());
@@ -2690,6 +2706,7 @@ mod tests {
             block_submission: None,
             mining_enabled: false,
             mining_threads: 0,
+            bootstrap_addresses: Vec::new(),
         }
     }
 
@@ -4625,17 +4642,40 @@ mod tests {
         assert_eq!(tips["chain_id"], kovanica_params::CHAIN_ID_HYBRID_TESTNET);
         assert_eq!(tips["count"], 0);
 
-        // 3. get_work
-        let work = handle_get_work(json!({ "author": 7 }), state.clone())
-            .await
-            .expect("get work");
+        // 3. get_work: rejects missing, empty, or invalid address
+        let addr = kovanica_types::Address([0x42; 32]);
+        assert!(matches!(
+            handle_get_work(json!({ "author": 7 }), state.clone()).await,
+            Err(RpcError::InvalidParams(_))
+        ));
+        assert!(matches!(
+            handle_get_work(json!([]), state.clone()).await,
+            Err(RpcError::InvalidParams(_))
+        ));
+        assert!(matches!(
+            handle_get_work(json!(["invalid_garbage_address"]), state.clone()).await,
+            Err(RpcError::InvalidParams(_))
+        ));
+        assert!(matches!(
+            handle_get_work(json!([addr.encode_legacy_hex()]), state.clone()).await,
+            Err(RpcError::InvalidParams(_))
+        ));
+
+        // Valid get_work with address in object
+        let work = handle_get_work(
+            json!({ "author": 7, "address": addr.encode() }),
+            state.clone(),
+        )
+        .await
+        .expect("get work");
         assert_eq!(work["chain_id"], kovanica_params::CHAIN_ID_HYBRID_TESTNET);
         assert_eq!(work["author"], 7);
         assert_eq!(work["round"], 1);
+        assert_eq!(work["payout_address"], addr.encode());
         assert!(work["header"].is_object());
         assert!(work["parent_refs"].is_array());
 
-        let addr = kovanica_types::Address([0x42; 32]);
+        // Valid get_work with address in array
         let work_by_addr = handle_get_work(serde_json::json!([addr.encode()]), state.clone())
             .await
             .expect("get work by address");
@@ -4643,12 +4683,31 @@ mod tests {
             work_by_addr["chain_id"],
             kovanica_params::CHAIN_ID_HYBRID_TESTNET
         );
+        assert_eq!(work_by_addr["payout_address"], addr.encode());
         assert!(work_by_addr["header"].is_object());
 
         // 4. submit_work with a mined block
         let header: kovanica_types::BlockHeader =
             serde_json::from_value(work["header"].clone()).expect("valid header from template");
+        assert_eq!(header.payout, Some(addr));
         let mined = kovanica_consensus::mine_header(header, 500_000).expect("should mine block");
+
+        // Tampering with payout address must fail PoW verification
+        let mut tampered_payout = mined.clone();
+        tampered_payout.payout = Some(kovanica_types::Address([0x99; 32]));
+        assert!(matches!(
+            handle_submit_work(json!({ "header": tampered_payout }), state.clone()).await,
+            Err(RpcError::ExecutionError(_))
+        ));
+
+        // Submitting with missing payout on hybrid must fail
+        let mut no_payout = mined.clone();
+        no_payout.payout = None;
+        assert!(matches!(
+            handle_submit_work(json!({ "header": no_payout }), state.clone()).await,
+            Err(RpcError::InvalidParams(_))
+        ));
+
         let submit_res = handle_submit_work(json!({ "header": mined }), state.clone())
             .await
             .expect("submit work");
@@ -4724,7 +4783,8 @@ mod tests {
             round: 1,
             digest: kovanica_types::Hash([0x99; 32]),
         };
-        let header_missing_parent = kovanica_types::BlockHeader::new(
+        let payout = kovanica_types::Address([0x12; 32]);
+        let header_missing_parent = kovanica_types::BlockHeader::new_with_payout(
             kovanica_params::CHAIN_ID_HYBRID_TESTNET,
             2,
             0,
@@ -4733,6 +4793,7 @@ mod tests {
             1_700_000_010_000,
             0x207fffff,
             0,
+            payout,
         );
         let mined_missing_parent =
             kovanica_consensus::mine_header(header_missing_parent, 10_000).unwrap();
@@ -4745,7 +4806,7 @@ mod tests {
         // 2. Submit a block with an easier self-declared target bits than required
         // Required for round 1 (empty parents) with test target is 0x207fffff.
         // Declare an even easier target: 0x2100ffff.
-        let header_easy = kovanica_types::BlockHeader::new(
+        let header_easy = kovanica_types::BlockHeader::new_with_payout(
             kovanica_params::CHAIN_ID_HYBRID_TESTNET,
             1,
             0,
@@ -4754,6 +4815,7 @@ mod tests {
             1_700_000_000_000,
             0x2100ffff,
             0,
+            payout,
         );
         let mined_easy = kovanica_consensus::mine_header(header_easy, 10_000).unwrap();
         let err_easy = handle_submit_work(json!({ "header": mined_easy }), state.clone())
@@ -4776,7 +4838,7 @@ mod tests {
         ));
 
         // Far-future timestamp (year 2128, 5_000_000_000_000 ms) on round 0 (no parents)
-        let header_future = kovanica_types::BlockHeader::new(
+        let header_future = kovanica_types::BlockHeader::new_with_payout(
             kovanica_params::CHAIN_ID_HYBRID_TESTNET,
             0,
             0,
@@ -4785,6 +4847,7 @@ mod tests {
             5_000_000_000_000u64,
             0x207fffff,
             0,
+            kovanica_types::Address([0x12; 32]),
         );
         let mined_future = kovanica_consensus::mine_header(header_future, 10_000).unwrap();
 
@@ -4815,7 +4878,7 @@ mod tests {
             tokio::sync::mpsc::channel(crate::LOCAL_BLOCK_SUBMISSION_CAPACITY);
         state.block_submission = Some(sub_tx);
 
-        let header = kovanica_types::BlockHeader::new(
+        let header = kovanica_types::BlockHeader::new_with_payout(
             kovanica_params::CHAIN_ID_HYBRID_TESTNET,
             0,
             0,
@@ -4824,6 +4887,7 @@ mod tests {
             1_700_000_000_000,
             0x207fffff,
             0,
+            kovanica_types::Address([0x12; 32]),
         );
         let mined = kovanica_consensus::mine_header(header, 10_000).unwrap();
         let expected_digest = mined.to_statement_block(vec![]).digest;

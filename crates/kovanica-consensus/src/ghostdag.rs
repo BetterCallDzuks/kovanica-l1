@@ -89,7 +89,7 @@ impl GhostdagCommitter {
             return;
         }
 
-        let work = if let Some((_, target_bits, _, _)) =
+        let work = if let Some((_, target_bits, _, _, _)) =
             kovanica_types::decode_pow_statement(&block.statements)
         {
             calculate_work_from_target(target_bits)

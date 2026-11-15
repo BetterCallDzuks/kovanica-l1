@@ -15,6 +15,7 @@ use kovanica_params::{
 };
 use kovanica_types::block::{compact_to_target, BlockHeader, BlockReference, StatementBlock};
 use kovanica_types::hash::Hash;
+use kovanica_types::Address;
 use std::collections::HashMap;
 
 /// High target bits for fast, deterministic unit test mining (top byte <= 0x7f, ~50% hit chance).
@@ -29,7 +30,7 @@ fn make_mined_block(
     timestamp: u64,
     target_bits: u32,
 ) -> StatementBlock {
-    let header = BlockHeader::new(
+    let header = BlockHeader::new_with_payout(
         CHAIN_ID_HYBRID_TESTNET,
         round,
         author,
@@ -38,6 +39,7 @@ fn make_mined_block(
         timestamp,
         target_bits,
         0,
+        Address([0x42; 32]),
     );
     let mined_header = worker
         .mine_header(header, 1_000)

@@ -1707,7 +1707,7 @@ fn dispatch_local_rpc(
                         "parents": block.parents.iter().map(|p| format!("0x{}", hex::encode(p.digest.0))).collect::<Vec<_>>(),
                         "transactions_count": block.transactions.len(),
                     });
-                    if let Some((timestamp, target_bits, nonce, pow_hash)) =
+                    if let Some((timestamp, target_bits, nonce, pow_hash, payout)) =
                         kovanica_types::decode_pow_statement(&block.statements)
                     {
                         if let Some(map) = val.as_object_mut() {
@@ -1722,6 +1722,9 @@ fn dispatch_local_rpc(
                                     "pow_hash".to_string(),
                                     serde_json::json!(format!("0x{}", hex::encode(h.0))),
                                 );
+                            }
+                            if let Some(p) = payout {
+                                map.insert("payout".to_string(), serde_json::json!(p.to_string()));
                             }
                         }
                     }
@@ -3099,7 +3102,7 @@ mod tests {
         assert_eq!(profile.max_redb_cache_mb, 64);
 
         let easy_bits = 0x217f_ffff;
-        let mut h0 = BlockHeader::new(
+        let mut h0 = BlockHeader::new_with_payout(
             chain_id::HYBRID_TESTNET,
             1,
             0,
@@ -3108,9 +3111,10 @@ mod tests {
             1_700_000_000_000,
             easy_bits,
             1,
+            Address([0x11; 32]),
         );
         h0.pow_hash = Some(h0.compute_pow_hash());
-        let mut h1 = BlockHeader::new(
+        let mut h1 = BlockHeader::new_with_payout(
             chain_id::HYBRID_TESTNET,
             2,
             0,
@@ -3119,6 +3123,7 @@ mod tests {
             1_700_000_004_000,
             easy_bits,
             2,
+            Address([0x22; 32]),
         );
         h1.pow_hash = Some(h1.compute_pow_hash());
 
@@ -3198,7 +3203,7 @@ mod tests {
         assert!(stats.size_bytes > 0);
 
         // 4. Store a new verified header
-        let header = BlockHeader::new(
+        let header = BlockHeader::new_with_payout(
             chain_id::HYBRID_TESTNET,
             6,
             0,
@@ -3207,6 +3212,7 @@ mod tests {
             1_700_000_020_000,
             0x217f_ffff,
             1,
+            Address([0x11; 32]),
         );
         let header_json = serde_json::to_string(&header).unwrap();
         let stored = store_verified_block_header(db_str.clone(), header_json).unwrap();
@@ -3227,7 +3233,7 @@ mod tests {
 
         // 6. Test sync_block_headers_batch
         let easy_bits = 0x217f_ffff;
-        let mut b1 = BlockHeader::new(
+        let mut b1 = BlockHeader::new_with_payout(
             chain_id::HYBRID_TESTNET,
             7,
             0,
@@ -3240,10 +3246,11 @@ mod tests {
             1_700_000_024_000,
             easy_bits,
             10,
+            Address([0x11; 32]),
         );
         b1.pow_hash = Some(b1.compute_pow_hash());
 
-        let mut b2 = BlockHeader::new(
+        let mut b2 = BlockHeader::new_with_payout(
             chain_id::HYBRID_TESTNET,
             8,
             0,
@@ -3256,6 +3263,7 @@ mod tests {
             1_700_000_028_000,
             easy_bits,
             20,
+            Address([0x22; 32]),
         );
         b2.pow_hash = Some(b2.compute_pow_hash());
 
@@ -3315,7 +3323,7 @@ mod tests {
         assert!(storage_val.is_none());
 
         // 10. Execute block transactions on-device
-        let header = BlockHeader::new(
+        let header = BlockHeader::new_with_payout(
             chain_id::HYBRID_TESTNET,
             9,
             0,
@@ -3324,6 +3332,7 @@ mod tests {
             1_700_000_032_000,
             easy_bits,
             30,
+            Address([0x11; 32]),
         );
         let block_json = serde_json::to_string(&header).unwrap();
         let exec_summary =
@@ -3365,7 +3374,7 @@ mod tests {
         assert!(!is_local_rpc_server_running());
 
         // 12. Phase M6: Thermal-gated mobile micro-mining
-        let easy_header = BlockHeader::new(
+        let easy_header = BlockHeader::new_with_payout(
             chain_id::HYBRID_TESTNET,
             10,
             0,
@@ -3374,6 +3383,7 @@ mod tests {
             1_700_000_000_000,
             0x207f_ffff, // Very easy difficulty (~50% chance per nonce)
             0,
+            Address([0x11; 32]),
         );
         let easy_json = serde_json::to_string(&easy_header).unwrap();
         let mined_res = mine_pow_block_header(easy_json, 100, 0).unwrap();
@@ -3383,7 +3393,7 @@ mod tests {
         assert!(!mined_res.pow_hash_hex.is_empty());
 
         // Low target / bounded hashes
-        let hard_header = BlockHeader::new(
+        let hard_header = BlockHeader::new_with_payout(
             chain_id::HYBRID_TESTNET,
             11,
             0,
@@ -3392,6 +3402,7 @@ mod tests {
             1_700_000_000_000,
             0x1a01_ffff, // Hard difficulty
             0,
+            Address([0x11; 32]),
         );
         let hard_json = serde_json::to_string(&hard_header).unwrap();
         let hard_res = mine_pow_block_header(hard_json, 3, 10).unwrap();

@@ -3,8 +3,9 @@
 use crate::crypto::Signature;
 use crate::hash::Hash;
 use crate::merkle::{self, MerkleProof};
+use crate::signing::chain_id;
 use crate::transaction::Transaction;
-use crate::{AuthorityIndex, Round};
+use crate::{Address, AuthorityIndex, Round};
 use serde::{Deserialize, Serialize};
 
 /// Magic prefix of the VRF blob carried in [`StatementBlock::statements`].
@@ -33,13 +34,17 @@ pub fn is_vrf_statement(statements: &[u8]) -> bool {
 /// Magic prefix of the PoW header metadata blob carried in [`StatementBlock::statements`].
 pub const POW_STATEMENT_MAGIC: &[u8; 9] = b"KVNC-POW1";
 
-/// Length of the PoW statement blob: magic (9) ‖ timestamp (8) ‖ target_bits (4) ‖ nonce (8) ‖ pow_hash (32) = 61 bytes.
-pub const POW_STATEMENT_LEN: usize = 61;
+/// Length of the full PoW statement blob with payout address:
+/// magic (9) ‖ timestamp (8) ‖ target_bits (4) ‖ nonce (8) ‖ pow_hash (32) ‖ payout (32) = 93 bytes.
+pub const POW_STATEMENT_LEN: usize = 93;
 
-/// Whether `statements` carry the PoW header metadata blob (magic + at least [`POW_STATEMENT_LEN`] bytes).
+/// Legacy length of the PoW statement blob without explicit payout address (61 bytes).
+pub const POW_STATEMENT_LEGACY_LEN: usize = 61;
+
+/// Whether `statements` carry the PoW header metadata blob (magic + at least [`POW_STATEMENT_LEGACY_LEN`] bytes).
 #[must_use]
 pub fn is_pow_statement(statements: &[u8]) -> bool {
-    statements.len() >= POW_STATEMENT_LEN && statements[..9] == POW_STATEMENT_MAGIC[..]
+    statements.len() >= POW_STATEMENT_LEGACY_LEN && statements[..9] == POW_STATEMENT_MAGIC[..]
 }
 
 /// Encode PoW header metadata into a statements payload.
@@ -49,19 +54,31 @@ pub fn encode_pow_statement(
     target_bits: u32,
     nonce: u64,
     pow_hash: Option<Hash>,
+    payout: Option<Address>,
 ) -> Vec<u8> {
-    let mut data = Vec::with_capacity(POW_STATEMENT_LEN);
+    let cap = if payout.is_some() {
+        POW_STATEMENT_LEN
+    } else {
+        POW_STATEMENT_LEGACY_LEN
+    };
+    let mut data = Vec::with_capacity(cap);
     data.extend_from_slice(POW_STATEMENT_MAGIC);
     data.extend_from_slice(&timestamp.to_le_bytes());
     data.extend_from_slice(&target_bits.to_le_bytes());
     data.extend_from_slice(&nonce.to_le_bytes());
     data.extend_from_slice(&pow_hash.unwrap_or(Hash::zero()).0);
+    if let Some(addr) = payout {
+        data.extend_from_slice(&addr.0);
+    }
     data
 }
 
 /// Decode PoW header metadata from a statements payload.
 #[must_use]
-pub fn decode_pow_statement(statements: &[u8]) -> Option<(u64, u32, u64, Option<Hash>)> {
+#[allow(clippy::type_complexity)]
+pub fn decode_pow_statement(
+    statements: &[u8],
+) -> Option<(u64, u32, u64, Option<Hash>, Option<Address>)> {
     if !is_pow_statement(statements) {
         return None;
     }
@@ -74,7 +91,13 @@ pub fn decode_pow_statement(statements: &[u8]) -> Option<(u64, u32, u64, Option<
     } else {
         Some(Hash(hash_bytes))
     };
-    Some((timestamp, target_bits, nonce, pow_hash))
+    let payout = if statements.len() >= POW_STATEMENT_LEN {
+        let addr_bytes: [u8; 32] = statements[61..93].try_into().ok()?;
+        Some(Address(addr_bytes))
+    } else {
+        None
+    };
+    Some((timestamp, target_bits, nonce, pow_hash, payout))
 }
 
 /// Length in bytes of the block signature preimage (`KUNA/block/v1` 16 B ‖ chain_id 8 B ‖ digest 32 B).
@@ -221,10 +244,19 @@ impl StatementBlock {
         BlockHeader::from_statement_block(self, chain_id, 0, 0, 0)
     }
 
+    /// Return the explicit miner payout address if carried in PoW statements.
+    pub fn payout_address(&self) -> Option<Address> {
+        let (_, _, _, _, payout) = decode_pow_statement(&self.statements)?;
+        payout
+    }
+
     /// Extract the [`BlockHeader`] from this block if it carries PoW statements.
     pub fn extract_pow_header(&self, chain_id: u64) -> Result<BlockHeader, HeaderError> {
-        let (timestamp, target_bits, nonce, pow_hash) =
+        let (timestamp, target_bits, nonce, pow_hash, payout) =
             decode_pow_statement(&self.statements).ok_or(HeaderError::MissingPowHash)?;
+        if chain_id::is_hybrid(chain_id) && payout.is_none() {
+            return Err(HeaderError::MissingPayoutAddress);
+        }
         Ok(BlockHeader {
             chain_id,
             round: self.round,
@@ -235,6 +267,7 @@ impl StatementBlock {
             target_bits,
             nonce,
             pow_hash,
+            payout,
         })
     }
 
@@ -297,6 +330,9 @@ pub struct BlockHeader {
     /// Cached or verified PoW hash (None until computed/verified).
     #[serde(default)]
     pub pow_hash: Option<Hash>,
+    /// Explicit miner payout address (required for hybrid PoW consensus).
+    #[serde(default)]
+    pub payout: Option<Address>,
 }
 
 /// Alias for [`BlockHeader`].
@@ -310,6 +346,9 @@ pub enum HeaderError {
     /// The header does not have a PoW hash declared.
     #[error("Missing PoW hash on block header")]
     MissingPowHash,
+    /// The hybrid PoW header is missing the required 32-byte miner payout address.
+    #[error("Missing miner payout address on hybrid PoW block header")]
+    MissingPayoutAddress,
     /// The declared PoW hash does not match the computed KovanicaHash.
     #[error("Invalid PoW hash: computed {computed}, declared {declared}")]
     InvalidPowHash {
@@ -362,6 +401,7 @@ impl Default for BlockHeader {
             target_bits: 0,
             nonce: 0,
             pow_hash: None,
+            payout: None,
         }
     }
 }
@@ -389,6 +429,40 @@ impl BlockHeader {
             target_bits,
             nonce,
             pow_hash: None,
+            payout: None,
+        }
+    }
+
+    /// Attach an explicit miner payout address to this header.
+    pub fn with_payout(mut self, payout: Address) -> Self {
+        self.payout = Some(payout);
+        self
+    }
+
+    /// Create a new block header with an explicit miner payout address.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_payout(
+        chain_id: u64,
+        round: Round,
+        author: AuthorityIndex,
+        parents: Vec<BlockReference>,
+        merkle_root: Hash,
+        timestamp: u64,
+        target_bits: u32,
+        nonce: u64,
+        payout: Address,
+    ) -> Self {
+        Self {
+            chain_id,
+            round,
+            author,
+            parents,
+            merkle_root,
+            timestamp,
+            target_bits,
+            nonce,
+            pow_hash: None,
+            payout: Some(payout),
         }
     }
 
@@ -400,6 +474,7 @@ impl BlockHeader {
         target_bits: u32,
         nonce: u64,
     ) -> Self {
+        let payout = block.payout_address();
         Self {
             chain_id,
             round: block.round,
@@ -410,14 +485,20 @@ impl BlockHeader {
             target_bits,
             nonce,
             pow_hash: None,
+            payout,
         }
     }
 
     /// Convert this [`BlockHeader`] into a full [`StatementBlock`].
     pub fn to_statement_block(&self, transactions: Vec<Transaction>) -> StatementBlock {
         let merkle_root = StatementBlock::compute_merkle_root(&transactions);
-        let statements =
-            encode_pow_statement(self.timestamp, self.target_bits, self.nonce, self.pow_hash);
+        let statements = encode_pow_statement(
+            self.timestamp,
+            self.target_bits,
+            self.nonce,
+            self.pow_hash,
+            self.payout,
+        );
         let digest = StatementBlock::compute_digest_statements(
             self.author,
             self.round,
@@ -445,6 +526,7 @@ impl BlockHeader {
             self.author,
             &self.parents,
             &self.merkle_root,
+            self.payout.as_ref(),
             self.timestamp,
             self.target_bits,
             self.nonce,
@@ -459,11 +541,13 @@ impl BlockHeader {
         author: AuthorityIndex,
         parents: &[BlockReference],
         merkle_root: &Hash,
+        payout: Option<&Address>,
         timestamp: u64,
         target_bits: u32,
         nonce: u64,
     ) -> Vec<u8> {
-        let mut data = Vec::with_capacity(16 + 8 + 8 + 2 + 4 + parents.len() * 42 + 32 + 8 + 4 + 8);
+        let mut data =
+            Vec::with_capacity(16 + 8 + 8 + 2 + 4 + parents.len() * 42 + 32 + 32 + 8 + 4 + 8);
         data.extend_from_slice(&crate::signing::POW_HEADER_DOMAIN_TAG);
         data.extend_from_slice(&chain_id.to_le_bytes());
         data.extend_from_slice(&round.to_le_bytes());
@@ -475,6 +559,11 @@ impl BlockHeader {
             data.extend_from_slice(&p.digest.0);
         }
         data.extend_from_slice(&merkle_root.0);
+        if let Some(addr) = payout {
+            data.extend_from_slice(&addr.0);
+        } else {
+            data.extend_from_slice(&[0u8; 32]);
+        }
         data.extend_from_slice(&timestamp.to_le_bytes());
         data.extend_from_slice(&target_bits.to_le_bytes());
         data.extend_from_slice(&nonce.to_le_bytes());
@@ -524,6 +613,10 @@ impl BlockHeader {
     /// Performs cheap validation checks (compact target formatting, wall-clock drift)
     /// BEFORE evaluating the memory-hard (2 MiB) KovanicaHash PoW.
     pub fn verify_pow_with_clock(&self, now_ms: Option<u64>) -> Result<(), HeaderError> {
+        if chain_id::is_hybrid(self.chain_id) && self.payout.is_none() {
+            return Err(HeaderError::MissingPayoutAddress);
+        }
+
         let declared = self.pow_hash.ok_or(HeaderError::MissingPowHash)?;
 
         let target = compact_to_target(self.target_bits);
@@ -588,6 +681,7 @@ impl BlockHeader {
 
 impl From<&StatementBlock> for BlockHeader {
     fn from(block: &StatementBlock) -> Self {
+        let payout = block.payout_address();
         Self {
             chain_id: 0,
             round: block.round,
@@ -598,6 +692,7 @@ impl From<&StatementBlock> for BlockHeader {
             target_bits: 0,
             nonce: 0,
             pow_hash: None,
+            payout,
         }
     }
 }
@@ -1000,10 +1095,10 @@ mod pow_header_tests {
 
         let preimage = header.preimage();
         // 16 (tag) + 8 (chain_id) + 8 (round) + 2 (author) + 4 (parents_count)
-        // + 1 * (2 + 8 + 32) (parents) + 32 (merkle) + 8 (time) + 4 (bits) + 8 (nonce) = 130
-        let expected_len = 16 + 8 + 8 + 2 + 4 + 42 + 32 + 8 + 4 + 8;
+        // + 1 * (2 + 8 + 32) (parents) + 32 (merkle) + 32 (payout) + 8 (time) + 4 (bits) + 8 (nonce) = 164
+        let expected_len = 16 + 8 + 8 + 2 + 4 + 42 + 32 + 32 + 8 + 4 + 8;
         assert_eq!(preimage.len(), expected_len);
-        assert_eq!(expected_len, 132);
+        assert_eq!(expected_len, 164);
 
         // Check fields at exact offsets:
         assert_eq!(&preimage[..16], &crate::signing::POW_HEADER_DOMAIN_TAG);
@@ -1015,9 +1110,10 @@ mod pow_header_tests {
         assert_eq!(&preimage[40..48], &9u64.to_le_bytes());
         assert_eq!(&preimage[48..80], &[0x77; 32]);
         assert_eq!(&preimage[80..112], &[0xbb; 32]);
-        assert_eq!(&preimage[112..120], &123_456_789u64.to_le_bytes());
-        assert_eq!(&preimage[120..124], &0x1d00ffffu32.to_le_bytes());
-        assert_eq!(&preimage[124..132], &42u64.to_le_bytes());
+        assert_eq!(&preimage[112..144], &[0u8; 32]); // default zero payout when None
+        assert_eq!(&preimage[144..152], &123_456_789u64.to_le_bytes());
+        assert_eq!(&preimage[152..156], &0x1d00ffffu32.to_le_bytes());
+        assert_eq!(&preimage[156..164], &42u64.to_le_bytes());
     }
 
     #[test]
@@ -1203,7 +1299,8 @@ mod pow_header_tests {
     }
     #[test]
     fn statement_block_pow_roundtrip() {
-        let mut header = BlockHeader::new(
+        let payout_addr = Address([0x42; 32]);
+        let mut header = BlockHeader::new_with_payout(
             5,
             1,
             2,
@@ -1212,6 +1309,7 @@ mod pow_header_tests {
             1_700_000_000_000,
             0x207fffff,
             42,
+            payout_addr,
         );
         header.pow_hash = Some(header.compute_pow_hash());
 
@@ -1219,11 +1317,13 @@ mod pow_header_tests {
         assert!(is_pow_statement(&block.statements));
         assert_eq!(block.round, 1);
         assert_eq!(block.author, 2);
+        assert_eq!(block.payout_address(), Some(payout_addr));
 
         let extracted = block.extract_pow_header(5).expect("must extract");
         assert_eq!(extracted.chain_id, 5);
         assert_eq!(extracted.round, 1);
         assert_eq!(extracted.author, 2);
+        assert_eq!(extracted.payout, Some(payout_addr));
         assert_eq!(extracted.timestamp, 1_700_000_000_000);
         assert_eq!(extracted.target_bits, 0x207fffff);
         assert_eq!(extracted.nonce, 42);

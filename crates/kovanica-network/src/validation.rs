@@ -987,13 +987,14 @@ mod tests {
     #[test]
     fn chain_2_pow_block_validation_and_anti_dos() {
         use kovanica_types::block::{BlockHeader, HeaderError};
+        use kovanica_types::Address;
         use std::collections::HashMap;
 
         let empty_keys: AuthorityKeys = HashMap::new();
         let chain_id = kovanica_types::signing::chain_id::HYBRID_TESTNET;
 
         // 1. Build a valid PoW block
-        let mut header = BlockHeader::new(
+        let mut header = BlockHeader::new_with_payout(
             chain_id,
             1,
             99, // Author 99 is not in any committee!
@@ -1002,6 +1003,7 @@ mod tests {
             1_700_000_000_000,
             0x207fffff, // Easy target
             123,
+            Address([0x99; 32]),
         );
         header.pow_hash = Some(header.compute_pow_hash());
         let valid_block = header.to_statement_block(vec![]);
@@ -1041,6 +1043,7 @@ mod tests {
     fn test_gossip_edge_rejects_far_future_timestamp_and_excess_parents() {
         use kovanica_types::block::{BlockHeader, BlockReference, HeaderError};
         use kovanica_types::pow::get_pow_hash_evaluations;
+        use kovanica_types::Address;
         use std::collections::HashMap;
 
         let empty_keys: AuthorityKeys = HashMap::new();
@@ -1055,7 +1058,7 @@ mod tests {
             })
             .collect();
 
-        let mut header_excess_parents = BlockHeader::new(
+        let mut header_excess_parents = BlockHeader::new_with_payout(
             chain_id,
             2,
             0,
@@ -1064,6 +1067,7 @@ mod tests {
             1_700_000_000_000u64,
             0x207fffff,
             0,
+            Address([0x01; 32]),
         );
         header_excess_parents.pow_hash = Some(Hash([0x01; 32]));
         let block_excess_parents = header_excess_parents.to_statement_block(vec![]);
@@ -1084,7 +1088,7 @@ mod tests {
         );
 
         // 2. Far-future timestamp: year 2128 (5_000_000_000_000 ms)
-        let mut header_future = BlockHeader::new(
+        let mut header_future = BlockHeader::new_with_payout(
             chain_id,
             1,
             0,
@@ -1093,6 +1097,7 @@ mod tests {
             5_000_000_000_000u64,
             0x207fffff,
             0,
+            Address([0x01; 32]),
         );
         header_future.pow_hash = Some(Hash([0x01; 32]));
         let block_future = header_future.to_statement_block(vec![]);
@@ -1125,7 +1130,7 @@ mod tests {
                 digest: Hash([1u8; 32]),
             },
         ];
-        let mut header_dup = BlockHeader::new(
+        let mut header_dup = BlockHeader::new_with_payout(
             chain_id,
             2,
             0,
@@ -1134,6 +1139,7 @@ mod tests {
             1_700_000_000_000u64,
             0x207fffff,
             0,
+            Address([0x01; 32]),
         );
         header_dup.pow_hash = Some(Hash([0x01; 32]));
         let block_dup = header_dup.to_statement_block(vec![]);

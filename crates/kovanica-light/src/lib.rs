@@ -852,7 +852,7 @@ mod tests {
     fn pow_header_chain_verifies_and_accumulates_work() {
         let chain = chain_id::HYBRID_TESTNET;
         let easy_bits = 0x217f_ffff;
-        let mut h0 = BlockHeader::new(
+        let mut h0 = BlockHeader::new_with_payout(
             chain,
             1,
             0,
@@ -861,10 +861,11 @@ mod tests {
             1_700_000_000_000,
             easy_bits,
             1,
+            Address([0x11; 32]),
         );
         h0.pow_hash = Some(h0.compute_pow_hash());
 
-        let mut h1 = BlockHeader::new(
+        let mut h1 = BlockHeader::new_with_payout(
             chain,
             2,
             0,
@@ -873,6 +874,7 @@ mod tests {
             1_700_000_004_000,
             easy_bits,
             2,
+            Address([0x22; 32]),
         );
         h1.pow_hash = Some(h1.compute_pow_hash());
 

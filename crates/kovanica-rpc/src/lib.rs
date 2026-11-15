@@ -157,6 +157,8 @@ pub struct RpcState {
     pub mining_enabled: bool,
     /// Number of mining worker threads configured on this node.
     pub mining_threads: usize,
+    /// Genesis bootstrap validator addresses for resolving numeric author indices.
+    pub bootstrap_addresses: Vec<kovanica_types::Address>,
 }
 
 /// Bounded capacity for the local block admission queue.
@@ -775,6 +777,7 @@ mod tests {
             block_submission: None,
             mining_enabled: false,
             mining_threads: 0,
+            bootstrap_addresses: Vec::new(),
         };
         (dir, state)
     }
@@ -873,6 +876,7 @@ mod tests {
             block_submission: None,
             mining_enabled: false,
             mining_threads: 0,
+            bootstrap_addresses: Vec::new(),
         }
     }
 
@@ -1269,6 +1273,7 @@ mod tests {
                 block_submission: _,
                 mining_enabled: _,
                 mining_threads: _,
+                bootstrap_addresses: _,
             } = s;
         };
     }
