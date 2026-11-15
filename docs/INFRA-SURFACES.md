@@ -27,7 +27,7 @@ Notes:
 
 ## 2. DNS records (Cloudflare)
 
-### Present — proxied (orange cloud, resolves to `104.21.87.177` / `172.67.170.125`)
+### Present — proxied (orange cloud, resolves to Cloudflare Anycast IPs)
 
 | Name | Served by |
 |------|-----------|

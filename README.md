@@ -17,8 +17,8 @@ All tokenomics parameters and network protocols are binding per `AGENTS.md`.
   ```
   The 57 characters encode the 32-byte Ed25519 public key (256 bits) concatenated with the first 29 bits of its BLAKE3 hash MSB-first (`256 + 29 = 285 bits = 57 base32 chars` using the BIP-173 bech32 lowercase alphabet `qpzry9x8gf2tvdw0s3jn54khce6mua7l`, unpadded).
   - `FromStr for Address` strictly enforces the 64-character base32 form.
-  - Legacy hex formats (`kvnc<72hex>dag` and bare/`0x` 64-hex keys) are supported **only** on Devnet (`3`) and Local (`1337`); strictly rejected on Mainnet (`1`) and Testnet (`2`).
-  - Mainnet (`1`), Testnet (`2`), and all other chain IDs strictly reject legacy formats (`legacy_address_allowed = false`).
+  - Legacy hex formats (`kvnc<72hex>dag` and bare/`0x` 64-hex keys) are supported **only** on kovanica-devnet (chain ID 3) and local (chain ID 1337); strictly rejected on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2).
+  - kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2), and all other chain IDs strictly reject legacy formats (`legacy_address_allowed = false`).
   - **Rule:** The native coin ticker is **KVNC** (renamed from KUNA per Toni 2026-11-05 lock). Remaining KVNC crypto tags and address prefix `kvnc…dag` align with the KVNC ticker.
 
 ---
@@ -28,15 +28,16 @@ All tokenomics parameters and network protocols are binding per `AGENTS.md`.
 Kovanica is engineered from scratch in Rust for high throughput and predictable low latency, designed to run comfortably on standard 2–4 GB RAM virtual servers:
 
 1. **Hybrid PoW + GHOSTDAG Consensus:**
-   - Pure **Hybrid PoW + GHOSTDAG** consensus architecture (per Toni 2026-11-05 lock; **NO stake for consensus**).
-   - There are **no validators and no validator committee** in the chains 1/2 consensus. The `[[validator]]` table in a genesis file lists **bootstrap identities** (seed node keys); the table name is leftover format, not a consensus role.
+   - Pure **Hybrid PoW + GHOSTDAG** consensus architecture (per Toni 2026-11-05 lock; **NO stake for consensus**; stake/delegate/unstake/claim/commission are refused fail-closed per #233).
+   - There are **no validators and no validator committee** in the kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) consensus. The `[[validator]]` table in a genesis file lists **bootstrap identities** (seed node keys); the table name is leftover format, not a consensus role.
    - Target block duration: `4,000 ms` (4 s) (`TARGET_BLOCK_MS = 4000`), GHOSTDAG parameter $K=5$ (`GHOSTDAG_K = 5`).
    - PoW algorithm: **KovanicaHash** (BLAKE3 + 2 MiB memory mix; formal external security audit required before mainnet activation).
+   - Dynamic Difficulty Adjustment (DAA): easiest target `0x1f00_ffff` on kovanica-mainnet (chain ID 1); easiest target `0x1f7f_ffff`, hardest target `0x1e00_ffff` on kovanica-testnet (chain ID 2) and kovanica-devnet (chain ID 3) (#242).
    - GHOSTDAG sub-DAG topological sort for transactions; uncoloured (non-blue) blocks are safely recycled back to the mempool without transaction loss.
    - Legacy Mysticeti wave parameters (`WAVE_LENGTH = 3`, 12 s commit cycle) remain preserved in tree behind feature flags.
 2. **Account Model & Staking:**
    - Account-based ledger tracking nonces, balances, contract storage, and legacy staking state.
-   - Staking parameters (legacy / non-consensus under hybrid, retained for the retired Mysticeti path only): minimum self-stake of **50,000 KVNC** (`MIN_VALIDATOR_STAKE`), minimum delegation of **50,000 KVNC** (`MIN_DELEGATION`), and the old committee sizing (testnet ~5, mainnet 15–20, minimum active floor 15). None of these selects block producers on chains 1 and 2.
+   - Staking parameters (legacy / non-consensus under hybrid, retained for the retired Mysticeti path only): minimum self-stake of **50,000 KVNC** (`MIN_VALIDATOR_STAKE`), minimum delegation of **50,000 KVNC** (`MIN_DELEGATION`), and the old committee sizing. None of these selects block producers on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2). Staking operations return Err and are rejected fail-closed on hybrid networks (#233).
    - Legacy: deterministic committee epoch rotation every **8 hours** (`EPOCH_ROUNDS = 7,200` DAG rounds = `EPOCH_LEADER_HEIGHTS = 2,400` committed leader heights).
    - Legacy: stake unbonding cooldown of **100,000 committed leader blocks** ($\approx 13.9$ days at 12 s/leader).
    - Legacy: evidence-based slashing (RFC-010) with a fixed 500 bps (5%) penalty and 7,200 committed leader heights jail (`JAIL_ROUNDS = 7,200`, $\approx 1$ day = 3 epochs). Slashing is not active (`SLASHING_ACTIVE_FROM_ROUND = u64::MAX`).
@@ -68,9 +69,11 @@ Canonical parameters implemented in `crates/kovanica-staking/src/lib.rs` and doc
 | **Initial Block Reward** | **2.5 KVNC** | Minted on committed blocks to the block author ($5 \times 10^9 / 2$ atoms) |
 | **Subsidy Era Length** | **8,200,000 blocks** | Rewarded blocks per era (`SUBSIDY_ERA_BLOCKS_NO_STAKE_82M`) |
 | **Reward Decay Rate** | **$\times 3/4$** | Emission multiplies by $3/4$ (25% decay) at each era boundary |
-| **Minimum Validator Stake** | **50,000 KVNC** | `MIN_VALIDATOR_STAKE`; legacy / non-consensus — chains 1 and 2 have no validator committee |
+| **Fee Split** | **3/4 burn, 1/4 miner** | On kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) (`NoStake82M`); 100% burned on kovanica-devnet (chain ID 3) and local (chain ID 1337) |
+| **DAA Targets** | **Chain-specific** | kovanica-mainnet (chain ID 1) easiest `0x1f00_ffff`; kovanica-testnet (chain ID 2) and kovanica-devnet (chain ID 3) easiest `0x1f7f_ffff`, hardest `0x1e00_ffff` |
+| **Minimum Validator Stake** | **50,000 KVNC** | `MIN_VALIDATOR_STAKE`; legacy / non-consensus — kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) have no validator committee |
 | **Minimum Delegation** | **50,000 KVNC** | `MIN_DELEGATION`; legacy / non-consensus |
-| **Active Validator Set** | **None on chains 1–2** | Legacy field: uncapped stake set (testnet ~5, mainnet 15–20; minimum active floor 15) |
+| **Active Validator Set** | **None on hybrid** | Legacy field: uncapped stake set; hybrid networks (kovanica-mainnet and kovanica-testnet) operate without validators |
 | **Unbonding Period** | **100,000 blocks** | Legacy / non-consensus: committed leader blocks ($\approx 13.9$ days at 12 s/leader) |
 | **Jail Duration** | **7,200 blocks** | Committed leader heights (`JAIL_ROUNDS`, $\approx 1$ day = 3 epochs; legacy) |
 | **Epoch Duration** | **8 hours** | 7,200 DAG rounds = 2,400 committed leader heights (independent of era; legacy) |
@@ -82,40 +85,59 @@ Canonical parameters implemented in `crates/kovanica-staking/src/lib.rs` and doc
 
 ## 3. Repository Layout
 
-The monorepo is organized into 47 workspace crates, 5 TypeScript packages, operational deployment scripts, and specifications (client apps were extracted to `kovanica-apps`):
+The monorepo is organized into 47 workspace crates (41 active, 6 stubs), 4 TypeScript packages, operational deployment scripts, and specifications (client apps were extracted to `KovanicaDAG/kovanica-apps`, web frontend to `KovanicaDAG/kovanica-web`):
 
 ```text
-├── crates/                    # 47 workspace Rust crates (key crates shown below)
-│   ├── kovanica-types         # Core primitives (Block, Transaction, Address, Committee, Proofs)
-│   ├── kovanica-crypto        # Ed25519, BLAKE3, and Ristretto255 ECVRF cryptographic primitives
-│   ├── kovanica-keystore      # Encrypted keystore v2 (Argon2id + XChaCha20-Poly1305)
-│   ├── kovanica-storage       # redb embedded storage engines, state trees, and pruning
-│   ├── kovanica-dag           # Causal history DAG, block manager, and mergesets
-│   ├── kovanica-consensus     # GHOSTDAG ordering + committer (legacy Mysticeti wave/leader code retained)
-│   ├── kovanica-mempool       # Nonce-tracking fee-priority transaction pool
-│   ├── kovanica-network       # libp2p swarm (TCP, Noise, Yamux, Gossipsub, peer scoring)
-│   ├── kovanica-runtime       # Wasmi WebAssembly engine and gas metering
-│   ├── kovanica-execution     # State transitions, GHOSTDAG execution ordering, rewards
-│   ├── kovanica-staking       # Emission curves (live) + legacy staking/validator/slashing state
-│   ├── kovanica-node          # Full-node daemon binary (kovanica-node) and genesis tooling
-│   ├── kovanica-cli           # CLI client (kovanica), benchmark runner, key generators, TUI
-│   ├── kovanica-rpc           # JSON-RPC 2.0 & WebSocket server, metrics, OpenAPI generator
+├── crates/                    # 47 workspace Rust crates (41 active, 6 stubs)
+│   ├── kovanica-bench         # Benchmark suite
+│   ├── kovanica-cli           # CLI client (kovanica), key generators, wallet, TUI
+│   ├── kovanica-codec         # [STUB] Minimal versioned blob serialization wrapper
 │   ├── kovanica-common        # Shared contract types, Host trait, and WASM bindings
-│   ├── kovanica-htlc          # Hash Time-Locked Contract (atomic swaps)
-│   ├── kovanica-vault         # Time-lock and linear vesting vault contracts
-│   ├── kovanica-multisig      # M-of-N threshold multisig contract
-│   ├── kovanica-token         # Standardized fungible token contract
-│   ├── kovanica-name-registry # On-chain comms name registry smart contract (RFC-008)
-│   ├── kovanica-faucet        # Rate-limited testnet faucet daemon
-│   ├── kovanica-light         # Light-client verification engine (headers, seals, proofs)
-│   ├── kovanica-lightnode     # Light node daemon binary (kovanica-lightnode)
-│   ├── kovanica-light-ffi     # UniFFI language bindings for mobile integration
 │   ├── kovanica-comms-core    # Canonical comms identity derivation
 │   ├── kovanica-comms-crypto  # 1:1 E2E message encryption (X25519 + XChaCha20-Poly1305)
-│   └── kovanica-comms-relay   # Store-and-forward relay server for opaque comms envelopes
-├── packages/                  # 5 TypeScript packages
+│   ├── kovanica-comms-relay   # Store-and-forward relay server for opaque comms envelopes
+│   ├── kovanica-consensus     # GHOSTDAG ordering & committer (legacy Mysticeti wave/leader code retained)
+│   ├── kovanica-consensus-sim # [STUB] Consensus simulation scenario harness placeholder
+│   ├── kovanica-contract-sdk  # WASM smart contract SDK and storage helpers
+│   ├── kovanica-crypto        # Ed25519, BLAKE3, and Ristretto255 ECVRF cryptographic primitives
+│   ├── kovanica-dag           # Causal history DAG, block manager, and mergesets
+│   ├── kovanica-devnet        # Multi-node devnet configuration generator
+│   ├── kovanica-escrow        # Lightnode reward escrow
+│   ├── kovanica-execution     # State transitions, GHOSTDAG execution ordering, rewards, fee split
+│   ├── kovanica-faucet        # Rate-limited testnet faucet daemon
+│   ├── kovanica-fee           # Fee schedule, gas calculation, and metering
+│   ├── kovanica-governance    # [STUB] In-memory proposal and voting placeholder
+│   ├── kovanica-htlc          # Hash Time-Locked Contract (atomic swaps)
+│   ├── kovanica-hw-signer     # [STUB] Hardware/external signer interface demo
+│   ├── kovanica-indexer       # Block scanner and indexing service
+│   ├── kovanica-keystore      # Encrypted keystore v2 (Argon2id + XChaCha20-Poly1305)
+│   ├── kovanica-light         # Light-client verification engine (headers, seals, proofs)
+│   ├── kovanica-light-ffi     # UniFFI language bindings for mobile integration
+│   ├── kovanica-light-proofs  # Blake3 Merkle inclusion proofs
+│   ├── kovanica-lightnode     # Light node daemon binary (kovanica-lightnode)
+│   ├── kovanica-mempool       # Nonce-tracking fee-priority transaction pool
+│   ├── kovanica-migrate       # State migration framework and registry
+│   ├── kovanica-multisig      # M-of-N threshold multisig contract
+│   ├── kovanica-name-registry # On-chain comms name registry smart contract (RFC-008)
+│   ├── kovanica-network       # libp2p swarm (TCP, Noise, Yamux, Gossipsub, peer scoring, block sync)
+│   ├── kovanica-nft           # Standardized non-fungible token contract
+│   ├── kovanica-node          # Full-node daemon binary (kovanica-node), miner, and genesis tooling
+│   ├── kovanica-oracle        # [STUB] In-memory price feed oracle placeholder
+│   ├── kovanica-p2p-identity  # P2P peer identity and key derivation
+│   ├── kovanica-params        # Canonical protocol parameters, tokenomics constants, DAA targets
+│   ├── kovanica-rpc           # JSON-RPC 2.0 & WebSocket server, metrics, OpenAPI generator
+│   ├── kovanica-runtime       # Wasmi WebAssembly engine and gas metering
+│   ├── kovanica-sdk           # Client SDK and contract interfaces
+│   ├── kovanica-snapshot      # State snapshot export/verify/import CLI tool
+│   ├── kovanica-staking       # Emission curves (live) + legacy staking/validator/slashing state
+│   ├── kovanica-storage       # redb embedded storage engines, state trees, and block store
+│   ├── kovanica-sync          # [STUB] Block/snapshot sync trait definitions
+│   ├── kovanica-token         # Standardized fungible token contract and AMM pool
+│   ├── kovanica-types         # Core primitives (Block, Transaction, Address, PoW header)
+│   ├── kovanica-vault         # Time-lock and linear vesting vault contracts
+│   └── kovanica-wallet-core   # Wallet account management and key derivation
+├── packages/                  # TypeScript packages (web frontend & client tools)
 │   ├── api-client             # Minimal typed fetch client for JSON-RPC
-│   ├── comms                  # Comms app TypeScript glue (identity & RPC)
 │   ├── console                # React 18 + Vite web console for node management
 │   ├── signer                 # Browser transaction signer (v1 signature format)
 │   └── web                    # React 18 + Vite block explorer application
@@ -145,7 +167,7 @@ Clone the repository and compile all workspace crates:
 
 ```bash
 git clone https://github.com/KovanicaDAG/kovanica-l1.git
-cd kovanica
+cd kovanica-l1
 
 # Build the complete Rust workspace
 cargo build --workspace
@@ -202,7 +224,7 @@ curl -fsS http://127.0.0.1:8545/health
 
 ### 4.3 Running a Local Block-Authoring (Mining) Node
 
-On chains 1 and 2 blocks come from Hybrid PoW + GHOSTDAG mining, not from a validator committee. `run_validator` and `validator_key` below only gate the legacy Mysticeti signing path; mining is configured in the `[mining]` section (see [`docs/MINING.md`](docs/MINING.md)).
+On kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) blocks come from Hybrid PoW + GHOSTDAG mining, not from a validator committee. `run_validator` and `validator_key` below only gate the legacy Mysticeti signing path; mining is configured in the `[mining]` section (see [`docs/MINING.md`](docs/MINING.md)).
 
 1. **Generate a signing key:**
    ```bash
@@ -291,12 +313,17 @@ cargo run -p kovanica-cli --bin kovanica -- transfer \
   --amount 1000000000 \
   --keystore keystore.json
 
-# Stake as a validator (minimum 50,000 KVNC; legacy)
+# Mining block authoring (Hybrid PoW + GHOSTDAG)
+cargo run -p kovanica-cli --bin kovanica -- miner run \
+  --address <miner-payout-address> \
+  --threads 4
+
+# Stake as a validator (legacy / non-consensus; refused fail-closed on hybrid networks per #233)
 cargo run -p kovanica-cli --bin kovanica -- stake \
   --amount 50000000000000 \
   --keystore keystore.json
 
-# Delegate to an active validator
+# Delegate to a validator (legacy / non-consensus; refused fail-closed on hybrid networks per #233)
 cargo run -p kovanica-cli --bin kovanica -- delegate \
   --validator <validator-address> \
   --amount 10000000000 \
@@ -307,13 +334,13 @@ cargo run -p kovanica-cli --bin kovanica -- delegate \
 
 ### 4.6 Multi-Node Devnet via Docker Compose
 
-To run a complete 4-node local testnet (1 seed node + 3 block-authoring nodes):
+To run a complete 4-node local cluster (1 seed node + 3 block-authoring nodes):
 
 ```bash
 # 1. Build CLI binary for devnet key generation
 cargo build --release -p kovanica-cli
 
-# 2. Generate local devnet validator keys and genesis
+# 2. Generate local devnet keys and genesis
 ./ops/docker/validators/generate.sh
 
 # 3. Build Docker container image
@@ -343,14 +370,16 @@ Default network configuration parameters (`crates/kovanica-node/src/config.rs`):
 | `bootnodes` | `KOVANICA_BOOTNODES` | `[]` (empty) | Comma-separated bootstrap peer multiaddrs |
 | `max_peers` | `KOVANICA_MAX_PEERS` | `50` | Maximum active P2P peers |
 | `round_duration_ms` | `KOVANICA_ROUND_DURATION_MS` | `4000` | Consensus round target duration in ms |
-| `run_validator` | `KOVANICA_RUN_VALIDATOR` | `true` | Legacy Mysticeti signing path; on chains 1 and 2 mining is driven by `[mining]` |
+| `run_validator` | `KOVANICA_RUN_VALIDATOR` | `true` | Legacy Mysticeti signing path; on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) mining is driven by `[mining]` |
 | `rpc_rate_limit_per_min` | `KOVANICA_RPC_RATE_LIMIT_PER_MIN` | `60` | Token-bucket rate limit per client IP |
 
+*RPC writes require bearer authentication (#234); `KOVANICA_RPC_AUTH` must never be disabled.*
+
 ### Chain ID Registry
-- **`1`**: **Mainnet** (`MAINNET`) — strictly enforces PRO-21 canonical base32 addresses; consensus parameters frozen. `funded_accounts.toml` strictly forbidden. Release tag `v1.0.0-mainnet`.
-- **`2`**: **Testnet** (`TESTNET` / `HYBRID_TESTNET`) — canonical Hybrid PoW + GHOSTDAG public testnet; enforces PRO-21 base32 addresses (legacy hex rejected).
-- **`3`**: **Devnet** (`DEVNET`) — lenient address parsing; allows parameter overrides.
-- **`1337`**: **Local Devnet** (`LOCAL`) — single-node / local cluster testing.
+- **`1`**: **kovanica-mainnet** (chain ID 1) (`MAINNET`) — strictly enforces PRO-21 canonical base32 addresses; consensus parameters frozen. `funded_accounts.toml` strictly forbidden. Release tag `v1.0.0-mainnet`.
+- **`2`**: **kovanica-testnet** (chain ID 2) (`TESTNET` / `HYBRID_TESTNET`) — canonical Hybrid PoW + GHOSTDAG public testnet; enforces PRO-21 base32 addresses (legacy hex rejected). Official network tag: `2-acfdf6a6c80fd28a`. Host topology is seed1-only (`seed1.kovanica.online`; seed2 and seed3 are no longer hosts).
+- **`3`**: **kovanica-devnet** (chain ID 3) (`DEVNET`) — lenient address parsing; allows parameter overrides.
+- **`1337`**: **local** (chain ID 1337) (`LOCAL`) — single-node / local cluster testing.
 
 ---
 
@@ -360,10 +389,10 @@ Detailed architectural specifications and operational runbooks:
 
 - **System Architecture:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - **Tokenomics Specification:** [`docs/TOKENOMICS.md`](docs/TOKENOMICS.md)
+- **PoW Mining Guide:** [`docs/MINING.md`](docs/MINING.md)
 - **Contract Execution & ABI:** [`docs/CONTRACTS.md`](docs/CONTRACTS.md) and [`docs/EXAMPLES.md`](docs/EXAMPLES.md)
 - **Gas & Metering Schedule:** [`docs/GAS_SCHEDULE.md`](docs/GAS_SCHEDULE.md)
 - **Signature & Domain Format:** [`docs/SIGNATURE_FORMAT.md`](docs/SIGNATURE_FORMAT.md)
-- **Validator Onboarding Guide:** [`docs/VALIDATOR-ONBOARDING.md`](docs/VALIDATOR-ONBOARDING.md)
 - **Governance Specification (historical/superseded under no-stake Hybrid PoW + GHOSTDAG):** [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)
 - **Audit Scope & Threat Model:** [`docs/AUDIT-SCOPE.md`](docs/AUDIT-SCOPE.md)
 - **Documentation Archive Index:** [`docs/archive/README.md`](docs/archive/README.md)

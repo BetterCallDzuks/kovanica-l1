@@ -30,7 +30,7 @@ Updated to reflect canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, KVNC
 - [ ] **Cryptography & Address Format:**
   - [ ] Verify Ed25519 signatures (strict dalek v2.1: canonical S check, small-order rejection)
   - [ ] Verify PRO-21 addresses: `kvnc` + 57 base32 chars + `dag` (64 chars; 32B Ed25519 ‖ 29-bit BLAKE3 checksum)
-  - [ ] Confirm legacy hex format is strictly rejected on mainnet (chain 1)
+  - [ ] Confirm legacy hex format is strictly rejected on kovanica-mainnet (chain ID 1)
   - [ ] Verify keystore v2: Argon2id (64 MiB, 3 iter, 4 parallelism) + XChaCha20-Poly1305
 - [ ] **P2P Networking & Node Security:**
   - [ ] Verify eclipse / Sybil resistance, peer discovery, gossip limits (port 8000 default)

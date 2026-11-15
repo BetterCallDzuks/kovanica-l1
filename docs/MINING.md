@@ -210,7 +210,7 @@ Terminal Output:
 
 ```text
 ============================================================
-       Kovanica Standalone Solo CPU Miner (Chain 2)         
+   Kovanica Standalone Solo CPU Miner (kovanica-testnet)
 ============================================================
  Chain ID:        2
  RPC Endpoint:    http://127.0.0.1:8545
@@ -458,7 +458,7 @@ With a 4-second block time:
 
 | Symptom / Error | Root Cause | Remediation |
 |---|---|---|
-| `invalid payout address for chain 2` | Payout address is corrupted or invalid checksum. | Verify address was generated via `kovanica keygen` and starts with `kvnc` and ends with `dag`. |
+| `invalid payout address for kovanica-testnet` | Payout address is corrupted or invalid checksum. | Verify address was generated via `kovanica keygen` and starts with `kvnc` and ends with `dag`. |
 | `stale block header / parent not in DAG` | Work template was solved after a new round committed. | Lower `--poll-interval-ms` (e.g. 500 ms) and optimize node P2P connectivity. |
 | `pow hash does not meet target` | Nonce or preimage mismatch between miner and node. | Ensure miner uses `KovanicaHasher` and does not mutate preimage bytes other than the tail 8-byte nonce. |
 | `requested thread count exceeds maximum` | `--threads` exceeds 256. | Reduce thread allocation below 256. |

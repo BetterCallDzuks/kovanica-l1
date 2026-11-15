@@ -1,9 +1,9 @@
-# Hybrid PoW Testnet (Chain ID 2) Runbook & Activation (Milestone M8)
+# Hybrid PoW kovanica-testnet (chain ID 2) Runbook & Activation (Milestone M8)
 
 ## 1. Overview & Consensus Invariants
 
 Per **ADR 0003** and the locked architectural decisions (Toni 2026-11-05):
-- **Chain ID:** `2` (`TESTNET`, legacy alias `HYBRID_TESTNET`)
+- **Chain ID:** kovanica-testnet (chain ID 2)
 - **Consensus Model:** Hybrid PoW + GHOSTDAG
 - **Stake Role:** **NO stake in consensus path** (no committee voting, no VRF leader tickets, no certificate quorums)
 - **PoW Algorithm:** **KovanicaHash** (BLAKE3 + 2 MiB memory mix)
@@ -61,7 +61,7 @@ kovanica dag tips --rpc-url http://127.0.0.1:8545
 ```
 
 ### Faucet Dispensing
-The testnet faucet operates directly with Chain 2:
+The testnet faucet operates directly with kovanica-testnet (chain ID 2):
 ```bash
 kovanica-faucet --chain-id 2 --rpc-url http://127.0.0.1:8545 --port 3000
 ```
@@ -98,7 +98,7 @@ The full live 3-node cluster test is automated in `crates/kovanica-node/tests/hy
 - Spawns 3 independent `kovanica-node` instances connected via P2P.
 - Mines blocks with KovanicaHash and sequences them through GHOSTDAG $k=5$.
 - Verifies that 2.5 KVNC mining rewards are minted to block authors.
-- Submits and executes transactions on Chain 2 without any staking dependencies.
+- Submits and executes transactions on kovanica-testnet (chain ID 2) without any staking dependencies.
 
 ---
 
@@ -113,7 +113,7 @@ For local multi-node evaluation, benchmarking, and real-time observability, a 1-
 | `node1` | `kovanica-chain2-node1` | Bootnode & Miner (author 0) | RPC `127.0.0.1:8545`<br>P2P `8000`<br>Metrics `127.0.0.1:9100` |
 | `node2` | `kovanica-chain2-node2` | Peered Node & Miner (author 1) | RPC `127.0.0.1:8546` |
 | `node3` | `kovanica-chain2-node3` | Peered Node & Miner (author 2) | RPC `127.0.0.1:8547` |
-| `faucet` | `kovanica-chain2-faucet` | Chain 2 Token Dispenser | HTTP `127.0.0.1:3000` |
+| `faucet` | `kovanica-chain2-faucet` | kovanica-testnet (chain ID 2) Token Dispenser | HTTP `127.0.0.1:3000` |
 | `prometheus` | `kovanica-chain2-prometheus` | Metrics Scraper (node1, node2, node3) | HTTP `127.0.0.1:9090` |
 | `grafana` | `kovanica-chain2-grafana` | Pre-provisioned Dashboards | HTTP `127.0.0.1:3001` (admin/admin) |
 
@@ -140,12 +140,12 @@ The script verifies:
 2. Faucet healthcheck (`/health` on port 3000).
 3. Live PoW block advancement via `kovanica_blockNumber`.
 4. GHOSTDAG blue block sequencing and metrics exportation on port 9100.
-5. Faucet KVNC dispensation on Chain 2.
+5. Faucet KVNC dispensation on kovanica-testnet (chain ID 2).
 6. Prometheus and Grafana health.
 
 ### Real-Time Grafana Dashboard
 
-Navigate to `http://localhost:3001` (credentials `admin` / `admin`). The dashboard `Kovanica Hybrid Testnet (Chain 2) Overview` is automatically provisioned and displays:
+Navigate to `http://localhost:3001` (credentials `admin` / `admin`). The dashboard `Kovanica Hybrid kovanica-testnet (chain ID 2) Overview` is automatically provisioned and displays:
 - **Total PoW Blocks Mined (`pow_blocks_mined_total`) & Mining Rate**: Real-time rate of PoW blocks found across the cluster.
 - **GHOSTDAG Blue vs Red Blocks Breakdown (`ghostdag_blue_blocks_total`, `ghostdag_red_blocks_total`)**: Tracking DAG colouring, sub-DAG ordering, and active DAG tips (`ghostdag_tips_count`).
 - **Network Hashrate & Target Difficulty**: Estimated hashrate in H/s and current DAA target bits over time.

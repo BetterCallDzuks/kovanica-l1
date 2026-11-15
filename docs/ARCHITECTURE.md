@@ -222,8 +222,8 @@ Current agent config lives in root `AGENTS.md`, `.opencode/agents/kovanica.md`, 
 ## Latest code snapshot
 
 - `main`: `98d88cc` (tui + console merged; local edits committed)
-- Workspace crates: 47 (`kovanica-*`)
-- TS packages (5): `packages/api-client`, `packages/comms`, `packages/console`, `packages/signer`, `packages/web`
+- Workspace crates: 47 (41 active, 6 stubs)
+- TS packages: 4 in repo (`packages/api-client`, `packages/console`, `packages/signer`, `packages/web`; client apps in `KovanicaDAG/kovanica-apps`, web in `KovanicaDAG/kovanica-web`)
 - Default P2P port: 8000; RPC: 8545; max peers: 50
 - Workspace tests: 503+ passing (partial run stopped during sustained-liveness)
 - Quarantined temp dirs cleaned; no `bot/*` remote branches remain

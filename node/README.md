@@ -9,16 +9,16 @@ genesis bundle, not by a separate build.
 
 | `--chain-id` | Network                     | Registry name       |
 |--------------|-----------------------------|---------------------|
-| `1`          | mainnet                     | `MAINNET`           |
-| `2`          | hybrid public testnet       | `TESTNET` (default) |
-| `3`          | devnet                      | `DEVNET`            |
-| `1337`       | local devnet (single node)  | `LOCAL`             |
+| `1`          | kovanica-mainnet (chain ID 1) | `MAINNET`         |
+| `2`          | kovanica-testnet (chain ID 2) (default) | `TESTNET` |
+| `3`          | kovanica-devnet (chain ID 3)  | `DEVNET`          |
+| `1337`       | local (chain ID 1337)       | `LOCAL`             |
 
 Chain 4 (`TESTNET_V2`) is **retired** and no longer registered: a binary built
 from current `main` refuses to start on it. See
 `docs/dev/CANONICAL-TESTNET-2.md`.
 
-## Install (public testnet, chain 2)
+## Install (public testnet, kovanica-testnet (chain ID 2))
 
 ```sh
 curl -fsSL https://kovanica.online/download/install.sh | sh
@@ -124,14 +124,9 @@ before the activation keeps producing blocks. A brand-new node can join once a
 sealed header at or above the activation round exists (and the serving peer's
 snapshot is at least that new).
 
-## Validator / block-author identities
+## Block-author identities & mining
 
-Chains 1 and 2 have no validator committee and no stake in consensus: blocks
-come from Hybrid PoW + GHOSTDAG mining. The installer never generates or
-handles validator keys — it produces a read-only full node. The legacy signing
-setup (keystore, `run_validator = true`, `validator_key`) is documented in
-`docs/VALIDATOR-ONBOARDING.md`, which is marked superseded; its stake steps do
-not apply on chains 1 and 2.
+kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) have no validator committee and no stake in consensus: blocks come from Hybrid PoW + GHOSTDAG mining. The installer never generates or handles validator keys — it produces a read-only full node. Mining setup is documented in [`docs/MINING.md`](../docs/MINING.md); staking operations are refused fail-closed on hybrid networks (#233).
 
 ## Cutting a release
 
