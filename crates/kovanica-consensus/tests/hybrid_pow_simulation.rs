@@ -405,3 +405,130 @@ fn test_same_dag_different_arrival_orders_yields_same_required_target() {
         "Same DAG with different block arrival orders must yield the exact same required DAA target"
     );
 }
+
+#[test]
+fn test_mainnet_daa_config_is_byte_identical() {
+    let config_mainnet = DaaConfig::for_chain(kovanica_params::CHAIN_ID_MAINNET);
+    let config_default = DaaConfig::hybrid_default();
+    assert_eq!(config_mainnet, config_default);
+    assert_eq!(config_mainnet.target_block_time_ms, 4_000);
+    assert_eq!(config_mainnet.window_size, 60);
+    assert_eq!(config_mainnet.max_target_bits, 0x1f00_ffff);
+    assert_eq!(config_mainnet.min_target_bits, 0x0101_0000);
+    assert_eq!(config_mainnet.max_adjustment_factor, 4);
+}
+
+#[test]
+fn test_kovanica_testnet_daa_clamps_at_both_bounds() {
+    let config = DaaConfig::for_chain(kovanica_params::CHAIN_ID_TESTNET);
+    assert_eq!(
+        config.max_target_bits,
+        kovanica_params::DAA_MAX_TARGET_BITS_TESTNET
+    );
+    assert_eq!(config.max_target_bits, 0x1f00_ffff);
+    assert_eq!(
+        config.min_target_bits,
+        kovanica_params::DAA_MIN_TARGET_BITS_TESTNET
+    );
+    assert_eq!(config.min_target_bits, 0x1e00_ffff);
+
+    let start_ts = 1_700_000_000_000u64;
+
+    // Easiest difficulty floor clamp (slow blocks -> target expands up to floor 0x1f00_ffff)
+    let slow_timestamps: Vec<u64> = (0..60).map(|i| start_ts + i * 100_000).collect();
+    let clamped_floor =
+        calculate_next_target_bits(config.max_target_bits, &slow_timestamps, &config);
+    assert_eq!(
+        clamped_floor,
+        kovanica_params::DAA_MAX_TARGET_BITS_TESTNET,
+        "target bits must clamp at testnet difficulty floor 0x1f00_ffff"
+    );
+
+    // Hardest difficulty ceiling clamp (fast blocks -> target compresses down to ceiling 0x1e00_ffff)
+    let fast_timestamps: Vec<u64> = (0..60).map(|i| start_ts + i * 10).collect();
+    let clamped_ceiling =
+        calculate_next_target_bits(config.min_target_bits, &fast_timestamps, &config);
+    assert_eq!(
+        clamped_ceiling,
+        kovanica_params::DAA_MIN_TARGET_BITS_TESTNET,
+        "target bits must clamp at testnet difficulty ceiling 0x1e00_ffff"
+    );
+}
+
+#[test]
+fn test_required_target_bits_on_testnet_never_leaves_bounds() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage = kovanica_storage::Storage::new(temp_dir.path().join("dag.redb")).unwrap();
+    let dag = kovanica_dag::DagStore::new(storage).unwrap();
+
+    let mut worker = MiningWorker::new();
+    let genesis = make_mined_block(
+        &mut worker,
+        0,
+        0,
+        vec![],
+        1_700_000_000_000,
+        EASY_TEST_TARGET_BITS,
+    );
+    dag.put_block(&genesis).unwrap();
+
+    let mut prev_block = genesis;
+    let config = DaaConfig::for_chain(kovanica_params::CHAIN_ID_TESTNET);
+
+    for r in 1..=65 {
+        let candidate_parents = vec![prev_block.reference()];
+        let target = kovanica_consensus::daa::required_target_bits(
+            &dag,
+            &candidate_parents,
+            kovanica_params::CHAIN_ID_TESTNET,
+            &config,
+        )
+        .unwrap();
+
+        let target_val = compact_to_target(target);
+        let min_val = compact_to_target(config.min_target_bits); // hardest ceiling
+        let max_val = compact_to_target(config.max_target_bits); // easiest floor
+
+        assert!(
+            target_val >= min_val && target_val <= max_val,
+            "target {:#x} out of bounds [{:#x}, {:#x}]",
+            target,
+            config.min_target_bits,
+            config.max_target_bits
+        );
+
+        let blk = make_mined_block(
+            &mut worker,
+            r,
+            (r % 3) as u16,
+            candidate_parents,
+            1_700_000_000_000 + r * 100, // fast arrival to push difficulty
+            EASY_TEST_TARGET_BITS,
+        );
+        dag.put_block(&blk).unwrap();
+        prev_block = blk;
+    }
+}
+
+#[test]
+fn test_devnet_and_local_daa_config_bounds() {
+    let devnet_config = DaaConfig::for_chain(kovanica_params::CHAIN_ID_DEVNET);
+    assert_eq!(
+        devnet_config.max_target_bits,
+        kovanica_params::DAA_MAX_TARGET_BITS_DEVNET
+    );
+    assert_eq!(
+        devnet_config.min_target_bits,
+        kovanica_params::DAA_MIN_TARGET_BITS_DEVNET
+    );
+
+    let local_config = DaaConfig::for_chain(kovanica_params::CHAIN_ID_LOCAL);
+    assert_eq!(
+        local_config.max_target_bits,
+        kovanica_params::DAA_MAX_TARGET_BITS_DEVNET
+    );
+    assert_eq!(
+        local_config.min_target_bits,
+        kovanica_params::DAA_MIN_TARGET_BITS_DEVNET
+    );
+}

@@ -65,11 +65,39 @@ impl Default for DaaConfig {
 }
 
 impl DaaConfig {
-    /// Standard consensus parameters for Chain ID 2 (Hybrid PoW testnet).
+    /// Return the consensus DAA parameters for the specified chain.
+    ///
+    /// - `kovanica-mainnet` (Chain ID 1): canonical mainnet parameters via [`Self::hybrid_default`].
+    /// - `kovanica-testnet` (Chain ID 2): bounded between difficulty floor (`DAA_MAX_TARGET_BITS_TESTNET` = 0x1f00_ffff)
+    ///   and difficulty ceiling (`DAA_MIN_TARGET_BITS_TESTNET` = 0x1e00_ffff).
+    /// - `kovanica-devnet` (Chain ID 3) and `local` (Chain ID 1337): uses kovanica-devnet difficulty bounds.
+    /// - Any other chain: fallback to [`Self::hybrid_default`].
+    #[must_use]
+    pub const fn for_chain(chain_id: u64) -> Self {
+        match chain_id {
+            kovanica_params::CHAIN_ID_TESTNET => Self {
+                target_block_time_ms: kovanica_params::TARGET_BLOCK_MS,
+                window_size: kovanica_params::DAA_WINDOW_BLOCKS,
+                max_target_bits: kovanica_params::DAA_MAX_TARGET_BITS_TESTNET,
+                min_target_bits: kovanica_params::DAA_MIN_TARGET_BITS_TESTNET,
+                max_adjustment_factor: 4,
+            },
+            kovanica_params::CHAIN_ID_DEVNET | kovanica_params::CHAIN_ID_LOCAL => Self {
+                target_block_time_ms: kovanica_params::TARGET_BLOCK_MS,
+                window_size: kovanica_params::DAA_WINDOW_BLOCKS,
+                max_target_bits: kovanica_params::DAA_MAX_TARGET_BITS_DEVNET,
+                min_target_bits: kovanica_params::DAA_MIN_TARGET_BITS_DEVNET,
+                max_adjustment_factor: 4,
+            },
+            _ => Self::hybrid_default(),
+        }
+    }
+
+    /// Standard consensus parameters for kovanica-mainnet (Chain ID 1) and baseline hybrid.
     ///
     /// Pure protocol configuration strictly bound to canonical parameters:
-    /// - Max target ceiling: [`kovanica_params::MAX_TARGET_BITS`] (`0x1f00_ffff`).
-    /// - Min target floor: [`kovanica_params::MIN_TARGET_BITS`].
+    /// - Max target ceiling (difficulty floor): [`kovanica_params::MAX_TARGET_BITS`] (`0x1f00_ffff`).
+    /// - Min target floor (difficulty ceiling): [`kovanica_params::MIN_TARGET_BITS`] (`0x0101_0000`).
     /// - Target block time: [`kovanica_params::TARGET_BLOCK_MS`] (4,000 ms).
     /// - Adjustment window: [`kovanica_params::DAA_WINDOW_BLOCKS`] (60 blocks).
     /// - Max factor: 4x.
@@ -151,6 +179,24 @@ pub fn mul_div_u256(val: [u8; 32], num: u64, den: u64) -> [u8; 32] {
     result
 }
 
+#[must_use]
+fn clamp_target_bits(target_bits: u32, config: &DaaConfig) -> u32 {
+    let target = compact_to_target(target_bits);
+    if target == [0u8; 32] {
+        return config.max_target_bits;
+    }
+    let max_target = compact_to_target(config.max_target_bits);
+    let min_target = compact_to_target(config.min_target_bits);
+    let mut clamped = target;
+    if max_target != [0u8; 32] && clamped > max_target {
+        clamped = max_target;
+    }
+    if min_target != [0u8; 32] && clamped < min_target {
+        clamped = min_target;
+    }
+    target_to_compact(&clamped)
+}
+
 /// Calculate the next difficulty target bits given recent block timestamps.
 ///
 /// `block_timestamps` must be provided in ascending chronological order.
@@ -161,7 +207,7 @@ pub fn calculate_next_target_bits(
     config: &DaaConfig,
 ) -> u32 {
     if block_timestamps.len() < 2 {
-        return current_target_bits;
+        return clamp_target_bits(current_target_bits, config);
     }
 
     // Use at most `window_size` most recent timestamps
