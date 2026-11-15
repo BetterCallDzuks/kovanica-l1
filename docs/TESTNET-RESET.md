@@ -111,7 +111,7 @@ keystore or `config.toml` in that directory is an error instead of a silent
 omission — a bundle is published, and nothing else from an operator directory
 may end up in it. It also refuses an unregistered chain id, a
 `genesis_validators.toml` whose `chain_id` disagrees with `--chain-id`, and
-`funded_accounts.toml` on kovanica-mainnet (chain ID 1), where that file is forbidden and
+`funded_accounts.toml` on mainnet (chain 1) (kovanica-mainnet (chain ID 1)), where that file is forbidden and
 must not appear in the checksum list either.
 
 The output is `kovanica-chain<chain-id>-genesis.tar.gz` (`--out <file>` to
