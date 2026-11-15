@@ -144,7 +144,7 @@ The monorepo is organized into 47 workspace crates, 5 TypeScript packages, opera
 Clone the repository and compile all workspace crates:
 
 ```bash
-git clone https://github.com/KovanicaDAG/kovanica.git
+git clone https://github.com/KovanicaDAG/kovanica-l1.git
 cd kovanica
 
 # Build the complete Rust workspace

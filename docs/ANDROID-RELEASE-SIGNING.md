@@ -107,7 +107,7 @@ Expected wasm sha256: `a6988f5e1742b1ac0a069a3ef274d7590a54266dee57435438664e230
 
 ## Publish
 
-Releases live on `KovanicaDAG/kovanica`, tags `v<version>-wallet` and
+Releases live on `KovanicaDAG/kovanica-l1`, tags `v<version>-wallet` and
 `v<version>-android`, assets `Kovanica-Wallet-<version>-arm64-v8a.apk` and
 `Kovanica-Lightnode-<version>-arm64-v8a.apk`. After publishing, bump the pins in
 `kovanica-web` (`src/routes/download/$.ts` and the wallet download component) in

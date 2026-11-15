@@ -170,7 +170,7 @@ The console does not use these variables. Its network table is `packages/console
 curl -fsSL https://get.docker.com | sh
 
 # Clone repo
-git clone https://github.com/KovanicaDAG/kovanica.git
+git clone https://github.com/KovanicaDAG/kovanica-l1.git
 cd kovanica
 
 # Generate validator keys (offline, one-time)

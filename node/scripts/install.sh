@@ -44,7 +44,7 @@
 set -eu
 
 VERSION="${KOVANICA_VERSION:-0.2.0}"
-REPO="KovanicaDAG/kovanica"
+REPO="KovanicaDAG/kovanica-l1"
 RELEASE_BASE="${KOVANICA_RELEASE_BASE:-https://github.com/${REPO}/releases/download/v${VERSION}-node}"
 
 # Default network: the canonical hybrid public testnet. Nothing chain-specific
