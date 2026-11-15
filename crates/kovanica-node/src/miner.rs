@@ -1,4 +1,4 @@
-//! Node mining worker and difficulty calculation for Chain 2 (Hybrid PoW testnet).
+//! Node mining worker and difficulty calculation for Hybrid PoW.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -97,7 +97,7 @@ impl NodeMiner {
 
 pub use kovanica_consensus::daa::select_parents_from_tips;
 
-/// Run the background PoW mining loop for Chain 2.
+/// Run the background PoW mining loop.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_mining_loop(
     mining_config: MiningConfig,
@@ -120,7 +120,7 @@ pub async fn run_mining_loop(
         author,
         %payout_address,
         threads = mining_config.threads,
-        "Chain 2 PoW mining worker loop started"
+        "PoW mining worker loop started"
     );
 
     let miner = NodeMiner::new(chain_id);
@@ -240,7 +240,7 @@ pub async fn run_mining_loop(
             round = mined_header.round,
             pow_hash = ?mined_header.pow_hash,
             nonce = mined_header.nonce,
-            "successfully mined new PoW block on Chain 2"
+            "successfully mined new PoW block"
         );
 
         let statement_block = mined_header.to_statement_block(txs);
