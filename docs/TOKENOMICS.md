@@ -206,4 +206,4 @@ Under the `NoStake82M` policy, this allocation is zero and no validator shares a
 
 - Change `BLOCKS_PER_YEAR` (affects vesting speed)
 - Adjust min stake / max validators (on legacy/staking chains)
-- Activate residual fee-burn or fee-to-miners mechanisms once mining subsidy is exhausted
+- Fee split: PRO-53 establishes a 3/4 burn, 1/4 miner fee split on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2). Future governance hooks may tune the fee split ratio or burn fraction once mining subsidy is exhausted.
