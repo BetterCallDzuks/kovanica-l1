@@ -2230,7 +2230,7 @@ pub async fn handle_get_work(params: Value, state: RpcState) -> Result<Value, Rp
     )
     .map_err(|e| RpcError::ExecutionError(format!("ancestor timestamp extraction failed: {e}")))?;
 
-    let daa_config = kovanica_consensus::DaaConfig::hybrid_default();
+    let daa_config = kovanica_consensus::DaaConfig::for_chain(chain_id);
     let target_bits = kovanica_consensus::try_required_target_bits(
         &state.consensus_store,
         &parent_refs,
@@ -2446,7 +2446,7 @@ pub async fn handle_submit_work(params: Value, state: RpcState) -> Result<Value,
         }
 
         // Enforce required DAA target from deterministic block-bound ancestry
-        let daa_config = kovanica_consensus::DaaConfig::hybrid_default();
+        let daa_config = kovanica_consensus::DaaConfig::for_chain(chain_id);
         let required_bits = kovanica_consensus::try_required_target_bits(
             &state.consensus_store,
             &header.parents,
@@ -2513,7 +2513,7 @@ pub async fn handle_get_mining_info(_params: Value, state: RpcState) -> Result<V
         })
         .collect();
 
-    let daa_config = kovanica_consensus::DaaConfig::hybrid_default();
+    let daa_config = kovanica_consensus::DaaConfig::for_chain(chain_id);
     let target_bits = kovanica_consensus::try_required_target_bits(
         &state.consensus_store,
         &parent_refs,

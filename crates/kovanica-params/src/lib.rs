@@ -47,6 +47,20 @@ pub const INITIAL_TARGET_BITS_HYBRID: u32 = 0x1f00_ffff;
 pub const MAX_TARGET_BITS: u32 = 0x1f00_ffff;
 /// Maximum difficulty target bits (floor on target, hardest difficulty).
 pub const MIN_TARGET_BITS: u32 = 0x0101_0000;
+
+/// Canonical difficulty floor (easiest target) for kovanica-testnet (Chain ID 2).
+/// Bound to initial bootstrap target 0x1f00_ffff to preserve post-genesis continuity.
+pub const DAA_MAX_TARGET_BITS_TESTNET: u32 = 0x1f00_ffff;
+/// Canonical difficulty ceiling (hardest target) for kovanica-testnet (Chain ID 2).
+/// Capped at 256x easiest difficulty (0x1e00_ffff) so that a cluster/pool of up to ~256 cores still makes 4s blocks.
+pub const DAA_MIN_TARGET_BITS_TESTNET: u32 = 0x1e00_ffff;
+
+/// Difficulty floor (easiest target) for kovanica-devnet (Chain ID 3).
+/// Inert until devnet mines.
+pub const DAA_MAX_TARGET_BITS_DEVNET: u32 = 0x1f00_ffff;
+/// Difficulty ceiling (hardest target) for kovanica-devnet (Chain ID 3).
+/// Inert until devnet mines.
+pub const DAA_MIN_TARGET_BITS_DEVNET: u32 = 0x1e00_ffff;
 /// Default DAA adjustment window in blocks.
 pub const DAA_WINDOW_BLOCKS: u64 = 60;
 /// Maximum future timestamp drift in milliseconds (30 seconds).

@@ -27,18 +27,18 @@ pub struct NodeMiner {
 
 impl Default for NodeMiner {
     fn default() -> Self {
-        Self::new()
+        Self::new(kovanica_params::CHAIN_ID_TESTNET)
     }
 }
 
 #[allow(dead_code)]
 impl NodeMiner {
-    /// Create a new node miner with default Chain 2 parameters.
+    /// Create a new node miner configured for the specified chain.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(chain_id: u64) -> Self {
         Self {
             worker: MiningWorker::new(),
-            daa_config: DaaConfig::hybrid_default(),
+            daa_config: DaaConfig::for_chain(chain_id),
         }
     }
 
@@ -123,7 +123,7 @@ pub async fn run_mining_loop(
         "Chain 2 PoW mining worker loop started"
     );
 
-    let miner = NodeMiner::new();
+    let miner = NodeMiner::new(chain_id);
     let mut current_nonce: u64 = (author as u64).wrapping_mul(10_000_000);
 
     loop {
@@ -289,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn node_miner_lifecycle() {
-        let mut miner = NodeMiner::new();
+        let mut miner = NodeMiner::new(kovanica_params::CHAIN_ID_TESTNET);
         // Allow high target in test environment
         miner.daa_config.max_target_bits = 0x207fffff;
         miner.daa_config.target_block_time_ms = 4000;
