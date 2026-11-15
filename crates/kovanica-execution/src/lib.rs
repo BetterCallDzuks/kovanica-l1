@@ -8378,9 +8378,8 @@ mod tests {
             assert_eq!(sender_acct.balance, initial_balance - 1000 - fee);
             // With an explicit payout address, miner receives 0 fee share (100% burned, no split)
             let miner_acct = storage.state().get_account(&read, &miner).unwrap();
-            let miner_bal = miner_acct.map_or(0, |a| a.balance);
             assert_eq!(
-                miner_bal, 0,
+                miner_acct.balance, 0,
                 "miner must receive 0 fee share on kovanica-devnet"
             );
             let fee_state = storage
@@ -8452,8 +8451,7 @@ mod tests {
             assert_eq!(sender_acct.balance, initial_balance - 1000 - fee);
             // With an explicit payout address, miner receives 0 fee share (100% burned, no split)
             let miner_acct = storage.state().get_account(&read, &miner).unwrap();
-            let miner_bal = miner_acct.map_or(0, |a| a.balance);
-            assert_eq!(miner_bal, 0, "miner must receive 0 fee share on local");
+            assert_eq!(miner_acct.balance, 0, "miner must receive 0 fee share on local");
             let fee_state = storage
                 .state()
                 .load_fee_accounting_state(&read)
