@@ -138,7 +138,20 @@ circulating ≈ FOUNDER_PREMINE
             + treasury.vested
 ```
 
-Capped at `TOTAL_SUPPLY`. For the NO-stake hybrid chains (1, 2), `GENESIS_VALIDATOR_ALLOCATION = 0`, so genesis circulating supply is 200 000 KVNC (founder premine only). For legacy chains (3, 1337), genesis circulating supply is 1 200 000 KVNC (premine + genesis allocation). Treasury vests over time.
+Capped at `TOTAL_SUPPLY`. For the NO-stake hybrid chains (kovanica-mainnet (1), kovanica-testnet (2)), `GENESIS_VALIDATOR_ALLOCATION = 0`, so genesis circulating supply is 200 000 KVNC (founder premine only). For legacy chains (kovanica-devnet (3), local (1337)), genesis circulating supply is 1 200 000 KVNC (premine + genesis allocation). Treasury vests over time.
+
+Note that burned transaction fees permanently reduce the total tokens held in user and miner accounts (`sum_of_balances = initial_balances + mining_subsidy − cumulative_fees_burned`). The formal circulating supply tracking formula in `circulating_supply_with_policy` accounts for total issued and vested tokens, while burned fees reduce held circulating supply in the ledger.
+
+### 6.1 Fees (PRO-53 Fee Split and Burn)
+
+Under PRO-53, transaction fees on hybrid NO-stake networks (kovanica-testnet (2) under `NoStake82M`) are split between network deflation and block miners:
+- For each confirmed blue block, the total debited transaction fees `F` are calculated (including failed-body transactions where fee and nonce were debited; refused transactions count 0).
+- **Miner share:** If the block commits a valid miner payout address (`BlockHeader.payout`), the miner is credited `miner_fee = floor(F / 4)` in the execution write transaction.
+- **Burn share:** The remainder `burn_fee = F - miner_fee` is permanently burned (at least 3/4 of all debited fees, plus any integer division rounding remainder, ensuring at most 3 atoms extra burned).
+- **No payout address:** If an executed block has no payout address, 100% of its fees are burned (`burn_fee = F`).
+- **Red blocks:** Red (`non_blue`) blocks are not executed in that round; they pay and burn 0.
+- **Accounting:** Persistent counters `cumulative_fees_burned` and `cumulative_fees_to_miners` track lifetime fees in dedicated state storage and are exposed via `kovanica_getMiningInfo`. Miner fee shares are fee redistributions, not new issuance, and do not increment `cumulative_mining_issued` or count toward the 82M subsidy cap.
+- **Other networks:** On kovanica-mainnet (1) (legacy-81m hybrid path), kovanica-devnet (3), and local (1337), transaction fees remain 100% burned.
 
 ---
 

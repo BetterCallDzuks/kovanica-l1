@@ -217,6 +217,7 @@ impl StateStore {
             let _ = write_txn.open_table(crate::tables::GENESIS_DIGEST)?;
             let _ = write_txn.open_table(crate::tables::EMISSION_POLICY)?;
             let _ = write_txn.open_table(crate::tables::MINING_REWARD_STATE)?;
+            let _ = write_txn.open_table(crate::tables::FEE_ACCOUNTING_STATE)?;
         }
         write_txn.commit().map_err(StorageError::Commit)?;
         Ok(Self { pruning })
@@ -635,6 +636,52 @@ impl StateStore {
         };
         let bytes = table
             .get("mining_reward_state")?
+            .map(|g| g.value().to_vec());
+        match bytes {
+            Some(b) => Ok(Some(bincode::deserialize(&b)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Save the persistent fee accounting state.
+    pub fn save_fee_accounting_state(
+        &self,
+        txn: &WriteTransaction,
+        state: &kovanica_types::emission::FeeAccountingState,
+    ) -> Result<(), StateStoreError> {
+        let mut table = txn.open_table(crate::tables::FEE_ACCOUNTING_STATE)?;
+        table.insert("fee_accounting_state", bincode::serialize(state)?)?;
+        Ok(())
+    }
+
+    /// Load the persistent fee accounting state from a write transaction.
+    pub fn load_fee_accounting_state_write(
+        &self,
+        txn: &WriteTransaction,
+    ) -> Result<Option<kovanica_types::emission::FeeAccountingState>, StateStoreError> {
+        let table = txn.open_table(crate::tables::FEE_ACCOUNTING_STATE)?;
+        let bytes = table
+            .get("fee_accounting_state")?
+            .map(|g| g.value().to_vec());
+        match bytes {
+            Some(b) => Ok(Some(bincode::deserialize(&b)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Load the persistent fee accounting state from a read transaction.
+    pub fn load_fee_accounting_state(
+        &self,
+        txn: &ReadTransaction,
+    ) -> Result<Option<kovanica_types::emission::FeeAccountingState>, StateStoreError> {
+        let table_res = txn.open_table(crate::tables::FEE_ACCOUNTING_STATE);
+        let table = match table_res {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(StateStoreError::Table(e)),
+        };
+        let bytes = table
+            .get("fee_accounting_state")?
             .map(|g| g.value().to_vec());
         match bytes {
             Some(b) => Ok(Some(bincode::deserialize(&b)?)),
@@ -2929,6 +2976,7 @@ mod prune_tests {
             let txn = db.begin_read().unwrap();
             assert_eq!(store.load_emission_policy(&txn).unwrap(), None);
             assert_eq!(store.load_mining_reward_state(&txn).unwrap(), None);
+            assert_eq!(store.load_fee_accounting_state(&txn).unwrap(), None);
         }
 
         // Save NoStake82M and MiningRewardState
@@ -2936,6 +2984,7 @@ mod prune_tests {
             let txn = db.begin_write().unwrap();
             assert_eq!(store.load_emission_policy_write(&txn).unwrap(), None);
             assert_eq!(store.load_mining_reward_state_write(&txn).unwrap(), None);
+            assert_eq!(store.load_fee_accounting_state_write(&txn).unwrap(), None);
 
             store
                 .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
@@ -2947,6 +2996,11 @@ mod prune_tests {
                 terminal_payout_block_index: None,
             };
             store.save_mining_reward_state(&txn, &state).unwrap();
+            let fee_state = kovanica_types::emission::FeeAccountingState {
+                cumulative_fees_burned: 75_000_000,
+                cumulative_fees_to_miners: 25_000_000,
+            };
+            store.save_fee_accounting_state(&txn, &fee_state).unwrap();
             txn.commit().unwrap();
         }
 
@@ -2962,6 +3016,10 @@ mod prune_tests {
             assert_eq!(state.cumulative_mining_issued, 20_500_000_000_000_000);
             assert!(!state.terminal_payout_done);
             assert_eq!(state.terminal_payout_block_index, None);
+
+            let fee_state = store.load_fee_accounting_state(&txn).unwrap().unwrap();
+            assert_eq!(fee_state.cumulative_fees_burned, 75_000_000);
+            assert_eq!(fee_state.cumulative_fees_to_miners, 25_000_000);
         }
 
         // Update terminal payout state

@@ -2531,6 +2531,21 @@ pub async fn handle_get_mining_info(_params: Value, state: RpcState) -> Result<V
     };
     let target_bytes = kovanica_types::compact_to_target(target_bits);
 
+    let (cumulative_fees_burned, cumulative_fees_to_miners) = {
+        if let Ok(txn) = state.storage.begin_read() {
+            state
+                .storage
+                .state()
+                .load_fee_accounting_state(&txn)
+                .ok()
+                .flatten()
+                .map(|s| (s.cumulative_fees_burned, s.cumulative_fees_to_miners))
+                .unwrap_or((0, 0))
+        } else {
+            (0, 0)
+        }
+    };
+
     Ok(serde_json::json!({
         "chain_id": chain_id,
         "mining_enabled": state.mining_enabled,
@@ -2541,7 +2556,9 @@ pub async fn handle_get_mining_info(_params: Value, state: RpcState) -> Result<V
         "target_block_time_ms": kovanica_params::TARGET_BLOCK_MS,
         "ghostdag_k": kovanica_params::GHOSTDAG_K,
         "network_hashrate_estimate": hashrate_estimate.min(u64::MAX as u128) as u64,
-        "dag_tips_count": parent_hashes.len()
+        "dag_tips_count": parent_hashes.len(),
+        "cumulative_fees_burned": cumulative_fees_burned,
+        "cumulative_fees_to_miners": cumulative_fees_to_miners,
     }))
 }
 
