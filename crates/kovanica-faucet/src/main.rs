@@ -34,10 +34,14 @@ mod proxy;
 struct FaucetConfig {
     /// Amount to dispense per request (in atoms)
     dispense_amount: u64,
-    /// Rate limit window (seconds)
+    /// Rate limit window (seconds) for the per-client-IP limiter
     rate_limit_window: u64,
     /// Max requests per window per IP
     max_requests_per_window: usize,
+    /// Rate limit window (seconds) for the per-destination-address limiter
+    address_rate_limit_window: u64,
+    /// Max requests per window per destination address
+    address_max_requests: usize,
     /// RPC endpoint of the node
     rpc_url: String,
     /// Optional bearer token for authenticated write RPC methods
@@ -136,12 +140,29 @@ struct Cli {
     /// Amount to dispense per request (in KVNC)
     #[arg(long, default_value = "10")]
     dispense_kovanica: u64,
-    /// Rate limit window (seconds)
+    /// Rate limit window (seconds) applied per client IP
     #[arg(long, default_value = "3600")]
     rate_limit_window: u64,
-    /// Max requests per window per IP
+    /// Max requests per window per client IP
     #[arg(long, default_value = "3")]
     max_requests: usize,
+    /// Rate limit window (seconds) applied per destination address.
+    ///
+    /// Kept separate from the per-IP window so a shared address (a hot wallet,
+    /// an exchange deposit address) cannot be drained by rotating IPs.
+    /// Equivalent to `KOVANICA_FAUCET_ADDRESS_RATE_LIMIT_WINDOW`.
+    #[arg(
+        long,
+        default_value = "86400",
+        env = ADDRESS_RATE_LIMIT_WINDOW_ENV
+    )]
+    address_rate_limit_window: u64,
+    /// Max requests per window per destination address.
+    ///
+    /// Defaults to a lifetime-style cap of one dispense per address per day.
+    /// Equivalent to `KOVANICA_FAUCET_ADDRESS_MAX_REQUESTS`.
+    #[arg(long, default_value = "1", env = ADDRESS_MAX_REQUESTS_ENV)]
+    address_max_requests: usize,
     /// Network chain_id committed to by every transaction signature
     /// (1 mainnet, 2 testnet, 3 devnet, 1337 local). No default on purpose.
     #[arg(long)]
@@ -205,6 +226,16 @@ async fn main() -> Result<()> {
     };
     if !trusted_proxies.is_empty() {
         info!("trusting X-Forwarded-For from configured reverse proxies");
+    } else if listens_on_local_or_private(&cli.listen) {
+        // Behind a local reverse proxy with no trusted-proxy list every caller
+        // collapses onto the proxy's socket IP, so one caller can drain the
+        // whole hourly budget. Say so once, loudly, at startup.
+        warn!(
+            listen = %cli.listen,
+            "no trusted proxies configured while listening on a loopback/private \
+             address: every caller shares one IP rate-limit bucket. Set \
+             --trusted-proxies or {TRUSTED_PROXIES_ENV} to key on the real client IP."
+        );
     }
 
     // Load faucet keystore
@@ -230,6 +261,8 @@ async fn main() -> Result<()> {
         dispense_amount: cli.dispense_kovanica * 1_000_000_000, // KVNC to atoms
         rate_limit_window: cli.rate_limit_window,
         max_requests_per_window: cli.max_requests,
+        address_rate_limit_window: cli.address_rate_limit_window,
+        address_max_requests: cli.address_max_requests,
         rpc_url: normalize_rpc_url(&cli.rpc_url),
         rpc_token: resolve_rpc_token(),
         signing_ctx: kovanica_types::SigningContext::new(cli.chain_id),
@@ -273,6 +306,47 @@ const ALLOW_MAINNET_ENV: &str = "KOVANICA_FAUCET_ALLOW_MAINNET";
 
 /// Env override with the comma-separated trusted-proxy IP/CIDR list.
 const TRUSTED_PROXIES_ENV: &str = "KOVANICA_FAUCET_TRUSTED_PROXIES";
+
+/// Env override for the per-destination-address rate-limit window (seconds).
+const ADDRESS_RATE_LIMIT_WINDOW_ENV: &str = "KOVANICA_FAUCET_ADDRESS_RATE_LIMIT_WINDOW";
+
+/// Env override for the per-destination-address request cap per window.
+const ADDRESS_MAX_REQUESTS_ENV: &str = "KOVANICA_FAUCET_ADDRESS_MAX_REQUESTS";
+
+/// Whether `listen` (`host:port`) binds a loopback, private or unspecified address.
+///
+/// Used only for the startup warning about a single shared IP bucket: when the
+/// faucet listens locally it is almost certainly reached through a reverse proxy.
+/// Hostnames are treated as local so the warning is never silently skipped.
+fn listens_on_local_or_private(listen: &str) -> bool {
+    let host = match listen.rsplit_once(':') {
+        Some((host, _port)) => host,
+        None => listen,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => is_local_or_private(ip),
+        Err(_) => true,
+    }
+}
+
+/// Loopback, unspecified, or RFC 1918 / RFC 4193 / link-local address.
+fn is_local_or_private(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback() || v4.is_unspecified() || v4.is_private() || v4.is_link_local()
+        }
+        std::net::IpAddr::V6(v6) => {
+            let first = v6.octets()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // fc00::/7 unique-local
+                || (first & 0xfe) == 0xfc
+                // fe80::/10 link-local
+                || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xc0) == 0x80)
+        }
+    }
+}
 
 /// Whether an environment variable holds an affirmative boolean value
 /// (`1`, `true`, `yes` or `on`, case-insensitive).
@@ -361,21 +435,28 @@ async fn faucet_handler(
         }
     };
 
-    // Check PRO-21 destination address rate limit
+    // Check PRO-21 destination address rate limit. This is deliberately keyed
+    // on its own window and cap: an address must not become drainable just
+    // because the caller rotates client IPs.
     let to_address_str = to_address.to_string();
     if !state.rate_limiter.check_and_record_address(
         &to_address_str,
-        state.config.rate_limit_window,
-        state.config.max_requests_per_window,
+        state.config.address_rate_limit_window,
+        state.config.address_max_requests,
     ) {
-        warn!(address = %to_address_str, "rate limit exceeded for address");
+        warn!(
+            address = %to_address_str,
+            window = state.config.address_rate_limit_window,
+            max = state.config.address_max_requests,
+            "rate limit exceeded for address"
+        );
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(FaucetResponse {
                 success: false,
                 message: format!(
                     "Rate limit exceeded for address. Max {} requests per {} seconds.",
-                    state.config.max_requests_per_window, state.config.rate_limit_window
+                    state.config.address_max_requests, state.config.address_rate_limit_window
                 ),
                 tx_hash: None,
             }),
@@ -975,5 +1056,343 @@ mod guard_tests {
 
         // Different address is allowed
         assert!(limiter.check_and_record_address(addr2, window, max_req));
+    }
+}
+
+/// End-to-end handler tests against a local stub node. No external network:
+/// the stub answers `kovanica_getBalance`, `kovanica_getNonce` and
+/// `kovanica_sendRawTransaction` in-process.
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use serde_json::{json, Value};
+    use std::net::SocketAddr;
+    use tower::ServiceExt;
+
+    const DISPENSE_ATOMS: u64 = 10 * 1_000_000_000;
+
+    #[derive(Clone)]
+    struct StubState {
+        balance_atoms: u64,
+        dispensed: Arc<Mutex<Vec<u64>>>,
+    }
+
+    async fn stub_rpc_handler(
+        axum::extract::State(stub): axum::extract::State<StubState>,
+        Json(req): Json<Value>,
+    ) -> Json<Value> {
+        let method = req
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let result = match method {
+            "kovanica_getBalance" => json!(format!("0x{:x}", stub.balance_atoms)),
+            "kovanica_getNonce" => json!("0x0"),
+            "kovanica_sendRawTransaction" => {
+                let raw = req
+                    .get("params")
+                    .and_then(|p| p.get(0))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if let Ok(bytes) = hex::decode(raw) {
+                    if let Ok(tx) = bincode::deserialize::<Transaction>(&bytes) {
+                        if let TransactionKind::Transfer { amount, .. } = tx.kind {
+                            stub.dispensed.lock().push(amount);
+                        }
+                    }
+                }
+                json!("0xfeed")
+            }
+            _ => json!(null),
+        };
+        Json(json!({ "jsonrpc": "2.0", "id": 1, "result": result }))
+    }
+
+    /// Start an in-process JSON-RPC stub and return `(url, dispensed amounts)`.
+    async fn stub_node(balance_atoms: u64) -> (String, Arc<Mutex<Vec<u64>>>) {
+        let dispensed = Arc::new(Mutex::new(Vec::new()));
+        let stub = StubState {
+            balance_atoms,
+            dispensed: dispensed.clone(),
+        };
+        let app = Router::new()
+            .route("/rpc", post(stub_rpc_handler))
+            .with_state(stub);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}/rpc"), dispensed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn faucet_state(
+        rpc_url: &str,
+        ip_window: u64,
+        ip_max: usize,
+        address_window: u64,
+        address_max: usize,
+        trusted: &str,
+        min_balance_atoms: u64,
+    ) -> Arc<FaucetState> {
+        let signer = SigningKey::from_bytes(&[7u8; 32]);
+        let faucet_address = Address::from_public_key(&PublicKey::from(signer.verifying_key()));
+        Arc::new(FaucetState {
+            config: FaucetConfig {
+                dispense_amount: DISPENSE_ATOMS,
+                rate_limit_window: ip_window,
+                max_requests_per_window: ip_max,
+                address_rate_limit_window: address_window,
+                address_max_requests: address_max,
+                rpc_url: rpc_url.to_string(),
+                rpc_token: None,
+                signing_ctx: kovanica_types::SigningContext::new(chain_id::TESTNET),
+                trusted_proxies: proxy::TrustedProxies::parse_list(trusted).unwrap(),
+                min_balance_atoms,
+            },
+            signer,
+            faucet_address,
+            rate_limiter: RateLimiter::default(),
+            client: reqwest::Client::new(),
+        })
+    }
+
+    fn app(state: Arc<FaucetState>) -> Router {
+        Router::new()
+            .route("/health", get(health_check))
+            .route("/faucet", post(faucet_handler))
+            .with_state(state)
+    }
+
+    fn canonical(seed: u8) -> String {
+        Address([seed; 32]).encode()
+    }
+
+    async fn post_faucet(
+        app: &Router,
+        peer: &str,
+        forwarded_for: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/faucet")
+            .header("content-type", "application/json");
+        if let Some(xff) = forwarded_for {
+            builder = builder.header("x-forwarded-for", xff);
+        }
+        let mut req = builder.body(Body::from(body.to_string())).unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let payload = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, payload)
+    }
+
+    #[tokio::test]
+    async fn address_limit_is_independent_of_the_ip_limit() {
+        // Two different client IPs, one address: the second request must be
+        // refused even though that IP has never asked before.
+        let (rpc, _) = stub_node(1_000 * 1_000_000_000).await;
+        let app = app(faucet_state(&rpc, 60, 100, 86_400, 1, "", 0));
+        let address = canonical(1);
+
+        let (first, _) = post_faucet(
+            &app,
+            "198.51.100.1:5000",
+            None,
+            json!({ "address": address }),
+        )
+        .await;
+        assert_eq!(first, StatusCode::OK);
+
+        let (second, body) = post_faucet(
+            &app,
+            "198.51.100.2:5000",
+            None,
+            json!({ "address": address }),
+        )
+        .await;
+        assert_eq!(second, StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("address"),
+            "expected the address limiter to reject, got {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ip_limit_is_independent_of_the_address_limit() {
+        // One IP, two addresses: the second request must be refused by the IP
+        // limiter even though the address was never funded.
+        let (rpc, _) = stub_node(1_000 * 1_000_000_000).await;
+        let app = app(faucet_state(&rpc, 60, 1, 86_400, 100, "", 0));
+
+        let (first, _) = post_faucet(
+            &app,
+            "198.51.100.1:5000",
+            None,
+            json!({ "address": canonical(2) }),
+        )
+        .await;
+        assert_eq!(first, StatusCode::OK);
+
+        let (second, body) = post_faucet(
+            &app,
+            "198.51.100.1:5000",
+            None,
+            json!({ "address": canonical(3) }),
+        )
+        .await;
+        assert_eq!(second, StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            body["message"].as_str().unwrap_or_default().contains("IP"),
+            "expected the IP limiter to reject, got {body}"
+        );
+
+        // A different IP with the same address is still within its own budget.
+        let (third, _) = post_faucet(
+            &app,
+            "198.51.100.2:5000",
+            None,
+            json!({ "address": canonical(3) }),
+        )
+        .await;
+        assert_eq!(third, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn forwarded_for_is_honoured_only_from_a_trusted_peer() {
+        let (rpc, _) = stub_node(1_000 * 1_000_000_000).await;
+        // One request per IP bucket (limit 1), many per address.
+        let app = app(faucet_state(&rpc, 60, 1, 86_400, 100, "10.0.0.0/8", 0));
+
+        // Trusted peer: two different forwarded clients get their own buckets.
+        let (a, _) = post_faucet(
+            &app,
+            "10.0.0.1:4000",
+            Some("198.51.100.7"),
+            json!({ "address": canonical(4) }),
+        )
+        .await;
+        assert_eq!(a, StatusCode::OK);
+        let (b, _) = post_faucet(
+            &app,
+            "10.0.0.1:4001",
+            Some("198.51.100.8"),
+            json!({ "address": canonical(5) }),
+        )
+        .await;
+        assert_eq!(b, StatusCode::OK);
+
+        // Untrusted peer: the header is ignored, the socket peer is the bucket.
+        let (c, _) = post_faucet(
+            &app,
+            "203.0.113.9:4002",
+            Some("198.51.100.7"),
+            json!({ "address": canonical(6) }),
+        )
+        .await;
+        assert_eq!(c, StatusCode::OK);
+        let (d, body) = post_faucet(
+            &app,
+            "203.0.113.9:4003",
+            Some("198.51.100.99"),
+            json!({ "address": canonical(7) }),
+        )
+        .await;
+        assert_eq!(d, StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            body["message"].as_str().unwrap_or_default().contains("IP"),
+            "spoofed X-Forwarded-For must not create a new bucket, got {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extra_amount_field_still_dispenses_the_fixed_amount() {
+        let (rpc, dispensed) = stub_node(1_000 * 1_000_000_000).await;
+        let app = app(faucet_state(&rpc, 60, 100, 86_400, 100, "", 0));
+
+        let (status, body) = post_faucet(
+            &app,
+            "198.51.100.1:5000",
+            None,
+            json!({ "address": canonical(8), "amount": 999_000_000_000u64 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["message"].as_str(), Some("Dispensed 10 KVNC"));
+        assert_eq!(*dispensed.lock(), vec![DISPENSE_ATOMS]);
+    }
+
+    #[tokio::test]
+    async fn low_balance_guard_returns_503() {
+        let (rpc, dispensed) = stub_node(0).await;
+        let app = app(faucet_state(
+            &rpc,
+            60,
+            100,
+            86_400,
+            100,
+            "",
+            100 * 1_000_000_000,
+        ));
+
+        let (status, body) = post_faucet(
+            &app,
+            "198.51.100.1:5000",
+            None,
+            json!({ "address": canonical(9) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("low on funds"),
+            "got {body}"
+        );
+        assert!(dispensed.lock().is_empty(), "nothing may be submitted");
+    }
+
+    #[test]
+    fn address_limits_read_their_env_equivalents() {
+        std::env::set_var(ADDRESS_RATE_LIMIT_WINDOW_ENV, "120");
+        std::env::set_var(ADDRESS_MAX_REQUESTS_ENV, "2");
+        let cli = Cli::try_parse_from(["kovanica-faucet", "--chain-id", "2"]).unwrap();
+        std::env::remove_var(ADDRESS_RATE_LIMIT_WINDOW_ENV);
+        std::env::remove_var(ADDRESS_MAX_REQUESTS_ENV);
+
+        assert_eq!(cli.address_rate_limit_window, 120);
+        assert_eq!(cli.address_max_requests, 2);
+        // The IP limiter keeps its own defaults.
+        assert_eq!(cli.rate_limit_window, 3600);
+        assert_eq!(cli.max_requests, 3);
+    }
+
+    #[test]
+    fn shared_bucket_warning_only_for_local_or_private_binds() {
+        for listen in [
+            "127.0.0.1:3000",
+            "0.0.0.0:3000",
+            "10.1.2.3:3000",
+            "[::1]:3000",
+        ] {
+            assert!(listens_on_local_or_private(listen), "{listen}");
+        }
+        for listen in ["203.0.113.5:3000", "[2001:db8::1]:3000"] {
+            assert!(!listens_on_local_or_private(listen), "{listen}");
+        }
     }
 }

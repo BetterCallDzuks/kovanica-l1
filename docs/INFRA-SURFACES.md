@@ -86,6 +86,21 @@ The `/api/ { return 404; }` rule on the explorer vhost is **deliberate**: the ol
 public API service (port 3001) was retired, and the node now exposes JSON-RPC on
 `/rpc` only. Do not "fix" that 404 — it is the intended tombstone.
 
+### The faucet is the only public write path
+
+Every other public write stays behind bearer auth. `POST /api/faucet` reaches the
+web app on `127.0.0.1:3010`, which calls the faucet container on
+`127.0.0.1:3000`; that port is never proxied publicly. The faucet runs only on
+kovanica-testnet (chain ID 2) with a fixed amount, no client-chosen value.
+
+Its two limiters are configured independently
+(`ops/docker/docker-compose.chain2.yml`): 5 requests per hour per client IP and
+1 per 24 h per destination address. Flag/env details are in
+`crates/kovanica-faucet/README.md`. Behind nginx the client IP only survives if
+`KOVANICA_FAUCET_TRUSTED_PROXIES` lists the proxy address the faucet sees as its
+socket peer (the docker bridge gateway); without it every caller shares one IP
+bucket and the faucet logs a startup warning saying so.
+
 Smoke test (all from VPS#1, `curl -sk --resolve <host>:443:127.0.0.1`):
 
 ```
