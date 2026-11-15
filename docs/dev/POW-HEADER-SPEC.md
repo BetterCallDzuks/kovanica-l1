@@ -1,17 +1,17 @@
 # PoW Block Header & Mining Specification (P1–P8)
 
 - **Status:** Implemented (P1–P8, Toni 2026-11-05, ADR 0003, Milestone M8 Ready)
-- **Scope:** Block header primitives, preimage serialization, compact difficulty target conversion, KovanicaHash PoW algorithm, header verification wiring, mining worker, difficulty adjustment algorithm (DAA), P2P anti-DoS network ingress, GHOSTDAG committer with reward minting, and node mining authoring loop for Chain ID 2.
+- **Scope:** Block header primitives, preimage serialization, compact difficulty target conversion, KovanicaHash PoW algorithm, header verification wiring, mining worker, difficulty adjustment algorithm (DAA), P2P anti-DoS network ingress, GHOSTDAG committer with reward minting, and node mining authoring loop for kovanica-testnet (chain ID 2).
 
 ---
 
-## 1. Chain ID 2 Registry Wiring
+## 1. kovanica-testnet (chain ID 2) Registry Wiring
 
-Chain ID 2 is the canonical Hybrid PoW + GHOSTDAG testnet:
+kovanica-testnet (chain ID 2) is the canonical Hybrid PoW + GHOSTDAG testnet:
 - Constant: `CHAIN_ID_HYBRID_TESTNET: u64 = 2` (`= CHAIN_ID_TESTNET`) in `kovanica-params` and `kovanica-types::signing::chain_id`.
 - Network tag: `hybrid-testnet` (`kovanica_params::NETWORK_TAG_HYBRID_TESTNET`).
 - Activation intent: Gated under feature flag `hybrid-pow`. Under hybrid consensus, block authoring uses PoW mining (KovanicaHash) and block ordering uses GHOSTDAG (k=5, 4 s block time) without stake weighting.
-- Address acceptance: Canonical PRO-21 (`kvnc...dag`, 64 characters) only. Chain 2 is a hybrid network, so legacy hex addresses are rejected (`legacy_address_allowed(2) == false`).
+- Address acceptance: Canonical PRO-21 (`kvnc...dag`, 64 characters) only. kovanica-testnet (chain ID 2) is a hybrid network, so legacy hex addresses are rejected (`legacy_address_allowed(2) == false`).
 
 ---
 
@@ -128,26 +128,27 @@ Implemented in `kovanica-consensus`:
 - Target block time: `TARGET_BLOCK_MS = 4000` ms (4 s).
 - Adjustment window: `DAA_WINDOW_BLOCKS = 60` blocks.
 - Max adjustment factor: 4x / 0.25x clamping per window.
-- Ceiling: `MAX_TARGET_BITS = 0x1f00_ffff`.
-- Floor: `MIN_TARGET_BITS = 0x0101_0000`.
+- Bounds per chain via `DaaConfig::for_chain`:
+  - kovanica-mainnet (chain ID 1): easiest target `MAX_TARGET_BITS = 0x1f00_ffff`, hardest target `MIN_TARGET_BITS = 0x0101_0000`.
+  - kovanica-testnet (chain ID 2) and kovanica-devnet (chain ID 3): easiest target `DAA_MAX_TARGET_BITS_TESTNET` / `DAA_MAX_TARGET_BITS_DEVNET = 0x1f7f_ffff`, hardest target `DAA_MIN_TARGET_BITS_TESTNET` / `DAA_MIN_TARGET_BITS_DEVNET = 0x1e00_ffff`.
 - Math helper: `mul_div_u256(val, num, den)` provides exact 320-bit intermediate multi-limb arithmetic.
 
 ### Consensus Derivation & Admission Hardening Rules
 1. **Ancestry & Window Rules:**
-   - For every block $B$ on Chain 2 (`TESTNET` / `HYBRID_TESTNET`), the required DAA target difficulty is derived strictly from its declared parent DAG past cone ($B.\text{parents}$).
+   - For every block $B$ on kovanica-testnet (chain ID 2) (`TESTNET` / `HYBRID_TESTNET`), the required DAA target difficulty is derived strictly from its declared parent DAG past cone ($B.\text{parents}$).
    - Traversal evaluates up to $N = 60$ ancestor PoW blocks (`DAA_WINDOW_BLOCKS`).
    - Ancestors are traversed deterministically from $B.\text{parents}$ back up to 60 ancestor blocks.
 2. **Ordering Rules:**
    - Ancestor timestamps are collected deterministically and sorted in strictly ascending chronological order ($t_0 \le t_1 \le \dots \le t_{k-1}$).
    - Because $B$'s ancestry graph is immutable and uniquely identified by block references within $B$'s signed header, the resulting sorted timestamp sequence is completely identical across all nodes regardless of local block arrival order or current node DAG tips.
 3. **Bootstrap Rules:**
-   - For round 0 (canonical genesis, $B.\text{parents} = \emptyset$), the required target is `MAX_TARGET_BITS` (`0x1f00_ffff`). The DAA intentionally ignores process-environment overrides (e.g. `KOVANICA_TEST_TARGET_BITS`) so the bootstrap target is deterministic across all nodes.
-   - If the ancestry window contains fewer than 2 timestamps ($k < 2$, e.g. round 1 blocks whose only parent is round 0 genesis with no PoW header), the target defaults to `current_target_bits` which is `MAX_TARGET_BITS`.
+   - For round 0 (canonical genesis, $B.\text{parents} = \emptyset$), the required target is `config.max_target_bits` (for kovanica-mainnet (chain ID 1): easiest target `MAX_TARGET_BITS = 0x1f00_ffff`; for kovanica-testnet (chain ID 2) and kovanica-devnet (chain ID 3): easiest target `0x1f7f_ffff`). The DAA intentionally ignores process-environment overrides (e.g. `KOVANICA_TEST_TARGET_BITS`) so the bootstrap target is deterministic across all nodes.
+   - If the ancestry window contains fewer than 2 timestamps ($k < 2$, e.g. round 1 blocks whose only parent is round 0 genesis with no PoW header), the target defaults to `current_target_bits` which is `config.max_target_bits` (easiest target: `0x1f00_ffff` on kovanica-mainnet (chain ID 1), `0x1f7f_ffff` on kovanica-testnet (chain ID 2) and kovanica-devnet (chain ID 3)).
    - For $k \ge 2$, `current_target_bits` is derived from the primary parent ($B.\text{parents}[0]$).
    - The new target is scaled by:
      $$\text{new\_target} = \text{current\_target} \times \frac{\text{clamped\_actual\_duration}}{\text{target\_duration}}$$
      where $\text{actual\_duration} = \max(1, t_{k-1} - t_0)$, $\text{target\_duration} = (k - 1) \times 4000\text{ ms}$, clamped to $[0.25, 4.0] \times \text{target\_duration}$.
-     The target is clamped to $[\text{MIN\_TARGET\_BITS}, \text{MAX\_TARGET\_BITS}]$.
+     The target is clamped to $[\text{config.min_target_bits}, \text{config.max_target_bits}]$ (hardest target to easiest target).
 4. **Missing-History & Orphan Rules:**
    - If any parent in $B.\text{parents}$ is not present in accepted consensus storage (`dag_store`), block $B$ cannot be admitted into accepted consensus state, cannot be placed in `GhostdagCommitter`, and cannot execute or mint emission rewards.
    - Block $B$ is retained in the bounded `OrphanBuffer` (bounded by `max_orphans = 1024`, `max_bytes = 32 MiB`, `max_per_peer = 256`, `ttl = 60s`, `max_in_flight = 256`).
@@ -166,11 +167,11 @@ Implemented in `kovanica-consensus`:
 ## 7. P2P Network Ingress & PoW Anti-DoS Boundary (P5)
 
 Implemented in `crates/kovanica-network`:
-- **Validation Pipeline:** In `validate_block` / `verify_block`, incoming blocks on Chain 2 (`TESTNET` / `HYBRID_TESTNET`) are validated against PoW requirements before being accepted or forwarded:
+- **Validation Pipeline:** In `validate_block` / `verify_block`, incoming blocks on kovanica-testnet (chain ID 2) (`TESTNET` / `HYBRID_TESTNET`) are validated against PoW requirements before being accepted or forwarded:
   1. Merkle root integrity and block digest verification.
   2. Header extraction via `StatementBlock::extract_pow_header(chain_id)`. If missing or malformed, the block is rejected with `Rejection::MissingPow` or `Rejection::BadPow`.
   3. Header PoW verification via `header.verify_pow()` (enforcing valid `pow_hash`, target requirement check against `target_bits`, and timestamp sanity).
-  4. Skip committee authority checks: Chain 2 operates without validator signatures or committee authority lookups (NO stake in consensus path per ADR 0003).
+  4. Skip committee authority checks: kovanica-testnet (chain ID 2) operates without validator signatures or committee authority lookups (NO stake in consensus path per ADR 0003).
 - **Anti-DoS Protection:**
   - Blocks failing PoW verification are rejected immediately at the network ingress boundary.
   - Invalid blocks are neither propagated to gossipsub peers nor stored in the DAG memory/disk stores.
@@ -194,7 +195,7 @@ Implemented in `crates/kovanica-consensus` and `crates/kovanica-execution`:
   - Stake Isolation: Consensus operates completely free of stake weighting, vote quorums, committee signatures, or VRF tickets.
 - **Mining Subsidy & Reward Minting:**
   - In `kovanica-execution::execute_committed_subdag_inner`:
-    - Chains 1 and 2 (`is_hybrid`) are detected as hybrid networks and bypass epoch committee lookups.
+    - kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) (`is_hybrid`) are detected as hybrid networks and bypass epoch committee lookups.
     - Each committed block in the linearized sequence mints `kovanica_params::INITIAL_BLOCK_REWARD` (2.5 KVNC = 2,500,000,000 atoms) to the block author address derived from `header.author`.
     - No validator commission, delegator cuts, or light-client escrow deductions (`escrow_part = 0`).
     - Total mining subsidy is tracked against the 82,000,000 KVNC mining budget (`NoStake82M`).
