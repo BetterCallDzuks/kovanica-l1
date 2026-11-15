@@ -8451,7 +8451,10 @@ mod tests {
             assert_eq!(sender_acct.balance, initial_balance - 1000 - fee);
             // With an explicit payout address, miner receives 0 fee share (100% burned, no split)
             let miner_acct = storage.state().get_account(&read, &miner).unwrap();
-            assert_eq!(miner_acct.balance, 0, "miner must receive 0 fee share on local");
+            assert_eq!(
+                miner_acct.balance, 0,
+                "miner must receive 0 fee share on local"
+            );
             let fee_state = storage
                 .state()
                 .load_fee_accounting_state(&read)
