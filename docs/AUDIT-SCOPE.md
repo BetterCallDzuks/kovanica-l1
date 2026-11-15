@@ -3,7 +3,7 @@
 **Version:** 2.0  
 **Date:** 2026-11-09  
 **Codebase:** `kovanica` (Hybrid PoW + GHOSTDAG, account-based, Wasmi execution)  
-**Repository:** `https://github.com/KovanicaDAG/kovanica`  
+**Repository:** `https://github.com/KovanicaDAG/kovanica-l1`  
 **License:** GPL-3.0-or-later  
 **Native Coin:** **KVNC** (9 decimals; `ONE_KVNC = 10^9`)  
 
@@ -169,7 +169,7 @@ $$\text{TOTAL\_SUPPLY} = \text{PREMINE } (0.2\text{M}) + \text{TREASURY } (8\tex
 
 ## 6. Repository & Build Pinning
 
-- **Repository:** `https://github.com/KovanicaDAG/kovanica`
+- **Repository:** `https://github.com/KovanicaDAG/kovanica-l1`
 - **Branch:** `main`
 - **Build Instructions:**
   ```bash

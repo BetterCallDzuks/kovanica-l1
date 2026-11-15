@@ -1,6 +1,6 @@
 [Unit]
 Description=Kovanica Node Daemon
-Documentation=https://github.com/KovanicaDAG/kovanica
+Documentation=https://github.com/KovanicaDAG/kovanica-l1
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=300

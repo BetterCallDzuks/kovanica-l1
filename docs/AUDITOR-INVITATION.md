@@ -3,7 +3,7 @@
 Status: **Interna verifikacija i specifikacija završena** (`docs/AUDIT-SCOPE.md`, `docs/AUDIT-CHECKLIST.md`); eksterni audit **nije izvršen** — obavezan prije mainnet $T_0$ lansiranja.
 
 Identitet projekta: **kovanica** (nezavisni Rust Layer-1, od-scratch; NE kovanica-protocol, NE stariji Kovanica repo).
-Repozitorij: `https://github.com/KovanicaDAG/kovanica` (`main` branch).
+Repozitorij: `https://github.com/KovanicaDAG/kovanica-l1` (`main` branch).
 Datum poziva: 2026-11-09.
 
 ---
@@ -52,7 +52,7 @@ Datum poziva: 2026-11-09.
 
 ## 4. Kontakt i koordinacija
 
-- Repozitorij: `https://github.com/KovanicaDAG/kovanica`
+- Repozitorij: `https://github.com/KovanicaDAG/kovanica-l1`
 - Dokumentacija opsega revizije: [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md)
 - Kontrolna lista: [`docs/AUDIT-CHECKLIST.md`](AUDIT-CHECKLIST.md)
 - Eksterni auditor mora biti neovisan i potpisati vlastiti izvještaj.
