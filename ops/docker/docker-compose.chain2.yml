@@ -162,11 +162,21 @@ services:
       - --dispense-kovanica
       - "10"
       - --rate-limit-window
-      - "60"
+      - "3600"
       - --max-requests
+      - "5"
+      - --address-rate-limit-window
+      - "86400"
+      - --address-max-requests
+      - "1"
+      - --min-balance-ku
       - "100"
     environment:
-      KOVANICA_FAUCET_PASSPHRASE: "faucet-testnet-chain2"
+      # Host env file only: never a literal in this file.
+      KOVANICA_FAUCET_PASSPHRASE: "${KOVANICA_FAUCET_PASSPHRASE:-}"
+      # Comma-separated IPs/CIDRs of the reverse proxies allowed to set
+      # X-Forwarded-For. Empty means every caller keys on the proxy's IP.
+      KOVANICA_FAUCET_TRUSTED_PROXIES: "${KOVANICA_FAUCET_TRUSTED_PROXIES:-}"
       # Same token the nodes accept, so the faucet keeps working with auth on.
       KOVANICA_RPC_WRITE_TOKENS: "${KOVANICA_RPC_WRITE_TOKENS:-}"
       RUST_LOG: "info"
