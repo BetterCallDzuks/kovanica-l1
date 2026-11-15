@@ -12400,7 +12400,7 @@ mod b1_epoch_restart_repro {
         let mut worker = kovanica_consensus::mining::MiningWorker::new();
 
         // 1. Easier self-declared target (0x207fffff vs required MAX_TARGET_BITS 0x1f00ffff)
-        let header_easy = kovanica_types::BlockHeader::new(
+        let header_easy = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             1,
             0,
@@ -12409,6 +12409,7 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             0x207fffff,
             0,
+            Address([0x11; 32]),
         );
         let mined_easy = worker.mine_header(header_easy, 10_000).unwrap();
         let block_easy = mined_easy.to_statement_block(vec![]);
@@ -12426,7 +12427,7 @@ mod b1_epoch_restart_repro {
         );
 
         // 2. Valid target (MAX_TARGET_BITS = 0x1f00ffff)
-        let header_valid = kovanica_types::BlockHeader::new(
+        let header_valid = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             1,
             0,
@@ -12435,6 +12436,7 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             kovanica_params::MAX_TARGET_BITS,
             0,
+            Address([0x11; 32]),
         );
         let mined_valid = worker.mine_header(header_valid, 500_000).unwrap();
         let block_valid = mined_valid.to_statement_block(vec![]);
@@ -12471,7 +12473,7 @@ mod b1_epoch_restart_repro {
         let mut worker = kovanica_consensus::mining::MiningWorker::new();
 
         // Round 1 parent block
-        let header1 = kovanica_types::BlockHeader::new(
+        let header1 = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             1,
             0,
@@ -12480,13 +12482,14 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             kovanica_params::MAX_TARGET_BITS,
             0,
+            Address([0x11; 32]),
         );
         let mined1 = worker.mine_header(header1, 500_000).unwrap();
         let block1 = mined1.to_statement_block(vec![]);
         let digest1 = block1.digest;
 
         // Round 2 child block referencing block1
-        let header2 = kovanica_types::BlockHeader::new(
+        let header2 = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             2,
             1,
@@ -12495,6 +12498,7 @@ mod b1_epoch_restart_repro {
             1_700_000_004_000,
             kovanica_params::MAX_TARGET_BITS,
             0,
+            Address([0x22; 32]),
         );
         let mined2 = worker.mine_header(header2, 500_000).unwrap();
         let block2 = mined2.to_statement_block(vec![]);
@@ -12570,7 +12574,7 @@ mod b1_epoch_restart_repro {
         };
 
         // Malformed: duplicate parents
-        let header_dup = kovanica_types::BlockHeader::new(
+        let header_dup = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             6,
             0,
@@ -12579,6 +12583,7 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             0x207fffff,
             0,
+            Address([0x11; 32]),
         );
         let mined_dup = worker.mine_header(header_dup, 10_000).unwrap();
         let block_dup = mined_dup.to_statement_block(vec![]);
@@ -12592,7 +12597,7 @@ mod b1_epoch_restart_repro {
         );
 
         // Malformed: parent round not strictly less than block round
-        let header_round = kovanica_types::BlockHeader::new(
+        let header_round = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             4,
             0,
@@ -12601,6 +12606,7 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             0x207fffff,
             0,
+            Address([0x11; 32]),
         );
         let mined_round = worker.mine_header(header_round, 10_000).unwrap();
         let block_round = mined_round.to_statement_block(vec![]);
@@ -12774,7 +12780,7 @@ mod b1_epoch_restart_repro {
         exec.emission_policy = Some(EmissionPolicy::NoStake82M);
 
         let mut worker = kovanica_consensus::mining::MiningWorker::new();
-        let header = kovanica_types::BlockHeader::new(
+        let header = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             1,
             0,
@@ -12783,6 +12789,7 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             0x207fffff,
             0,
+            Address([0x11; 32]),
         );
         let mined = worker.mine_header(header, 10_000).unwrap();
         let block = mined.to_statement_block(vec![]);
@@ -12842,6 +12849,101 @@ mod b1_epoch_restart_repro {
             res3.circulating_supply, initial_supply,
             "circulating supply after restart must match original"
         );
+    }
+
+    #[test]
+    fn test_internal_node_miner_block_verifies_pow_and_rewards_bootstrap_address() {
+        use kovanica_consensus::mining::MiningWorker;
+        use kovanica_types::signing::chain_id;
+        use kovanica_types::EmissionPolicy;
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().join("state.redb")).unwrap();
+        {
+            let w_txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&w_txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            w_txn.commit().unwrap();
+        }
+
+        // 1. Setup mock genesis bootstrap addresses (0, 1, 2)
+        let bootstrap_addr0 = Address([0x10; 32]);
+        let bootstrap_addr1 = Address([0x20; 32]);
+        let bootstrap_addr2 = Address([0x30; 32]);
+        let bootstrap_addresses = vec![bootstrap_addr0, bootstrap_addr1, bootstrap_addr2];
+
+        let config = NodeConfig {
+            chain_id: chain_id::HYBRID_TESTNET,
+            ..NodeConfig::default()
+        };
+        let fallback = Address([0xfe; 32]);
+
+        // 2. Author 1 resolves to bootstrap_addresses[1]
+        let author_index: u16 = 1;
+        let payout_address =
+            resolve_internal_mining_address(&config, author_index, &bootstrap_addresses, &fallback);
+        assert_eq!(payout_address, bootstrap_addr1);
+
+        // 3. Internal node miner builds header with that payout address
+        let header = kovanica_types::BlockHeader::new_with_payout(
+            chain_id::HYBRID_TESTNET,
+            1,
+            author_index,
+            vec![],
+            kovanica_types::Hash::zero(),
+            1_700_000_000_000,
+            0x207fffff,
+            0,
+            payout_address,
+        );
+
+        // 4. Mine block
+        let mut worker = MiningWorker::new();
+        let mined = worker
+            .mine_header(header, 10_000)
+            .expect("mining must succeed with easy target");
+
+        // 5. Assert verify_pow() passes and payout address is committed
+        assert!(mined.verify_pow().is_ok());
+        assert_eq!(mined.payout, Some(bootstrap_addr1));
+
+        // 6. Execute committed subdag and verify reward went to bootstrap address 1
+        let block = mined.to_statement_block(vec![]);
+        let subdag = kovanica_types::CommittedSubDag {
+            leader: block.clone(),
+            blocks: vec![block],
+            leader_round: 1,
+            leader_author: author_index,
+            non_blue: vec![],
+        };
+
+        let mut exec = ExecutionContext::with_signing_context(kovanica_types::SigningContext::new(
+            chain_id::HYBRID_TESTNET,
+        ));
+        exec.emission_policy = Some(EmissionPolicy::NoStake82M);
+        let res = exec.execute_committed_subdag(&subdag, &storage).unwrap();
+        assert!(res.reward.is_some());
+
+        let r_txn = storage.begin_read().unwrap();
+        let balance = storage
+            .state()
+            .get_account_or_default(&r_txn, &bootstrap_addr1)
+            .unwrap()
+            .balance;
+        assert_eq!(
+            balance,
+            kovanica_params::INITIAL_BLOCK_REWARD,
+            "mined block reward must be credited to matching bootstrap address"
+        );
+        // Ensure other bootstrap addresses received 0
+        let balance0 = storage
+            .state()
+            .get_account_or_default(&r_txn, &bootstrap_addr0)
+            .unwrap()
+            .balance;
+        assert_eq!(balance0, 0);
     }
 
     fn sample_test_committee() -> CommitteeInfo {
@@ -12955,7 +13057,7 @@ mod b1_epoch_restart_repro {
 
         // 1. Mine and submit round 0 block (genesis)
         let mut worker = MiningWorker::new();
-        let header0 = kovanica_types::BlockHeader::new(
+        let header0 = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             0,
             0,
@@ -12964,6 +13066,7 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             kovanica_params::MAX_TARGET_BITS,
             0,
+            Address([0x11; 32]),
         );
         let mined0 = worker.mine_header(header0, 500_000).unwrap();
         let block0 = mined0.to_statement_block(vec![]);
@@ -12975,7 +13078,7 @@ mod b1_epoch_restart_repro {
         assert_eq!(res0["accepted"], true);
 
         // 2. Mine and submit round 1 block referencing round 0
-        let header1 = kovanica_types::BlockHeader::new(
+        let header1 = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             1,
             0,
@@ -12984,6 +13087,7 @@ mod b1_epoch_restart_repro {
             1_700_000_004_000,
             kovanica_params::MAX_TARGET_BITS,
             0,
+            Address([0x11; 32]),
         );
         let mined1 = worker.mine_header(header1, 500_000).unwrap();
         let block1 = mined1.to_statement_block(vec![]);
@@ -13038,7 +13142,7 @@ mod b1_epoch_restart_repro {
         );
         let author_account = state_storage
             .state()
-            .get_account_or_default(&r_txn, &Address::default())
+            .get_account_or_default(&r_txn, &Address([0x11; 32]))
             .unwrap();
         assert_eq!(
             author_account.balance, 5_000_000_000,
@@ -13087,7 +13191,7 @@ mod b1_epoch_restart_repro {
         );
         let author_account2 = state_storage
             .state()
-            .get_account_or_default(&r_txn2, &Address::default())
+            .get_account_or_default(&r_txn2, &Address([0x11; 32]))
             .unwrap();
         assert_eq!(
             author_account2.balance, 5_000_000_000,
@@ -13127,7 +13231,7 @@ mod b1_epoch_restart_repro {
             exec.emission_policy = Some(EmissionPolicy::NoStake82M);
 
             let mut worker = MiningWorker::new();
-            let header = kovanica_types::BlockHeader::new(
+            let header = kovanica_types::BlockHeader::new_with_payout(
                 kovanica_types::signing::chain_id::HYBRID_TESTNET,
                 1,
                 0,
@@ -13136,6 +13240,7 @@ mod b1_epoch_restart_repro {
                 1_700_000_000_000,
                 kovanica_params::MAX_TARGET_BITS,
                 0,
+                Address([0x11; 32]),
             );
             let mined = worker.mine_header(header, 500_000).unwrap();
             let block = mined.to_statement_block(vec![]);
@@ -13272,7 +13377,7 @@ mod b1_epoch_restart_repro {
         let mut worker = MiningWorker::new();
 
         // 1. Invalid target: easier target bits (0x2100ffff vs required 0x207fffff)
-        let header_bad_target = kovanica_types::BlockHeader::new(
+        let header_bad_target = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             1,
             0,
@@ -13281,6 +13386,7 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             0x2100ffff,
             0,
+            Address([0x11; 32]),
         );
         let mined_bad_target = worker.mine_header(header_bad_target, 10_000).unwrap();
         let err_target = kovanica_rpc::handle_submit_work(
@@ -13305,7 +13411,7 @@ mod b1_epoch_restart_repro {
                 digest: Hash([i as u8 + 1; 32]),
             })
             .collect();
-        let header_malformed = kovanica_types::BlockHeader::new(
+        let header_malformed = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             2,
             0,
@@ -13314,6 +13420,7 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             0x207fffff,
             0,
+            Address([0x11; 32]),
         );
         let mined_malformed = worker.mine_header(header_malformed, 10_000).unwrap();
         let err_malformed = kovanica_rpc::handle_submit_work(
@@ -13333,7 +13440,7 @@ mod b1_epoch_restart_repro {
             round: 1,
             digest: Hash([0x99; 32]),
         };
-        let header_unknown_parent = kovanica_types::BlockHeader::new(
+        let header_unknown_parent = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             2,
             0,
@@ -13342,6 +13449,7 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             0x207fffff,
             0,
+            Address([0x11; 32]),
         );
         let mined_unknown = worker.mine_header(header_unknown_parent, 10_000).unwrap();
         let unknown_digest = mined_unknown.to_statement_block(vec![]).digest;
@@ -13387,7 +13495,7 @@ mod b1_epoch_restart_repro {
         ));
 
         let mut worker = MiningWorker::new();
-        let header = kovanica_types::BlockHeader::new(
+        let header = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             0,
             0,
@@ -13396,6 +13504,7 @@ mod b1_epoch_restart_repro {
             1_700_000_000_000,
             0x207fffff,
             0,
+            Address([0x11; 32]),
         );
         let mined = worker.mine_header(header, 10_000).unwrap();
 
@@ -13489,7 +13598,7 @@ mod b1_epoch_restart_repro {
             .as_millis() as u64;
 
         // 1. Far-future gossip rejection (exceeding MAX_FUTURE_TIMESTAMP_DRIFT_MS 30_000)
-        let header_far_future = kovanica_types::BlockHeader::new(
+        let header_far_future = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             1,
             0,
@@ -13498,6 +13607,7 @@ mod b1_epoch_restart_repro {
             now_ms + 60_000, // 60s in future > 30s limit
             0x207fffff,
             0,
+            Address([0x11; 32]),
         );
         let mined_far_future = worker.mine_header(header_far_future, 10_000).unwrap();
         let block_far_future = mined_far_future.to_statement_block(vec![]);
@@ -13523,7 +13633,7 @@ mod b1_epoch_restart_repro {
         ));
 
         // 2. Valid current block acceptance (timestamp = now_ms)
-        let header_valid = kovanica_types::BlockHeader::new(
+        let header_valid = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             0,
             0,
@@ -13532,6 +13642,7 @@ mod b1_epoch_restart_repro {
             now_ms,
             kovanica_params::MAX_TARGET_BITS,
             0,
+            Address([0x11; 32]),
         );
         let mined_valid = worker.mine_header(header_valid, 500_000).unwrap();
         let block_valid = mined_valid.to_statement_block(vec![]);
@@ -13556,7 +13667,7 @@ mod b1_epoch_restart_repro {
         assert!(dag_store.has_block(&valid_digest).unwrap());
 
         // 3. Unknown-parent revalidation: parent arrives later and releases orphan
-        let header_child = kovanica_types::BlockHeader::new(
+        let header_child = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             2,
             0,
@@ -13569,6 +13680,7 @@ mod b1_epoch_restart_repro {
             now_ms + 1000,
             0x207fffff,
             0,
+            Address([0x11; 32]),
         );
         let mined_child = worker.mine_header(header_child, 10_000).unwrap();
         let block_child = mined_child.to_statement_block(vec![]);
@@ -13583,7 +13695,7 @@ mod b1_epoch_restart_repro {
         assert!(orphans.contains(&child_digest));
 
         // Now parent arrives (round 1 referencing round 0 valid_digest)
-        let header_parent = kovanica_types::BlockHeader::new(
+        let header_parent = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             1,
             0,
@@ -13596,6 +13708,7 @@ mod b1_epoch_restart_repro {
             now_ms + 500,
             kovanica_params::MAX_TARGET_BITS,
             0,
+            Address([0x11; 32]),
         );
         let mined_parent = worker.mine_header(header_parent, 500_000).unwrap();
         // Set parent digest to match child's reference
@@ -13611,7 +13724,7 @@ mod b1_epoch_restart_repro {
         assert!(dag_store.has_block(&parent_digest).unwrap());
 
         // 4. Historical replay without clock: past block must not expire
-        let historical_header = kovanica_types::BlockHeader::new(
+        let historical_header = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             0,
             0,
@@ -13620,6 +13733,7 @@ mod b1_epoch_restart_repro {
             1_000_000, // very old timestamp
             0x207fffff,
             0,
+            Address([0x11; 32]),
         );
         let mined_historical = worker.mine_header(historical_header, 10_000).unwrap();
         let block_historical = mined_historical.to_statement_block(vec![]);

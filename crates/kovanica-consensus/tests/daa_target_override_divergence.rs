@@ -18,6 +18,7 @@ use kovanica_params::{CHAIN_ID_HYBRID_TESTNET, MAX_TARGET_BITS};
 use kovanica_storage::Storage;
 use kovanica_types::block::{BlockHeader, BlockReference, StatementBlock};
 use kovanica_types::hash::Hash;
+use kovanica_types::Address;
 
 const TEST_OVERRIDE_EASY: u32 = 0x207f_ffff; // Easy target used in tests / devnet
 const PRODUCTION_DEFAULT: u32 = MAX_TARGET_BITS; // Canonical consensus ceiling (0x1f00ffff)
@@ -30,7 +31,7 @@ fn make_mined_block(
     timestamp: u64,
     target_bits: u32,
 ) -> StatementBlock {
-    let header = BlockHeader::new(
+    let header = BlockHeader::new_with_payout(
         CHAIN_ID_HYBRID_TESTNET,
         round,
         author,
@@ -39,6 +40,7 @@ fn make_mined_block(
         timestamp,
         target_bits,
         0,
+        Address([0x42; 32]),
     );
     let mined_header = worker
         .mine_header(header, 1_000)
