@@ -19,6 +19,7 @@ use tracing::warn;
 use kovanica_network::LocalHeaderHash;
 
 /// Header stored for a commit, plus the seal to gossip when we signed one.
+#[derive(Debug, Clone)]
 pub struct LocalSeal {
     /// Header written to the state database.
     pub header: LeaderHeader,
@@ -101,6 +102,9 @@ impl LocalHeaderHash for StateHeaderIndex {
     }
 }
 
+/// Canonical committee hash for hybrid networks where consensus does not use a proof-of-stake committee.
+pub const HYBRID_NO_COMMITTEE_HASH: Hash = Hash([0u8; 32]);
+
 /// Save the header for this commit and sign it when we are a validator.
 ///
 /// Returns the stored header and, for a validator, the announcement to
@@ -117,14 +121,14 @@ pub fn publish_local_seal(
     // to avoid restart mismatch. Use the ONE shared round→epoch unit.
     let seal_epoch = kovanica_types::epoch_for_round(subdag.leader_round);
 
-    // Freeze the seal committee for `seal_epoch`: the first seal of an epoch
-    // pins the committee snapshot, and every later seal in that epoch hashes
-    // the SAME snapshot (option (a), decision recorded in TASKLIST). Without
-    // this a mid-epoch join/evict/unbond would change the hashed set while the
-    // RPC committee still served the epoch-boundary snapshot, so the sealed
-    // header's `committee_hash` and the light-client recomputation would
-    // disagree.
-    let committee_hash = freeze_epoch_committee_hash(storage, seal_epoch, subdag.leader_round)?;
+    // On hybrid networks (kovanica-mainnet and kovanica-testnet), consensus operates
+    // under PoW and GHOSTDAG without proof-of-stake validators. Skip the stake committee
+    // snapshot and use HYBRID_NO_COMMITTEE_HASH. Non-hybrid chains freeze the committee.
+    let committee_hash = if kovanica_types::signing::chain_id::is_hybrid(ctx.chain_id) {
+        HYBRID_NO_COMMITTEE_HASH
+    } else {
+        freeze_epoch_committee_hash(storage, seal_epoch, subdag.leader_round)?
+    };
 
     let parent_leader_digest = parent_digest(storage, committed_height)?;
     let header = kovanica_types::leader_header(
@@ -142,22 +146,28 @@ pub fn publish_local_seal(
     storage
         .state()
         .save_executed_tx_hashes(&txn, committed_height, &hashes)?;
-    let gossip = match ctx.signer.as_ref() {
-        Some((index, key)) if *index != u16::MAX => {
-            let signature = kovanica_crypto::sign(key, &header.seal_message(ctx.chain_id));
-            let seal = CommitSeal {
-                authority_index: *index,
-                signature,
-            };
-            storage
-                .state()
-                .save_commit_seal(&txn, committed_height, &seal)?;
-            Some(SealAnnouncement {
-                header: header.clone(),
-                seal,
-            })
+
+    // On hybrid chains, produce no seal signature or gossip announcement.
+    let gossip = if kovanica_types::signing::chain_id::is_hybrid(ctx.chain_id) {
+        None
+    } else {
+        match ctx.signer.as_ref() {
+            Some((index, key)) if *index != u16::MAX => {
+                let signature = kovanica_crypto::sign(key, &header.seal_message(ctx.chain_id));
+                let seal = CommitSeal {
+                    authority_index: *index,
+                    signature,
+                };
+                storage
+                    .state()
+                    .save_commit_seal(&txn, committed_height, &seal)?;
+                Some(SealAnnouncement {
+                    header: header.clone(),
+                    seal,
+                })
+            }
+            _ => None,
         }
-        _ => None,
     };
     txn.commit()?;
     Ok(LocalSeal { header, gossip })
@@ -448,5 +458,90 @@ mod tests {
             .get_leader_header(&read, 0)
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn hybrid_publish_local_seal_stores_headers_with_parent_linkage() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::new(dir.path().join("hybrid_state.redb")).unwrap();
+        // Staking state is completely empty (no validators)
+        let ctx = SealContext {
+            chain_id: kovanica_params::CHAIN_ID_TESTNET, // 2 (hybrid)
+            signer: None,
+            mysticghost: false,
+        };
+
+        let first = subdag(3);
+        let local1 = publish_local_seal(&storage, &ctx, &first, 0, Hash::new([1u8])).unwrap();
+        assert!(
+            local1.gossip.is_none(),
+            "hybrid produces no seal signature or gossip"
+        );
+        assert_eq!(local1.header.committed_height, 0);
+        assert_eq!(local1.header.parent_leader_digest, Hash::zero());
+        assert_eq!(local1.header.committee_hash, HYBRID_NO_COMMITTEE_HASH);
+
+        let second = subdag(6);
+        let local2 = publish_local_seal(&storage, &ctx, &second, 1, Hash::new([2u8])).unwrap();
+        assert!(local2.gossip.is_none());
+        assert_eq!(local2.header.committed_height, 1);
+        assert_eq!(local2.header.parent_leader_digest, first.leader.digest);
+        assert_eq!(local2.header.committee_hash, HYBRID_NO_COMMITTEE_HASH);
+
+        let read = storage.begin_read().unwrap();
+        // Both leader headers stored
+        let h0 = storage
+            .state()
+            .get_leader_header(&read, 0)
+            .unwrap()
+            .unwrap();
+        let h1 = storage
+            .state()
+            .get_leader_header(&read, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(h0.leader_digest, first.leader.digest);
+        assert_eq!(h1.leader_digest, second.leader.digest);
+        assert_eq!(h1.parent_leader_digest, h0.leader_digest);
+
+        // Latest leader header returns latest (h1)
+        let latest = storage
+            .state()
+            .get_latest_leader_header(&read)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.committed_height, 1);
+        assert_eq!(latest.leader_digest, second.leader.digest);
+
+        // certified_leader_round returns Ok(None) without error
+        let cert_round =
+            certified_leader_round(&storage, kovanica_params::CHAIN_ID_TESTNET).unwrap();
+        assert_eq!(cert_round, None);
+    }
+
+    #[test]
+    fn non_hybrid_with_empty_committee_still_errors() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::new(dir.path().join("non_hybrid_empty.redb")).unwrap();
+        let mut staking = kovanica_staking::StakingState::new();
+        staking.init_treasury(kovanica_types::Address([0xcc; 32]));
+        let txn = storage.begin_write().unwrap();
+        storage.state().save_staking_state(&txn, &staking).unwrap();
+        txn.commit().unwrap();
+
+        let ctx = SealContext {
+            chain_id: 1337, // non-hybrid local
+            signer: None,
+            mysticghost: false,
+        };
+
+        let first = subdag(3);
+        let err = publish_local_seal(&storage, &ctx, &first, 0, Hash::new([1u8]));
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("legacy committee cannot be empty"),
+            "expected 'legacy committee cannot be empty' but got '{msg}'"
+        );
     }
 }
