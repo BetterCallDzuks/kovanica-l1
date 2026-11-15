@@ -439,9 +439,11 @@ impl ExecutionContext {
         // identical blocks (it just records a failed receipt).
         let slashing_active = kovanica_types::slashing_active_from(subdag.leader_round);
 
+        let mut block_debited_fees: Vec<u64> = Vec::with_capacity(subdag.blocks.len());
         for block in &subdag.blocks {
+            let mut block_fee = 0u64;
             for tx in &block.transactions {
-                let receipt = self.execute_transaction(
+                let (receipt, fee_charged) = self.execute_transaction(
                     tx,
                     storage,
                     &mut txn,
@@ -455,7 +457,9 @@ impl ExecutionContext {
                 )?;
                 receipts.push(receipt);
                 txs_applied += 1;
+                block_fee = block_fee.saturating_add(fee_charged);
             }
+            block_debited_fees.push(block_fee);
         }
 
         // Load the emission policy: first from storage, else from self.emission_policy, else default Legacy81M.
@@ -476,31 +480,41 @@ impl ExecutionContext {
                         .state()
                         .load_mining_reward_state_write(&txn)?
                         .unwrap_or(self.mining_reward_state);
+                    let mut fee_state = storage
+                        .state()
+                        .load_fee_accounting_state_write(&txn)?
+                        .unwrap_or_default();
 
                     let mut total_minted = 0u64;
                     let mut miner_recipient = Address::default();
 
-                    // Collect unique eligible blocks in canonical consensus order:
+                    // Collect unique eligible blocks in canonical consensus order paired with debited fees:
                     // blocks in subdag.blocks, followed by subdag.leader if not already in subdag.blocks.
-                    let mut eligible_blocks = Vec::new();
-                    for block in &subdag.blocks {
-                        eligible_blocks.push(block);
+                    let mut eligible_blocks: Vec<(&kovanica_types::block::StatementBlock, u64)> =
+                        Vec::new();
+                    for (i, block) in subdag.blocks.iter().enumerate() {
+                        eligible_blocks.push((block, block_debited_fees[i]));
                     }
                     if !subdag
                         .blocks
                         .iter()
                         .any(|b| b.digest == subdag.leader.digest)
                     {
-                        eligible_blocks.push(&subdag.leader);
+                        eligible_blocks.push((&subdag.leader, 0u64));
                     }
 
-                    for block in eligible_blocks {
-                        let miner = match resolve_miner_payout_for_block(block, &candidate_staking)
-                        {
+                    for (block, fee_total) in eligible_blocks {
+                        let miner_opt = resolve_miner_payout_for_block(block, &candidate_staking);
+                        let miner = match miner_opt {
                             Some(addr) => addr,
                             None => {
                                 // Under hybrid PoW without staking, blocks without an explicit payout
                                 // address receive no reward. No synthetic 2-byte address path.
+                                // If the block has debited fees, burn 100%.
+                                if fee_total > 0 {
+                                    fee_state.cumulative_fees_burned =
+                                        fee_state.cumulative_fees_burned.saturating_add(fee_total);
+                                }
                                 continue;
                             }
                         };
@@ -521,6 +535,20 @@ impl ExecutionContext {
                                 mining_state.cumulative_mining_issued.saturating_add(payout);
                             total_minted = total_minted.saturating_add(payout);
                         }
+                        // PRO-53 fee split: 1/4 to block miner, 3/4 burned (remainder burned)
+                        let miner_fee_share = fee_total / 4;
+                        let burn_fee_share = fee_total.saturating_sub(miner_fee_share);
+                        if miner_fee_share > 0 {
+                            storage.state().add_balance(&txn, &miner, miner_fee_share)?;
+                            fee_state.cumulative_fees_to_miners = fee_state
+                                .cumulative_fees_to_miners
+                                .saturating_add(miner_fee_share);
+                        }
+                        if burn_fee_share > 0 {
+                            fee_state.cumulative_fees_burned = fee_state
+                                .cumulative_fees_burned
+                                .saturating_add(burn_fee_share);
+                        }
                         mining_state.rewarded_block_count =
                             mining_state.rewarded_block_count.saturating_add(1);
                         miner_recipient = miner;
@@ -530,6 +558,9 @@ impl ExecutionContext {
                     storage
                         .state()
                         .save_mining_reward_state(&txn, &mining_state)?;
+                    storage
+                        .state()
+                        .save_fee_accounting_state(&txn, &fee_state)?;
 
                     candidate_staking.committed_leader_height =
                         candidate_staking.committed_leader_height.saturating_add(1);
@@ -763,14 +794,14 @@ impl ExecutionContext {
     }
 
     /// Execute a single transaction within a committed sub-DAG.
-    /// Returns a TransactionReceipt with the execution outcome.
+    /// Returns a TransactionReceipt with the execution outcome and the fee actually debited.
     fn execute_transaction(
         &mut self,
         tx: &Transaction,
         storage: &Storage,
         txn: &mut WriteTransaction,
         context: SubDagContext,
-    ) -> Result<TransactionReceipt, ExecutionError> {
+    ) -> Result<(TransactionReceipt, u64), ExecutionError> {
         let SubDagContext {
             committed_height,
             leader_round,
@@ -782,13 +813,16 @@ impl ExecutionContext {
         // sender over the signing hash. There is deliberately no bypass:
         // tests sign with real keypairs (see `tests::signed_tx`).
         if !tx.verify_signature(&self.signing_ctx) {
-            return Ok(TransactionReceipt {
-                tx_hash: tx.hash,
-                success: false,
-                gas_used: 0,
-                error: Some("Invalid signature".to_string()),
-                events: Vec::new(),
-            });
+            return Ok((
+                TransactionReceipt {
+                    tx_hash: tx.hash,
+                    success: false,
+                    gas_used: 0,
+                    error: Some("Invalid signature".to_string()),
+                    events: Vec::new(),
+                },
+                0,
+            ));
         }
 
         // Hybrid chains (1, 2) are PoW + GHOSTDAG with no stake product.
@@ -799,13 +833,16 @@ impl ExecutionContext {
             self.signing_ctx.chain_id,
             &tx.kind,
         ) {
-            return Ok(TransactionReceipt {
-                tx_hash: tx.hash,
-                success: false,
-                gas_used: 0,
-                error: Some(kovanica_types::transaction::HYBRID_STAKE_REFUSAL.to_string()),
-                events: Vec::new(),
-            });
+            return Ok((
+                TransactionReceipt {
+                    tx_hash: tx.hash,
+                    success: false,
+                    gas_used: 0,
+                    error: Some(kovanica_types::transaction::HYBRID_STAKE_REFUSAL.to_string()),
+                    events: Vec::new(),
+                },
+                0,
+            ));
         }
 
         // Load sender account and validate nonce, deduct fee, increment nonce in one table access
@@ -819,27 +856,33 @@ impl ExecutionContext {
         };
 
         if sender_account.nonce != tx.nonce {
-            return Ok(TransactionReceipt {
-                tx_hash: tx.hash,
-                success: false,
-                gas_used: 0,
-                error: Some(format!(
-                    "Nonce mismatch: expected {}, got {}",
-                    sender_account.nonce, tx.nonce
-                )),
-                events: Vec::new(),
-            });
+            return Ok((
+                TransactionReceipt {
+                    tx_hash: tx.hash,
+                    success: false,
+                    gas_used: 0,
+                    error: Some(format!(
+                        "Nonce mismatch: expected {}, got {}",
+                        sender_account.nonce, tx.nonce
+                    )),
+                    events: Vec::new(),
+                },
+                0,
+            ));
         }
 
         // Check fee balance
         if sender_account.balance < tx.fee {
-            return Ok(TransactionReceipt {
-                tx_hash: tx.hash,
-                success: false,
-                gas_used: 0,
-                error: Some("Insufficient balance for fee".to_string()),
-                events: Vec::new(),
-            });
+            return Ok((
+                TransactionReceipt {
+                    tx_hash: tx.hash,
+                    success: false,
+                    gas_used: 0,
+                    error: Some("Insufficient balance for fee".to_string()),
+                    events: Vec::new(),
+                },
+                0,
+            ));
         }
 
         // Deduct fee upfront and increment nonce
@@ -964,13 +1007,16 @@ impl ExecutionContext {
         // returned — on failure (including out of gas) as well as on success.
         // The body rollback above does not touch it: the fee and nonce
         // charged before the savepoint stand either way.
-        Ok(TransactionReceipt {
-            tx_hash: tx.hash,
-            success,
-            gas_used,
-            error,
-            events,
-        })
+        Ok((
+            TransactionReceipt {
+                tx_hash: tx.hash,
+                success,
+                gas_used,
+                error,
+                events,
+            },
+            tx.fee,
+        ))
     }
 
     /// Execute a native KVNC transfer.
@@ -7195,12 +7241,14 @@ mod tests {
         };
 
         let res = ctx.execute_committed_subdag(&subdag, &storage).unwrap();
-        assert_eq!(res.reward.unwrap().amount, 2_500_000_000); // exactly 2.5 KVNC
+        assert_eq!(res.reward.unwrap().amount, 2_500_000_000); // exactly 2.5 KVNC subsidy
 
         let read = storage.begin_read().unwrap();
-        // 1. Miner receives exactly the block reward, fees are NOT added to reward
+        // 1. Miner receives 2.5 KVNC block reward subsidy plus 1/4 of the fee (12_500_000)
         let miner_acct = storage.state().get_account(&read, &fresh_miner).unwrap();
-        assert_eq!(miner_acct.balance, 2_500_000_000);
+        let miner_fee_share = tx_fee / 4;
+        let burned_fee_share = tx_fee - miner_fee_share;
+        assert_eq!(miner_acct.balance, 2_500_000_000 + miner_fee_share);
 
         // 2. Sender had balance deducted by amount + fee
         let sender_acct = storage.state().get_account(&read, &sender).unwrap();
@@ -7210,10 +7258,21 @@ mod tests {
         let recip_acct = storage.state().get_account(&read, &recipient).unwrap();
         assert_eq!(recip_acct.balance, tx_amount);
 
-        // 4. Fees are burned: total supply increased by exactly 2.5 KVNC minus 0.05 KVNC fee burned
-        // 10 KVNC (initial) + 2.5 KVNC (reward) - 0.05 KVNC (burned) = 12.45 KVNC circulating between the 3 accounts
+        // 4. Fees burned = 3/4 (37_500_000): total circulating increased by 2.5 KVNC subsidy minus burned fees
         let total_circulating = miner_acct.balance + sender_acct.balance + recip_acct.balance;
-        assert_eq!(total_circulating, 12_450_000_000);
+        assert_eq!(
+            total_circulating,
+            10_000_000_000 + 2_500_000_000 - burned_fee_share
+        );
+
+        // 5. Persistent fee counters
+        let fee_state = storage
+            .state()
+            .load_fee_accounting_state(&read)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fee_state.cumulative_fees_to_miners, miner_fee_share);
+        assert_eq!(fee_state.cumulative_fees_burned, burned_fee_share);
     }
 
     #[test]
@@ -7334,5 +7393,916 @@ mod tests {
         let read = storage.begin_read().unwrap();
         let boot_acct = storage.state().get_account(&read, &boot0).unwrap();
         assert_eq!(boot_acct.balance, 2_500_000_000);
+    }
+
+    fn make_test_transfer_tx(
+        signing_ctx: &SigningContext,
+        sender_key: &SigningKey,
+        nonce: u64,
+        fee: u64,
+        amount: u64,
+        recipient: Address,
+    ) -> Transaction {
+        let sender = address_of(sender_key);
+        let mut tx = Transaction {
+            sender,
+            nonce,
+            kind: TransactionKind::Transfer {
+                to: recipient,
+                amount,
+            },
+            fee,
+            signature: Signature([0u8; 64]),
+            hash: Hash([0u8; 32]),
+        };
+        tx.hash = tx.signing_hash(signing_ctx);
+        tx.signature = kovanica_crypto::sign(sender_key, &tx.hash.0);
+        tx
+    }
+
+    #[test]
+    fn pro53_one_block_one_tx_fee_variations() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        for fee in [0u64, 1, 3, 4, 5, 7, 50_000_000] {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let storage = Storage::new(temp_dir.path().join("fee_var.redb")).unwrap();
+
+            {
+                let txn = storage.begin_write().unwrap();
+                storage
+                    .state()
+                    .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                    .unwrap();
+                txn.commit().unwrap();
+            }
+
+            let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+            let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+            let sender_key = test_keypair(10 + fee as u8);
+            let sender = address_of(&sender_key);
+            let recipient = Address([0x77; 32]);
+            let miner = Address([0xbb; 32]);
+
+            let initial_sender = 100_000_000_000u64;
+            {
+                let txn = storage.begin_write().unwrap();
+                let mut acct = storage
+                    .state()
+                    .get_account_or_default_write(&txn, &sender)
+                    .unwrap();
+                acct.balance = initial_sender;
+                storage.state().set_account(&txn, &sender, &acct).unwrap();
+                txn.commit().unwrap();
+            }
+
+            let tx_amount = 1_000_000;
+            let tx = make_test_transfer_tx(&signing_ctx, &sender_key, 0, fee, tx_amount, recipient);
+
+            let statements = kovanica_types::block::encode_pow_statement(
+                100,
+                kovanica_params::MAX_TARGET_BITS,
+                0,
+                None,
+                Some(miner),
+            );
+            let txs = vec![tx];
+            let digest =
+                StatementBlock::compute_digest_statements(99, 1, &[], &txs, Some(&statements));
+            let block = StatementBlock {
+                author: 99,
+                round: 1,
+                parents: Vec::new(),
+                transactions: txs,
+                statements,
+                signature: Signature([0u8; 64]),
+                digest,
+                merkle_root: Default::default(),
+            };
+
+            let subdag = CommittedSubDag {
+                leader: block.clone(),
+                blocks: vec![block],
+                leader_round: 1,
+                leader_author: 99,
+                non_blue: vec![],
+            };
+
+            let res = ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+            assert_eq!(res.reward.unwrap().amount, 2_500_000_000); // Subsidy untouched
+
+            let expected_miner_fee = fee / 4;
+            let expected_burned_fee = fee - expected_miner_fee;
+
+            let read = storage.begin_read().unwrap();
+            let miner_acct = storage.state().get_account(&read, &miner).unwrap();
+            assert_eq!(miner_acct.balance, 2_500_000_000 + expected_miner_fee);
+
+            let sender_acct = storage.state().get_account(&read, &sender).unwrap();
+            assert_eq!(sender_acct.balance, initial_sender - tx_amount - fee);
+
+            let fee_state = storage
+                .state()
+                .load_fee_accounting_state(&read)
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(fee_state.cumulative_fees_to_miners, expected_miner_fee);
+            assert_eq!(fee_state.cumulative_fees_burned, expected_burned_fee);
+        }
+    }
+
+    #[test]
+    fn pro53_several_txs_one_block_one_floor_on_sum() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("sum_floor.redb")).unwrap();
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        let sender_key = test_keypair(42);
+        let sender = address_of(&sender_key);
+        let recipient = Address([0x77; 32]);
+        let miner = Address([0xbb; 32]);
+
+        {
+            let txn = storage.begin_write().unwrap();
+            let mut acct = storage
+                .state()
+                .get_account_or_default_write(&txn, &sender)
+                .unwrap();
+            acct.balance = 100_000_000_000;
+            storage.state().set_account(&txn, &sender, &acct).unwrap();
+            txn.commit().unwrap();
+        }
+
+        // 3 txs with fee 2 each. Total fee = 6.
+        // If floored per-tx: 2/4 = 0 -> miner gets 0.
+        // Correct PRO-53 single floor on sum: 6 / 4 = 1 -> miner gets 1, burn gets 5.
+        let tx1 = make_test_transfer_tx(&signing_ctx, &sender_key, 0, 2, 1000, recipient);
+        let tx2 = make_test_transfer_tx(&signing_ctx, &sender_key, 1, 2, 1000, recipient);
+        let tx3 = make_test_transfer_tx(&signing_ctx, &sender_key, 2, 2, 1000, recipient);
+        let txs = vec![tx1, tx2, tx3];
+
+        let statements = kovanica_types::block::encode_pow_statement(
+            100,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            Some(miner),
+        );
+        let digest = StatementBlock::compute_digest_statements(99, 1, &[], &txs, Some(&statements));
+        let block = StatementBlock {
+            author: 99,
+            round: 1,
+            parents: Vec::new(),
+            transactions: txs,
+            statements,
+            signature: Signature([0u8; 64]),
+            digest,
+            merkle_root: Default::default(),
+        };
+
+        let subdag = CommittedSubDag {
+            leader: block.clone(),
+            blocks: vec![block],
+            leader_round: 1,
+            leader_author: 99,
+            non_blue: vec![],
+        };
+
+        ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+
+        let read = storage.begin_read().unwrap();
+        let miner_acct = storage.state().get_account(&read, &miner).unwrap();
+        assert_eq!(miner_acct.balance, 2_500_000_000 + 1);
+
+        let fee_state = storage
+            .state()
+            .load_fee_accounting_state(&read)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fee_state.cumulative_fees_to_miners, 1);
+        assert_eq!(fee_state.cumulative_fees_burned, 5);
+    }
+
+    #[test]
+    fn pro53_two_blue_blocks_with_different_payouts() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("two_blues.redb")).unwrap();
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        let sender_key1 = test_keypair(51);
+        let sender1 = address_of(&sender_key1);
+        let sender_key2 = test_keypair(52);
+        let sender2 = address_of(&sender_key2);
+        let recipient = Address([0x77; 32]);
+        let miner1 = Address([0x11; 32]);
+        let miner2 = Address([0x22; 32]);
+
+        {
+            let txn = storage.begin_write().unwrap();
+            let mut acct1 = storage
+                .state()
+                .get_account_or_default_write(&txn, &sender1)
+                .unwrap();
+            acct1.balance = 100_000_000_000;
+            storage.state().set_account(&txn, &sender1, &acct1).unwrap();
+            let mut acct2 = storage
+                .state()
+                .get_account_or_default_write(&txn, &sender2)
+                .unwrap();
+            acct2.balance = 100_000_000_000;
+            storage.state().set_account(&txn, &sender2, &acct2).unwrap();
+            txn.commit().unwrap();
+        }
+
+        let tx1 = make_test_transfer_tx(&signing_ctx, &sender_key1, 0, 40_000, 1000, recipient);
+        let tx2 = make_test_transfer_tx(&signing_ctx, &sender_key2, 0, 80_000, 1000, recipient);
+
+        let stmt1 = kovanica_types::block::encode_pow_statement(
+            101,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            Some(miner1),
+        );
+        let txs1 = vec![tx1];
+        let d1 = StatementBlock::compute_digest_statements(1, 1, &[], &txs1, Some(&stmt1));
+        let block1 = StatementBlock {
+            author: 1,
+            round: 1,
+            parents: Vec::new(),
+            transactions: txs1,
+            statements: stmt1,
+            signature: Signature([0u8; 64]),
+            digest: d1,
+            merkle_root: Default::default(),
+        };
+
+        let stmt2 = kovanica_types::block::encode_pow_statement(
+            102,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            Some(miner2),
+        );
+        let txs2 = vec![tx2];
+        let d2 = StatementBlock::compute_digest_statements(
+            2,
+            2,
+            &[block1.reference()],
+            &txs2,
+            Some(&stmt2),
+        );
+        let block2 = StatementBlock {
+            author: 2,
+            round: 2,
+            parents: vec![block1.reference()],
+            transactions: txs2,
+            statements: stmt2,
+            signature: Signature([0u8; 64]),
+            digest: d2,
+            merkle_root: Default::default(),
+        };
+
+        let subdag = CommittedSubDag {
+            leader: block2.clone(),
+            blocks: vec![block1, block2],
+            leader_round: 2,
+            leader_author: 2,
+            non_blue: vec![],
+        };
+
+        ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+
+        let read = storage.begin_read().unwrap();
+        let miner1_acct = storage.state().get_account(&read, &miner1).unwrap();
+        let miner2_acct = storage.state().get_account(&read, &miner2).unwrap();
+
+        // Miner 1: 2.5 KVNC + 40_000 / 4 = 10_000
+        assert_eq!(miner1_acct.balance, 2_500_000_000 + 10_000);
+        // Miner 2: 2.5 KVNC + 80_000 / 4 = 20_000
+        assert_eq!(miner2_acct.balance, 2_500_000_000 + 20_000);
+
+        let fee_state = storage
+            .state()
+            .load_fee_accounting_state(&read)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fee_state.cumulative_fees_to_miners, 30_000);
+        assert_eq!(fee_state.cumulative_fees_burned, 90_000);
+    }
+
+    #[test]
+    fn pro53_red_block_miner_gets_zero() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("red_block.redb")).unwrap();
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        let miner_blue = Address([0x11; 32]);
+        let miner_red = Address([0x99; 32]);
+
+        let block_blue = sample_block_with_payout(1, 1, miner_blue);
+        let block_red = sample_block_with_payout(2, 1, miner_red);
+
+        let subdag = CommittedSubDag {
+            leader: block_blue.clone(),
+            blocks: vec![block_blue],
+            leader_round: 1,
+            leader_author: 1,
+            non_blue: vec![block_red.reference()],
+        };
+
+        ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+
+        let read = storage.begin_read().unwrap();
+        let blue_acct = storage.state().get_account(&read, &miner_blue).unwrap();
+        assert_eq!(blue_acct.balance, 2_500_000_000);
+
+        let red_acct = storage.state().get_account(&read, &miner_red);
+        assert!(
+            red_acct.is_err(),
+            "Red block miner receives 0 payout and no fee share"
+        );
+    }
+
+    #[test]
+    fn pro53_block_without_payout_burns_100_percent() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("no_payout.redb")).unwrap();
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        let sender_key = test_keypair(61);
+        let sender = address_of(&sender_key);
+        let recipient = Address([0x77; 32]);
+
+        {
+            let txn = storage.begin_write().unwrap();
+            let mut acct = storage
+                .state()
+                .get_account_or_default_write(&txn, &sender)
+                .unwrap();
+            acct.balance = 100_000_000_000;
+            storage.state().set_account(&txn, &sender, &acct).unwrap();
+            txn.commit().unwrap();
+        }
+
+        let fee = 40_000u64;
+        let tx = make_test_transfer_tx(&signing_ctx, &sender_key, 0, fee, 1000, recipient);
+
+        // Block with NO payout address
+        let statements = kovanica_types::block::encode_pow_statement(
+            100,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            None,
+        );
+        let txs = vec![tx];
+        let digest = StatementBlock::compute_digest_statements(99, 1, &[], &txs, Some(&statements));
+        let block = StatementBlock {
+            author: 99,
+            round: 1,
+            parents: Vec::new(),
+            transactions: txs,
+            statements,
+            signature: Signature([0u8; 64]),
+            digest,
+            merkle_root: Default::default(),
+        };
+
+        let subdag = CommittedSubDag {
+            leader: block.clone(),
+            blocks: vec![block],
+            leader_round: 1,
+            leader_author: 99,
+            non_blue: vec![],
+        };
+
+        ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+
+        let read = storage.begin_read().unwrap();
+        let fee_state = storage
+            .state()
+            .load_fee_accounting_state(&read)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fee_state.cumulative_fees_to_miners, 0);
+        assert_eq!(fee_state.cumulative_fees_burned, fee); // 100% burned
+    }
+
+    #[test]
+    fn pro53_failed_body_tx_fee_is_still_split() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("failed_body.redb")).unwrap();
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        let sender_key = test_keypair(71);
+        let sender = address_of(&sender_key);
+        let recipient = Address([0x77; 32]);
+        let miner = Address([0xbb; 32]);
+
+        let fee = 40_000u64;
+        let initial_balance = 50_000u64; // Enough for fee, but NOT for fee + transfer
+        {
+            let txn = storage.begin_write().unwrap();
+            let mut acct = storage
+                .state()
+                .get_account_or_default_write(&txn, &sender)
+                .unwrap();
+            acct.balance = initial_balance;
+            storage.state().set_account(&txn, &sender, &acct).unwrap();
+            txn.commit().unwrap();
+        }
+
+        // Transfer 1_000_000: body will fail due to InsufficientBalance!
+        let tx = make_test_transfer_tx(&signing_ctx, &sender_key, 0, fee, 1_000_000, recipient);
+
+        let statements = kovanica_types::block::encode_pow_statement(
+            100,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            Some(miner),
+        );
+        let txs = vec![tx];
+        let digest = StatementBlock::compute_digest_statements(99, 1, &[], &txs, Some(&statements));
+        let block = StatementBlock {
+            author: 99,
+            round: 1,
+            parents: Vec::new(),
+            transactions: txs,
+            statements,
+            signature: Signature([0u8; 64]),
+            digest,
+            merkle_root: Default::default(),
+        };
+
+        let subdag = CommittedSubDag {
+            leader: block.clone(),
+            blocks: vec![block],
+            leader_round: 1,
+            leader_author: 99,
+            non_blue: vec![],
+        };
+
+        let res = ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+        assert_eq!(res.receipts.len(), 1);
+        assert!(!res.receipts[0].success, "Body execution must fail");
+
+        let read = storage.begin_read().unwrap();
+        let sender_acct = storage.state().get_account(&read, &sender).unwrap();
+        assert_eq!(sender_acct.balance, initial_balance - fee); // fee was debited
+
+        let miner_acct = storage.state().get_account(&read, &miner).unwrap();
+        assert_eq!(miner_acct.balance, 2_500_000_000 + (fee / 4)); // miner gets 1/4 fee share
+
+        let fee_state = storage
+            .state()
+            .load_fee_accounting_state(&read)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fee_state.cumulative_fees_to_miners, fee / 4);
+        assert_eq!(fee_state.cumulative_fees_burned, fee - (fee / 4));
+    }
+
+    #[test]
+    fn pro53_counters_persist_across_two_subdags() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("two_subdags.redb")).unwrap();
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        let sender_key = test_keypair(81);
+        let sender = address_of(&sender_key);
+        let recipient = Address([0x77; 32]);
+        let miner = Address([0xbb; 32]);
+
+        {
+            let txn = storage.begin_write().unwrap();
+            let mut acct = storage
+                .state()
+                .get_account_or_default_write(&txn, &sender)
+                .unwrap();
+            acct.balance = 100_000_000_000;
+            storage.state().set_account(&txn, &sender, &acct).unwrap();
+            txn.commit().unwrap();
+        }
+
+        // SubDAG 1: fee 100 -> miner 25, burned 75
+        let tx1 = make_test_transfer_tx(&signing_ctx, &sender_key, 0, 100, 1000, recipient);
+        let stmt1 = kovanica_types::block::encode_pow_statement(
+            100,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            Some(miner),
+        );
+        let txs1 = vec![tx1];
+        let d1 = StatementBlock::compute_digest_statements(99, 1, &[], &txs1, Some(&stmt1));
+        let block1 = StatementBlock {
+            author: 99,
+            round: 1,
+            parents: Vec::new(),
+            transactions: txs1,
+            statements: stmt1,
+            signature: Signature([0u8; 64]),
+            digest: d1,
+            merkle_root: Default::default(),
+        };
+        let subdag1 = CommittedSubDag {
+            leader: block1.clone(),
+            blocks: vec![block1],
+            leader_round: 1,
+            leader_author: 99,
+            non_blue: vec![],
+        };
+        ctx.execute_committed_subdag(&subdag1, &storage).unwrap();
+
+        // SubDAG 2: fee 200 -> miner 50, burned 150
+        let tx2 = make_test_transfer_tx(&signing_ctx, &sender_key, 1, 200, 1000, recipient);
+        let stmt2 = kovanica_types::block::encode_pow_statement(
+            101,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            Some(miner),
+        );
+        let txs2 = vec![tx2];
+        let d2 = StatementBlock::compute_digest_statements(99, 2, &[], &txs2, Some(&stmt2));
+        let block2 = StatementBlock {
+            author: 99,
+            round: 2,
+            parents: Vec::new(),
+            transactions: txs2,
+            statements: stmt2,
+            signature: Signature([0u8; 64]),
+            digest: d2,
+            merkle_root: Default::default(),
+        };
+        let subdag2 = CommittedSubDag {
+            leader: block2.clone(),
+            blocks: vec![block2],
+            leader_round: 2,
+            leader_author: 99,
+            non_blue: vec![],
+        };
+        ctx.execute_committed_subdag(&subdag2, &storage).unwrap();
+
+        let read = storage.begin_read().unwrap();
+        let fee_state = storage
+            .state()
+            .load_fee_accounting_state(&read)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fee_state.cumulative_fees_to_miners, 25 + 50);
+        assert_eq!(fee_state.cumulative_fees_burned, 75 + 150);
+    }
+
+    #[test]
+    fn pro53_supply_invariant_balances_sum() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(temp_dir.path().join("supply_invariant.redb")).unwrap();
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .save_emission_policy(&txn, &EmissionPolicy::NoStake82M)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        let signing_ctx = SigningContext::new(chain_id::HYBRID_TESTNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        let sender_key = test_keypair(91);
+        let sender = address_of(&sender_key);
+        let recipient = Address([0x77; 32]);
+        let miner = Address([0xbb; 32]);
+
+        let initial_balance = 50_000_000_000u64;
+        {
+            let txn = storage.begin_write().unwrap();
+            let mut acct = storage
+                .state()
+                .get_account_or_default_write(&txn, &sender)
+                .unwrap();
+            acct.balance = initial_balance;
+            storage.state().set_account(&txn, &sender, &acct).unwrap();
+            txn.commit().unwrap();
+        }
+
+        let fee = 47_000u64;
+        let amount = 1_000_000u64;
+        let tx = make_test_transfer_tx(&signing_ctx, &sender_key, 0, fee, amount, recipient);
+
+        let statements = kovanica_types::block::encode_pow_statement(
+            100,
+            kovanica_params::MAX_TARGET_BITS,
+            0,
+            None,
+            Some(miner),
+        );
+        let txs = vec![tx];
+        let digest = StatementBlock::compute_digest_statements(99, 1, &[], &txs, Some(&statements));
+        let block = StatementBlock {
+            author: 99,
+            round: 1,
+            parents: Vec::new(),
+            transactions: txs,
+            statements,
+            signature: Signature([0u8; 64]),
+            digest,
+            merkle_root: Default::default(),
+        };
+        let subdag = CommittedSubDag {
+            leader: block.clone(),
+            blocks: vec![block],
+            leader_round: 1,
+            leader_author: 99,
+            non_blue: vec![],
+        };
+
+        ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+
+        let read = storage.begin_read().unwrap();
+        let s_bal = storage.state().get_account(&read, &sender).unwrap().balance;
+        let r_bal = storage
+            .state()
+            .get_account(&read, &recipient)
+            .unwrap()
+            .balance;
+        let m_bal = storage.state().get_account(&read, &miner).unwrap().balance;
+        let sum_of_balances = s_bal + r_bal + m_bal;
+
+        let fee_state = storage
+            .state()
+            .load_fee_accounting_state(&read)
+            .unwrap()
+            .unwrap();
+        let expected_burned = fee - (fee / 4);
+        let subsidy = 2_500_000_000u64;
+
+        // Invariant: sum of balances = before + subsidy − burned
+        assert_eq!(sum_of_balances, initial_balance + subsidy - expected_burned);
+        assert_eq!(fee_state.cumulative_fees_burned, expected_burned);
+    }
+
+    #[test]
+    fn test_mainnet_devnet_local_fees_stay_100_percent_burned() {
+        use kovanica_types::emission::EmissionPolicy;
+
+        // 1. kovanica-mainnet (chain ID 1) with Legacy81M policy
+        {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let storage = Storage::new(temp_dir.path().join("mainnet.redb")).unwrap();
+            {
+                let txn = storage.begin_write().unwrap();
+                storage
+                    .state()
+                    .save_emission_policy(&txn, &EmissionPolicy::Legacy81M)
+                    .unwrap();
+                txn.commit().unwrap();
+            }
+
+            let signing_ctx = SigningContext::new(chain_id::MAINNET);
+            let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+            let sender_key = test_keypair(1);
+            let sender = address_of(&sender_key);
+            let recipient = Address([0x77; 32]);
+            let miner = Address([0xbb; 32]);
+
+            let initial_balance = 50_000_000_000u64;
+            {
+                let txn = storage.begin_write().unwrap();
+                let mut acct = storage
+                    .state()
+                    .get_account_or_default_write(&txn, &sender)
+                    .unwrap();
+                acct.balance = initial_balance;
+                storage.state().set_account(&txn, &sender, &acct).unwrap();
+                txn.commit().unwrap();
+            }
+
+            let fee = 40_000u64;
+            let tx = make_test_transfer_tx(&signing_ctx, &sender_key, 0, fee, 1000, recipient);
+
+            let statements = kovanica_types::block::encode_pow_statement(
+                100,
+                kovanica_params::MAX_TARGET_BITS,
+                0,
+                None,
+                Some(miner),
+            );
+            let txs = vec![tx];
+            let digest =
+                StatementBlock::compute_digest_statements(99, 1, &[], &txs, Some(&statements));
+            let block = StatementBlock {
+                author: 99,
+                round: 1,
+                parents: Vec::new(),
+                transactions: txs,
+                statements,
+                signature: Signature([0u8; 64]),
+                digest,
+                merkle_root: Default::default(),
+            };
+            let subdag = CommittedSubDag {
+                leader: block.clone(),
+                blocks: vec![block],
+                leader_round: 1,
+                leader_author: 99,
+                non_blue: vec![],
+            };
+
+            ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+
+            let read = storage.begin_read().unwrap();
+            let miner_acct = storage.state().get_account(&read, &miner).unwrap();
+            // On kovanica-mainnet, miner receives ONLY 2.5 KVNC subsidy, fees are 100% burned (0 to miner)
+            assert_eq!(miner_acct.balance, 2_500_000_000);
+        }
+
+        // 2. kovanica-devnet (chain ID 3)
+        {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let storage = Storage::new(temp_dir.path().join("devnet.redb")).unwrap();
+
+            let signing_ctx = SigningContext::new(chain_id::DEVNET);
+            let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+            let sender_key = test_keypair(3);
+            let sender = address_of(&sender_key);
+            let recipient = Address([0x77; 32]);
+            let initial_balance = 50_000_000_000u64;
+            {
+                let txn = storage.begin_write().unwrap();
+                let mut acct = storage
+                    .state()
+                    .get_account_or_default_write(&txn, &sender)
+                    .unwrap();
+                acct.balance = initial_balance;
+                storage.state().set_account(&txn, &sender, &acct).unwrap();
+                txn.commit().unwrap();
+            }
+
+            let fee = 40_000u64;
+            let tx = make_test_transfer_tx(&signing_ctx, &sender_key, 0, fee, 1000, recipient);
+            let block = StatementBlock {
+                author: 0,
+                round: 1,
+                parents: Vec::new(),
+                transactions: vec![tx],
+                statements: Vec::new(),
+                signature: Signature([0u8; 64]),
+                digest: StatementBlock::compute_digest(0, 1, &[], &[]),
+                merkle_root: Default::default(),
+            };
+            let subdag = CommittedSubDag {
+                leader: block.clone(),
+                blocks: vec![block],
+                leader_round: 1,
+                leader_author: 0,
+                non_blue: vec![],
+            };
+
+            ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+
+            let read = storage.begin_read().unwrap();
+            let sender_acct = storage.state().get_account(&read, &sender).unwrap();
+            assert_eq!(sender_acct.balance, initial_balance - 1000 - fee);
+            // Fee is not credited anywhere (100% burned)
+        }
+
+        // 3. local (chain ID 1337)
+        {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let storage = Storage::new(temp_dir.path().join("local.redb")).unwrap();
+
+            let signing_ctx = SigningContext::new(chain_id::LOCAL);
+            let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+            let sender_key = test_keypair(4);
+            let sender = address_of(&sender_key);
+            let recipient = Address([0x77; 32]);
+            let initial_balance = 50_000_000_000u64;
+            {
+                let txn = storage.begin_write().unwrap();
+                let mut acct = storage
+                    .state()
+                    .get_account_or_default_write(&txn, &sender)
+                    .unwrap();
+                acct.balance = initial_balance;
+                storage.state().set_account(&txn, &sender, &acct).unwrap();
+                txn.commit().unwrap();
+            }
+
+            let fee = 40_000u64;
+            let tx = make_test_transfer_tx(&signing_ctx, &sender_key, 0, fee, 1000, recipient);
+            let block = StatementBlock {
+                author: 0,
+                round: 1,
+                parents: Vec::new(),
+                transactions: vec![tx],
+                statements: Vec::new(),
+                signature: Signature([0u8; 64]),
+                digest: StatementBlock::compute_digest(0, 1, &[], &[]),
+                merkle_root: Default::default(),
+            };
+            let subdag = CommittedSubDag {
+                leader: block.clone(),
+                blocks: vec![block],
+                leader_round: 1,
+                leader_author: 0,
+                non_blue: vec![],
+            };
+
+            ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+
+            let read = storage.begin_read().unwrap();
+            let sender_acct = storage.state().get_account(&read, &sender).unwrap();
+            assert_eq!(sender_acct.balance, initial_balance - 1000 - fee);
+            // Fee is not credited anywhere (100% burned)
+        }
     }
 }

@@ -95,6 +95,15 @@ pub struct MiningRewardState {
     pub terminal_payout_block_index: Option<u64>,
 }
 
+/// Persisted deterministic fee accounting counters for PRO-53 fee split and burn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeeAccountingState {
+    /// Total fees burned in base units (atoms) so far.
+    pub cumulative_fees_burned: u64,
+    /// Total fee share credited to block miners in base units (atoms) so far.
+    pub cumulative_fees_to_miners: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -37,8 +37,8 @@ pub use block_store::{BlockStore, BlockStoreError};
 pub use consensus_store::{ConsensusStore, ConsensusStoreError};
 pub use state_store::{StateStore, StateStoreError};
 pub use tables::{
-    ACCOUNTS, CONTRACT_CODE, CONTRACT_STORAGE, EMISSION_POLICY, GENESIS_DIGEST,
-    MINING_REWARD_STATE, STAKING_STATE, STATE_ROOT,
+    ACCOUNTS, CONTRACT_CODE, CONTRACT_STORAGE, EMISSION_POLICY, FEE_ACCOUNTING_STATE,
+    GENESIS_DIGEST, MINING_REWARD_STATE, STAKING_STATE, STATE_ROOT,
 };
 
 /// Main storage handle combining all stores.
@@ -210,6 +210,9 @@ pub mod tables {
     /// Persisted deterministic mining reward execution state for NO-stake networks.
     pub const MINING_REWARD_STATE: TableDefinition<&'static str, Vec<u8>> =
         TableDefinition::new("mining_reward_state");
+    /// Persisted deterministic fee accounting counters for PRO-53 fee split and burn.
+    pub const FEE_ACCOUNTING_STATE: TableDefinition<&'static str, Vec<u8>> =
+        TableDefinition::new("fee_accounting_state");
 
     // Consensus store tables
     pub const DAG_BLOCKS: TableDefinition<[u8; 32], Vec<u8>> = TableDefinition::new("dag_blocks"); // StatementBlock serialized
