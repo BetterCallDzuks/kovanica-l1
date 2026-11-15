@@ -72,7 +72,7 @@ impl LimiterMap {
     fn sweep_at(&mut self, window_secs: u64, now: std::time::Instant) {
         let window_start = now.checked_sub(Duration::from_secs(window_secs));
         self.entries.retain(|_, timestamps| {
-            timestamps.retain(|t| window_start.map_or(true, |start| *t > start));
+            timestamps.retain(|t| window_start.is_none_or(|start| *t > start));
             !timestamps.is_empty()
         });
         self.last_sweep = Some(now);
@@ -102,7 +102,7 @@ impl LimiterMap {
         let window_start = now.checked_sub(Duration::from_secs(window_secs));
 
         if let Some(entry) = self.entries.get_mut(key) {
-            entry.retain(|t| window_start.map_or(true, |start| *t > start));
+            entry.retain(|t| window_start.is_none_or(|start| *t > start));
             if entry.len() >= max_requests {
                 if entry.is_empty() {
                     self.entries.remove(key);
@@ -143,7 +143,7 @@ impl LimiterMap {
         let window_start = now.checked_sub(Duration::from_secs(window_secs));
 
         if let Some(entry) = self.entries.get_mut(key) {
-            entry.retain(|t| window_start.map_or(true, |start| *t > start));
+            entry.retain(|t| window_start.is_none_or(|start| *t > start));
             if entry.len() >= max_requests {
                 if entry.is_empty() {
                     self.entries.remove(key);
@@ -222,6 +222,7 @@ impl RateLimiter {
         )
     }
 
+    #[allow(dead_code)]
     fn check_and_record_address(
         &self,
         address: &str,
@@ -268,11 +269,6 @@ impl RateLimiter {
     #[cfg(test)]
     fn ip_count(&self) -> usize {
         self.inner.requests.lock().entries.len()
-    }
-
-    #[cfg(test)]
-    fn address_count(&self) -> usize {
-        self.inner.address_requests.lock().entries.len()
     }
 
     #[cfg(test)]
