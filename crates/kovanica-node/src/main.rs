@@ -13066,6 +13066,10 @@ mod b1_epoch_restart_repro {
 
         // 1. Mine and submit round 0 block (genesis)
         let mut worker = MiningWorker::new();
+        let testnet_target = kovanica_consensus::DaaConfig::for_chain(
+            kovanica_types::signing::chain_id::HYBRID_TESTNET,
+        )
+        .max_target_bits;
         let header0 = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             0,
@@ -13073,11 +13077,11 @@ mod b1_epoch_restart_repro {
             vec![],
             kovanica_types::Hash::zero(),
             1_700_000_000_000,
-            kovanica_params::MAX_TARGET_BITS,
+            testnet_target,
             0,
             Address([0x11; 32]),
         );
-        let mined0 = worker.mine_header(header0, 500_000).unwrap();
+        let mined0 = worker.mine_header(header0, 50_000).unwrap();
         let block0 = mined0.to_statement_block(vec![]);
         let digest0 = block0.digest;
 
@@ -13094,11 +13098,11 @@ mod b1_epoch_restart_repro {
             vec![block0.reference()],
             kovanica_types::Hash::zero(),
             1_700_000_004_000,
-            kovanica_params::MAX_TARGET_BITS,
+            testnet_target,
             0,
             Address([0x11; 32]),
         );
-        let mined1 = worker.mine_header(header1, 500_000).unwrap();
+        let mined1 = worker.mine_header(header1, 50_000).unwrap();
         let block1 = mined1.to_statement_block(vec![]);
         let digest1 = block1.digest;
 
@@ -13239,6 +13243,10 @@ mod b1_epoch_restart_repro {
                 ));
             exec.emission_policy = Some(EmissionPolicy::NoStake82M);
 
+            let testnet_target = kovanica_consensus::DaaConfig::for_chain(
+                kovanica_types::signing::chain_id::HYBRID_TESTNET,
+            )
+            .max_target_bits;
             let mut worker = MiningWorker::new();
             let header = kovanica_types::BlockHeader::new_with_payout(
                 kovanica_types::signing::chain_id::HYBRID_TESTNET,
@@ -13247,11 +13255,11 @@ mod b1_epoch_restart_repro {
                 vec![],
                 kovanica_types::Hash::zero(),
                 1_700_000_000_000,
-                kovanica_params::MAX_TARGET_BITS,
+                testnet_target,
                 0,
                 Address([0x11; 32]),
             );
-            let mined = worker.mine_header(header, 500_000).unwrap();
+            let mined = worker.mine_header(header, 50_000).unwrap();
             let block = mined.to_statement_block(vec![]);
             let subdag = kovanica_types::CommittedSubDag {
                 leader: block.clone(),
@@ -13641,6 +13649,11 @@ mod b1_epoch_restart_repro {
             Err(kovanica_rpc::LocalBlockAdmissionError::TimestampDrift(_))
         ));
 
+        let testnet_target = kovanica_consensus::DaaConfig::for_chain(
+            kovanica_types::signing::chain_id::HYBRID_TESTNET,
+        )
+        .max_target_bits;
+
         // 2. Valid current block acceptance (timestamp = now_ms)
         let header_valid = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
@@ -13649,11 +13662,11 @@ mod b1_epoch_restart_repro {
             vec![],
             kovanica_types::Hash::zero(),
             now_ms,
-            kovanica_params::MAX_TARGET_BITS,
+            testnet_target,
             0,
             Address([0x11; 32]),
         );
-        let mined_valid = worker.mine_header(header_valid, 500_000).unwrap();
+        let mined_valid = worker.mine_header(header_valid, 50_000).unwrap();
         let block_valid = mined_valid.to_statement_block(vec![]);
         let valid_digest = block_valid.digest;
 
@@ -13715,11 +13728,11 @@ mod b1_epoch_restart_repro {
             }],
             kovanica_types::Hash::zero(),
             now_ms + 500,
-            kovanica_params::MAX_TARGET_BITS,
+            testnet_target,
             0,
             Address([0x11; 32]),
         );
-        let mined_parent = worker.mine_header(header_parent, 500_000).unwrap();
+        let mined_parent = worker.mine_header(header_parent, 50_000).unwrap();
         // Set parent digest to match child's reference
         let block_parent = mined_parent.to_statement_block(vec![]);
         let parent_digest = block_parent.digest;
