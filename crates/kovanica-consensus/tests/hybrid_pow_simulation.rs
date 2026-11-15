@@ -425,7 +425,7 @@ fn test_kovanica_testnet_daa_clamps_at_both_bounds() {
         config.max_target_bits,
         kovanica_params::DAA_MAX_TARGET_BITS_TESTNET
     );
-    assert_eq!(config.max_target_bits, 0x1f00_ffff);
+    assert_eq!(config.max_target_bits, 0x1f7f_ffff);
     assert_eq!(
         config.min_target_bits,
         kovanica_params::DAA_MIN_TARGET_BITS_TESTNET
@@ -434,14 +434,14 @@ fn test_kovanica_testnet_daa_clamps_at_both_bounds() {
 
     let start_ts = 1_700_000_000_000u64;
 
-    // Easiest difficulty floor clamp (slow blocks -> target expands up to floor 0x1f00_ffff)
+    // Easiest difficulty floor clamp (slow blocks -> target expands up to floor 0x1f7f_ffff)
     let slow_timestamps: Vec<u64> = (0..60).map(|i| start_ts + i * 100_000).collect();
     let clamped_floor =
         calculate_next_target_bits(config.max_target_bits, &slow_timestamps, &config);
     assert_eq!(
         clamped_floor,
         kovanica_params::DAA_MAX_TARGET_BITS_TESTNET,
-        "target bits must clamp at testnet difficulty floor 0x1f00_ffff"
+        "target bits must clamp at testnet difficulty floor 0x1f7f_ffff"
     );
 
     // Hardest difficulty ceiling clamp (fast blocks -> target compresses down to ceiling 0x1e00_ffff)
@@ -485,6 +485,13 @@ fn test_required_target_bits_on_testnet_never_leaves_bounds() {
         )
         .unwrap();
 
+        if r == 1 {
+            assert_eq!(
+                target, 0x1f7f_ffff,
+                "first required target after genesis on testnet must equal floor 0x1f7fffff"
+            );
+        }
+
         let target_val = compact_to_target(target);
         let min_val = compact_to_target(config.min_target_bits); // hardest ceiling
         let max_val = compact_to_target(config.max_target_bits); // easiest floor
@@ -517,18 +524,82 @@ fn test_devnet_and_local_daa_config_bounds() {
         devnet_config.max_target_bits,
         kovanica_params::DAA_MAX_TARGET_BITS_DEVNET
     );
+    assert_eq!(devnet_config.max_target_bits, 0x1f7f_ffff);
     assert_eq!(
         devnet_config.min_target_bits,
         kovanica_params::DAA_MIN_TARGET_BITS_DEVNET
     );
+    assert_eq!(devnet_config.min_target_bits, 0x1e00_ffff);
 
     let local_config = DaaConfig::for_chain(kovanica_params::CHAIN_ID_LOCAL);
     assert_eq!(
         local_config.max_target_bits,
         kovanica_params::DAA_MAX_TARGET_BITS_DEVNET
     );
+    assert_eq!(local_config.max_target_bits, 0x1f7f_ffff);
     assert_eq!(
         local_config.min_target_bits,
         kovanica_params::DAA_MIN_TARGET_BITS_DEVNET
+    );
+    assert_eq!(local_config.min_target_bits, 0x1e00_ffff);
+}
+
+#[test]
+fn test_testnet_daa_convergence_with_one_and_three_miners() {
+    let config = DaaConfig::for_chain(kovanica_params::CHAIN_ID_TESTNET);
+    assert_eq!(config.max_target_bits, 0x1f7f_ffff);
+    assert_eq!(config.min_target_bits, 0x1e00_ffff);
+
+    let max_target = compact_to_target(config.max_target_bits);
+    let min_target = compact_to_target(config.min_target_bits);
+
+    let run_sim = |hash_rate: f64, num_rounds: usize| -> (f64, u32) {
+        let mut curr_bits = config.max_target_bits;
+        let mut ts_list = vec![1_700_000_000_000u64];
+        let mut intervals = Vec::new();
+
+        for _ in 1..=num_rounds {
+            curr_bits = calculate_next_target_bits(curr_bits, &ts_list, &config);
+            let t_val = compact_to_target(curr_bits);
+            assert!(t_val >= min_target && t_val <= max_target);
+
+            let exp = (curr_bits >> 24) as i32;
+            let mantissa = (curr_bits & 0x007f_ffff) as f64;
+            let shift = 256 - 8 * (exp - 3);
+            let expected_hashes = (2.0f64).powi(shift) / mantissa;
+
+            let dt_ms = (expected_hashes / hash_rate * 1000.0).round() as u64;
+            intervals.push(dt_ms);
+            let next_ts = ts_list.last().unwrap() + dt_ms.max(1);
+            ts_list.push(next_ts);
+        }
+
+        let steady = &intervals[intervals.len().saturating_sub(30)..];
+        let mean_dt = steady.iter().copied().sum::<u64>() as f64 / steady.len() as f64;
+        (mean_dt, curr_bits)
+    };
+
+    // 1 miner at ~156 H/s (single seed node mining thread)
+    let (mean_1_miner, final_bits_1) = run_sim(156.0, 120);
+    println!(
+        "1 miner (156 H/s): steady-state mean block time = {:.1} ms, final target = 0x{:08x}",
+        mean_1_miner, final_bits_1
+    );
+    assert!(
+        (mean_1_miner - 4000.0).abs() < 200.0,
+        "1 miner simulation must converge toward 4000 ms (got {:.1} ms)",
+        mean_1_miner
+    );
+
+    // 3 miners at ~685 H/s total (~228 H/s each)
+    let (mean_3_miners, final_bits_3) = run_sim(685.0, 120);
+    println!(
+        "3 miners (685 H/s): steady-state mean block time = {:.1} ms, final target = 0x{:08x}",
+        mean_3_miners, final_bits_3
+    );
+    assert!(
+        (mean_3_miners - 4000.0).abs() < 200.0,
+        "3 miners simulation must converge toward 4000 ms (got {:.1} ms)",
+        mean_3_miners
     );
 }

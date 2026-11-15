@@ -12399,7 +12399,12 @@ mod b1_epoch_restart_repro {
         let peer = PeerId::random();
         let mut worker = kovanica_consensus::mining::MiningWorker::new();
 
-        // 1. Easier self-declared target (0x207fffff vs required MAX_TARGET_BITS 0x1f00ffff)
+        let testnet_target = kovanica_consensus::DaaConfig::for_chain(
+            kovanica_types::signing::chain_id::HYBRID_TESTNET,
+        )
+        .max_target_bits;
+
+        // 1. Easier self-declared target (0x207fffff vs required testnet floor 0x1f7fffff)
         let header_easy = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             1,
@@ -12426,7 +12431,7 @@ mod b1_epoch_restart_repro {
             "easier target must be rejected, not buffered"
         );
 
-        // 2. Valid target (MAX_TARGET_BITS = 0x1f00ffff)
+        // 2. Valid target (DaaConfig::for_chain(HYBRID_TESTNET).max_target_bits = 0x1f7fffff)
         let header_valid = kovanica_types::BlockHeader::new_with_payout(
             kovanica_types::signing::chain_id::HYBRID_TESTNET,
             1,
@@ -12434,11 +12439,11 @@ mod b1_epoch_restart_repro {
             vec![],
             kovanica_types::Hash::zero(),
             1_700_000_000_000,
-            kovanica_params::MAX_TARGET_BITS,
+            testnet_target,
             0,
             Address([0x11; 32]),
         );
-        let mined_valid = worker.mine_header(header_valid, 500_000).unwrap();
+        let mined_valid = worker.mine_header(header_valid, 50_000).unwrap();
         let block_valid = mined_valid.to_statement_block(vec![]);
         let valid_digest = block_valid.digest;
 
@@ -12471,6 +12476,10 @@ mod b1_epoch_restart_repro {
         };
         let peer = PeerId::random();
         let mut worker = kovanica_consensus::mining::MiningWorker::new();
+        let testnet_target = kovanica_consensus::DaaConfig::for_chain(
+            kovanica_types::signing::chain_id::HYBRID_TESTNET,
+        )
+        .max_target_bits;
 
         // Round 1 parent block
         let header1 = kovanica_types::BlockHeader::new_with_payout(
@@ -12480,11 +12489,11 @@ mod b1_epoch_restart_repro {
             vec![],
             kovanica_types::Hash::zero(),
             1_700_000_000_000,
-            kovanica_params::MAX_TARGET_BITS,
+            testnet_target,
             0,
             Address([0x11; 32]),
         );
-        let mined1 = worker.mine_header(header1, 500_000).unwrap();
+        let mined1 = worker.mine_header(header1, 50_000).unwrap();
         let block1 = mined1.to_statement_block(vec![]);
         let digest1 = block1.digest;
 
@@ -12496,11 +12505,11 @@ mod b1_epoch_restart_repro {
             vec![block1.reference()],
             kovanica_types::Hash::zero(),
             1_700_000_004_000,
-            kovanica_params::MAX_TARGET_BITS,
+            testnet_target,
             0,
             Address([0x22; 32]),
         );
-        let mined2 = worker.mine_header(header2, 500_000).unwrap();
+        let mined2 = worker.mine_header(header2, 50_000).unwrap();
         let block2 = mined2.to_statement_block(vec![]);
         let digest2 = block2.digest;
 

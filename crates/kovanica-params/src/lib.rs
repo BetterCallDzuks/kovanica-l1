@@ -50,14 +50,14 @@ pub const MIN_TARGET_BITS: u32 = 0x0101_0000;
 
 /// Canonical difficulty floor (easiest target) for kovanica-testnet (Chain ID 2).
 /// Bound to initial bootstrap target 0x1f00_ffff to preserve post-genesis continuity.
-pub const DAA_MAX_TARGET_BITS_TESTNET: u32 = 0x1f00_ffff;
+pub const DAA_MAX_TARGET_BITS_TESTNET: u32 = 0x1f7f_ffff;
 /// Canonical difficulty ceiling (hardest target) for kovanica-testnet (Chain ID 2).
 /// Capped at 256x easiest difficulty (0x1e00_ffff) so that a cluster/pool of up to ~256 cores still makes 4s blocks.
 pub const DAA_MIN_TARGET_BITS_TESTNET: u32 = 0x1e00_ffff;
 
 /// Difficulty floor (easiest target) for kovanica-devnet (Chain ID 3).
 /// Inert until devnet mines.
-pub const DAA_MAX_TARGET_BITS_DEVNET: u32 = 0x1f00_ffff;
+pub const DAA_MAX_TARGET_BITS_DEVNET: u32 = 0x1f7f_ffff;
 /// Difficulty ceiling (hardest target) for kovanica-devnet (Chain ID 3).
 /// Inert until devnet mines.
 pub const DAA_MIN_TARGET_BITS_DEVNET: u32 = 0x1e00_ffff;
