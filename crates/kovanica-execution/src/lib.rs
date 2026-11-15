@@ -8459,10 +8459,7 @@ mod tests {
                 .get_account(&read, &miner)
                 .map(|a| a.balance)
                 .unwrap_or(0);
-            assert_eq!(
-                miner_balance, 0,
-                "miner must receive 0 fee share on local"
-            );
+            assert_eq!(miner_balance, 0, "miner must receive 0 fee share on local");
             let fee_state = storage
                 .state()
                 .load_fee_accounting_state(&read)
