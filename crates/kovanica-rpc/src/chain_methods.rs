@@ -583,7 +583,7 @@ pub async fn handle_get_block_header_by_number(
                 Ok(h) => h,
                 Err(_) => block.pow_header(chain_id),
             };
-            return Ok(serde_json::to_value(&header).map_err(internal)?);
+            return serde_json::to_value(&header).map_err(internal);
         }
         if let Ok(block) = state
             .storage
@@ -594,7 +594,7 @@ pub async fn handle_get_block_header_by_number(
                 Ok(h) => h,
                 Err(_) => block.pow_header(chain_id),
             };
-            return Ok(serde_json::to_value(&header).map_err(internal)?);
+            return serde_json::to_value(&header).map_err(internal);
         }
     }
 
@@ -605,7 +605,7 @@ pub async fn handle_get_block_header_by_number(
                 Ok(h) => h,
                 Err(_) => block.pow_header(chain_id),
             };
-            return Ok(serde_json::to_value(&header).map_err(internal)?);
+            return serde_json::to_value(&header).map_err(internal);
         }
     }
 
@@ -621,7 +621,7 @@ pub async fn handle_get_block_header_by_number(
                 Ok(h) => h,
                 Err(_) => block.pow_header(chain_id),
             };
-            Ok(serde_json::to_value(&header).map_err(internal)?)
+            serde_json::to_value(&header).map_err(internal)
         }
         None => Ok(Value::Null),
     }
