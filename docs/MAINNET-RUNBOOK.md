@@ -141,7 +141,7 @@ Set `treasury_address` in config, or `KOVANICA_TREASURY_ADDRESS`, to the same tr
 
 `genesis.json` may sit beside those files for human review. The node derives genesis state from the toml, the founder file, and the configured treasury address.
 
-`genesis_validators.toml` on chain ID 1 looks like this once the OPEN markers are replaced:
+`genesis_validators.toml` (legacy file name; entries are bootstrap seed identities, not validators; on non-mainnet chains `funded_accounts.toml` is likewise a legacy name for mining-reward/faucet recipients) on chain ID 1 looks like this once the OPEN markers are replaced:
 
 ```toml
 chain_id = 1

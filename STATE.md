@@ -30,7 +30,7 @@ Update this file when frozen params or open product gaps change. Point-in-time d
 | --- | --- |
 | Coin | KVNC, **9** decimals (`ONE_KVNC = 10^9`, legacy alias `ONE_KUNA`) |
 | Consensus | Hybrid PoW + GHOSTDAG (NO stake in consensus path; `TARGET_BLOCK_MS = 4000`, `GHOSTDAG_K = 5`; PoW: KovanicaHash) |
-| Cap / subsidy sketch | 90.2M total; mining budget 82M; treasury 8M; genesis validators 0 (1M folded into mining); founder premine 200k |
+| Cap / subsidy sketch | 90.2M total; mining budget 82M; treasury 8M; genesis bootstrap-seed allocation 0 (1M folded into mining); founder premine 200k |
 | Fee split | 3/4 burned, 1/4 miner on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2); 100% burned on kovanica-devnet (chain ID 3) and local (chain ID 1337) |
 | DAA targets | kovanica-mainnet (chain ID 1) easiest `0x1f00_ffff`; kovanica-testnet (chain ID 2) and kovanica-devnet (chain ID 3) easiest `0x1f7f_ffff`, hardest `0x1e00_ffff` |
 | Address | `kvnc` + 57 bech32-alphabet base32 + `dag` (**64** chars); 32 B Ed25519 ‖ 29-bit blake3 checksum. Legacy hex only on kovanica-devnet (chain ID 3) and local (chain ID 1337) |
@@ -38,7 +38,7 @@ Update this file when frozen params or open product gaps change. Point-in-time d
 | Jail (legacy) | `JAIL_ROUNDS = 7200` committed leaders (legacy / non-consensus under hybrid) |
 | Min validator stake (legacy) | `50_000` KVNC (`MIN_VALIDATOR_STAKE = 50_000 * ONE_KUNA`; legacy / non-consensus) |
 | Min delegation (legacy) | `50_000` KVNC (`MIN_DELEGATION = 50_000 * ONE_KUNA`; legacy / non-consensus) |
-| `funded_accounts.toml` | Allowed on every chain **except** kovanica-mainnet (chain ID 1) |
+| `funded_accounts.toml` / `genesis_validators.toml` | Legacy file names (accounts are mining-reward / faucet / bootstrap-seed entries, not validators). `funded_accounts.toml` allowed on every chain **except** kovanica-mainnet (chain ID 1) |
 | Hash / sig domains | `KUNA-*` / `KVNC-*` crypto context tags remain for protocol compatibility |
 
 Gated hardening still inert on live chain until a genesis reset flips `*_ACTIVE_FROM_ROUND` to `0` (gas, contract, size limits, slashing).
@@ -52,7 +52,7 @@ Gated hardening still inert on live chain until a genesis reset flips `*_ACTIVE_
 5. kovanica-testnet (chain ID 2) faucet funding after re-genesis (ops): `testnet/chain2/funded_accounts.toml` pre-funds only the **pre-rotation** faucet address `kvnck2559l6vnpcchmtkuf2eslmdtxc6wtfm9nf9zqqructs4336nla58y78mdag` (100 000 KVNC, confirmed funded). The live faucet keystore address is the rotated `kvnc8a4atp0g5tngcua9h90anhel7233alyd5y88h0yc592cv8adu5uyz46d3dag`, so after the `9758ffe0` empty-volume re-genesis the faucet process is healthy (`/health` 200, address unchanged) but has a **0 balance** and cannot dispense until a one-off transfer from `kvnck2559l6…` tops it up. Not fixable via genesis files (chain 2 genesis + network tag are frozen); needs the retired keystore passphrase, i.e. an ops decision.
 
 **Done / frozen, do not re-open as missing:**
-- Mainnet Freeze & Gate Sign-Off (Phases C1–C3): Audit scoping updated (`docs/AUDIT-SCOPE.md`), genesis key ceremony streamlined (`ops/genesis/ceremony.sh`), validator bounds relaxed to `1..=20`, byte-for-byte deterministic genesis validated (`2f46c80940dc5226f8f25aad6eff428c3cd58c7fb505cf9861ad63db4cdbabc9`), soak pre-flight verification passed (monotonic height growth, 0 OOM kills under 2 GB limit), Gates 1–6 signed off in `docs/MAINNET-FREEZE-CHECKLIST.md`, and release tag `v1.0.0-mainnet` tagged on `main`.
+- Mainnet Freeze & Gate Sign-Off (Phases C1–C3): Audit scoping updated (`docs/AUDIT-SCOPE.md`), genesis key ceremony streamlined (`ops/genesis/ceremony.sh`), bootstrap seed bounds relaxed to `1..=20`, byte-for-byte deterministic genesis validated (`2f46c80940dc5226f8f25aad6eff428c3cd58c7fb505cf9861ad63db4cdbabc9`), soak pre-flight verification passed (monotonic height growth, 0 OOM kills under 2 GB limit), Gates 1–6 signed off in `docs/MAINNET-FREEZE-CHECKLIST.md`, and release tag `v1.0.0-mainnet` tagged on `main`.
 - Automated CI pipeline: fmt, clippy, doc lint, workspace tests, cargo-deny (licenses/advisories/bans/sources), gitleaks 8.24.3 (`.github/workflows/ci.yml`, `scripts/ci-local.sh`).
 - BIP32 HD derivation (`kovanica-wallet-core`), soak harness (`ops/soak/`), DNS audit probe (`scripts/check-dns-seeds.sh`), and mainnet runbook (`docs/MAINNET-RUNBOOK.md`). Note: legacy stake-weighted governance (`propose`/`vote`) was removed under no-stake Hybrid PoW + GHOSTDAG (`TASKLIST.md:33`).
 - PRO-7 (Mysticeti VRF leader set + pin): **FROZEN** for hybrid.

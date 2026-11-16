@@ -186,7 +186,7 @@ Run this on a machine that has the public `validators.json` and the two addresse
 What the script does:
 
 1. Checks every address. A bad address leaves no output behind.
-2. Writes `genesis_validators.toml` with `chain_id = 1`, `emission_policy = "no-stake-82m"`, `treasury_address`, and one `[[validator]]` per seed. No `stake` field.
+2. Writes `genesis_validators.toml` (legacy file name; entries are bootstrap seed identities, not validators, and `funded_accounts.toml` on non-mainnet chains holds mining-reward/faucet recipients) with `chain_id = 1`, `emission_policy = "no-stake-82m"`, `treasury_address`, and one `[[validator]]` per seed. No `stake` field.
 3. Writes `founder_premine.hex` as a single line: the founder address.
 4. Runs `kovanica-node genesis` with `--emission-policy no-stake-82m`. `genesis.json` is a preview of allocations. A running node does not load balances from it. State comes from `genesis_validators.toml`, `founder_premine.hex`, and `KOVANICA_TREASURY_ADDRESS`.
 5. Writes `bootnodes.toml` with `mainnet.kovanica.online:8000`.
