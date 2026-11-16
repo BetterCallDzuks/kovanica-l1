@@ -1,4 +1,4 @@
-//! Relay HTTP API v1 — `docs/COMMS-M1-INTERFACES.md` §4.
+//! Relay HTTP API v1. Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §4).
 //!
 //! axum 0.7 server exposing exactly:
 //!

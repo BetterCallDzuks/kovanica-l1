@@ -1,8 +1,8 @@
 /**
  * E2E messaging v1 — X25519 + XChaCha20-Poly1305.
  *
- * Byte-for-byte mirror of `crates/kovanica-comms-crypto` (see
- * `docs/COMMS-M1-INTERFACES.md` §2). The scheme is ephemeral-static ECDH:
+ * Byte-for-byte mirror of `crates/kovanica-comms-crypto`.
+ * Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §2). The scheme is ephemeral-static ECDH:
  * the sender uses a fresh ephemeral X25519 key per envelope against the
  * recipient's static X25519 key (derived from their Ed25519 public key).
  * The recipient opens with its static X25519 secret (derived from the

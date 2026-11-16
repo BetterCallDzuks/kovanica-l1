@@ -1,5 +1,5 @@
 /**
- * Name-registry contract binding (v1) — `docs/COMMS-M1-INTERFACES.md` §6.
+ * Name-registry contract binding (v1). Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §6).
  *
  * Builds `name_register` / `name_resolve` / `name_update_endpoints` /
  * `name_transfer` contract calls as bincode-1.3-compatible argument bytes for

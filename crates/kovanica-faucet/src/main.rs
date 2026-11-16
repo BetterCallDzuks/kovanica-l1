@@ -62,10 +62,17 @@ struct FaucetConfig {
 
 const DEFAULT_MAP_SIZE_CAP: usize = 100_000;
 
+/// Keys visited on one at-cap admission. The request path never scans the
+/// whole map; [`LimiterMap::maybe_sweep`] still walks every entry once per window.
+const EXPIRED_SWEEP_BUDGET: usize = 32;
+
 #[derive(Default)]
 struct LimiterMap {
     entries: std::collections::HashMap<String, Vec<std::time::Instant>>,
     last_sweep: Option<std::time::Instant>,
+    /// Insertion-order ring. At-cap admission walks a bounded prefix and
+    /// rotates live keys to the back, so expiry is amortised across requests.
+    sweep_order: std::collections::VecDeque<String>,
 }
 
 impl LimiterMap {
@@ -75,62 +82,72 @@ impl LimiterMap {
             timestamps.retain(|t| window_start.is_none_or(|start| *t > start));
             !timestamps.is_empty()
         });
+        self.sweep_order
+            .retain(|key| self.entries.contains_key(key));
         self.last_sweep = Some(now);
     }
 
-    fn maybe_sweep(&mut self, window_secs: u64, size_cap: usize, now: std::time::Instant) {
+    /// Periodic full sweep: first use, then again after one window.
+    /// A full map does not itself trigger this scan.
+    fn maybe_sweep(&mut self, window_secs: u64, now: std::time::Instant) {
         let window_dur = Duration::from_secs(window_secs);
         let elapsed_enough = match self.last_sweep {
             Some(last) => now.saturating_duration_since(last) >= window_dur,
             None => true,
         };
-        if elapsed_enough || self.entries.len() >= size_cap {
+        if elapsed_enough {
             self.sweep_at(window_secs, now);
         }
     }
 
-    fn check_and_record_at(
-        &mut self,
-        key: &str,
-        window_secs: u64,
-        max_requests: usize,
-        size_cap: usize,
-        now: std::time::Instant,
-    ) -> bool {
-        self.maybe_sweep(window_secs, size_cap, now);
-
+    /// Drop expired timestamps from up to `budget` keys. Live keys stay and
+    /// move to the back of the ring. Missing ring entries are skipped.
+    fn sweep_expired_budget(&mut self, window_secs: u64, now: std::time::Instant, budget: usize) {
         let window_start = now.checked_sub(Duration::from_secs(window_secs));
-
-        if let Some(entry) = self.entries.get_mut(key) {
-            entry.retain(|t| window_start.is_none_or(|start| *t > start));
-            if entry.len() >= max_requests {
-                if entry.is_empty() {
-                    self.entries.remove(key);
+        for _ in 0..budget {
+            let Some(key) = self.sweep_order.pop_front() else {
+                break;
+            };
+            let expired = match self.entries.get_mut(&key) {
+                Some(timestamps) => {
+                    timestamps.retain(|t| window_start.is_none_or(|start| *t > start));
+                    timestamps.is_empty()
                 }
-                return false;
+                None => continue,
+            };
+            if expired {
+                self.entries.remove(&key);
+            } else {
+                self.sweep_order.push_back(key);
             }
-            entry.push(now);
-            true
-        } else {
-            if max_requests == 0 {
-                return false;
-            }
-            if self.entries.len() >= size_cap {
-                if let Some(oldest_key) = self
-                    .entries
-                    .iter()
-                    .min_by_key(|(_, timestamps)| timestamps.first().copied())
-                    .map(|(k, _)| k.clone())
-                {
-                    self.entries.remove(&oldest_key);
-                }
-            }
-            self.entries.insert(key.to_string(), vec![now]);
-            true
         }
     }
 
-    fn reserve_at(
+    /// Room for a key that is not in the map yet.
+    ///
+    /// At the cap, sweep a bounded number of expired entries. If the map is
+    /// still full, refuse. Never deletes a live entry.
+    fn try_admit_new_key(
+        &mut self,
+        window_secs: u64,
+        size_cap: usize,
+        now: std::time::Instant,
+    ) -> bool {
+        if self.entries.len() < size_cap {
+            return true;
+        }
+        self.sweep_expired_budget(window_secs, now, EXPIRED_SWEEP_BUDGET);
+        self.entries.len() < size_cap
+    }
+
+    fn forget_key(&mut self, key: &str) {
+        self.entries.remove(key);
+        self.sweep_order.retain(|existing| existing != key);
+    }
+
+    /// Shared admission path for the IP map and the address map.
+    /// `Some(now)` means this attempt was recorded.
+    fn record_at(
         &mut self,
         key: &str,
         window_secs: u64,
@@ -138,47 +155,50 @@ impl LimiterMap {
         size_cap: usize,
         now: std::time::Instant,
     ) -> Option<std::time::Instant> {
-        self.maybe_sweep(window_secs, size_cap, now);
+        self.maybe_sweep(window_secs, now);
 
         let window_start = now.checked_sub(Duration::from_secs(window_secs));
 
-        if let Some(entry) = self.entries.get_mut(key) {
-            entry.retain(|t| window_start.is_none_or(|start| *t > start));
-            if entry.len() >= max_requests {
-                if entry.is_empty() {
-                    self.entries.remove(key);
+        if self.entries.contains_key(key) {
+            let reject_empty = {
+                let entry = self.entries.get_mut(key).expect("key just checked");
+                entry.retain(|t| window_start.is_none_or(|start| *t > start));
+                if entry.len() >= max_requests {
+                    Some(entry.is_empty())
+                } else {
+                    entry.push(now);
+                    None
+                }
+            };
+            if let Some(drop_key) = reject_empty {
+                if drop_key {
+                    self.forget_key(key);
                 }
                 return None;
             }
-            entry.push(now);
-            Some(now)
-        } else {
-            if max_requests == 0 {
-                return None;
-            }
-            if self.entries.len() >= size_cap {
-                if let Some(oldest_key) = self
-                    .entries
-                    .iter()
-                    .min_by_key(|(_, timestamps)| timestamps.first().copied())
-                    .map(|(k, _)| k.clone())
-                {
-                    self.entries.remove(&oldest_key);
-                }
-            }
-            self.entries.insert(key.to_string(), vec![now]);
-            Some(now)
+            return Some(now);
         }
+
+        if max_requests == 0 || !self.try_admit_new_key(window_secs, size_cap, now) {
+            return None;
+        }
+        let owned = key.to_string();
+        self.sweep_order.push_back(owned.clone());
+        self.entries.insert(owned, vec![now]);
+        Some(now)
     }
 
     fn rollback_at(&mut self, key: &str, timestamp: std::time::Instant) {
-        if let Some(entry) = self.entries.get_mut(key) {
+        let remove_key = if let Some(entry) = self.entries.get_mut(key) {
             if let Some(pos) = entry.iter().position(|t| *t == timestamp) {
                 entry.remove(pos);
             }
-            if entry.is_empty() {
-                self.entries.remove(key);
-            }
+            entry.is_empty()
+        } else {
+            false
+        };
+        if remove_key {
+            self.forget_key(key);
         }
     }
 }
@@ -213,28 +233,17 @@ impl RateLimiter {
     }
 
     fn check_and_record_ip(&self, ip: &str, window_secs: u64, max_requests: usize) -> bool {
-        self.inner.requests.lock().check_and_record_at(
-            ip,
-            window_secs,
-            max_requests,
-            self.inner.size_cap,
-            std::time::Instant::now(),
-        )
-    }
-
-    #[allow(dead_code)]
-    fn check_and_record_address(
-        &self,
-        address: &str,
-        window_secs: u64,
-        max_requests: usize,
-    ) -> bool {
-        if let Some(reservation) = self.reserve_address(address, window_secs, max_requests) {
-            reservation.commit();
-            true
-        } else {
-            false
-        }
+        self.inner
+            .requests
+            .lock()
+            .record_at(
+                ip,
+                window_secs,
+                max_requests,
+                self.inner.size_cap,
+                std::time::Instant::now(),
+            )
+            .is_some()
     }
 
     fn reserve_address(
@@ -244,7 +253,7 @@ impl RateLimiter {
         max_requests: usize,
     ) -> Option<AddressReservation> {
         let now = std::time::Instant::now();
-        let timestamp = self.inner.address_requests.lock().reserve_at(
+        let timestamp = self.inner.address_requests.lock().record_at(
             address,
             window_secs,
             max_requests,
@@ -284,18 +293,24 @@ impl RateLimiter {
         max_requests: usize,
         now: std::time::Instant,
     ) -> bool {
-        self.inner.requests.lock().check_and_record_at(
-            ip,
-            window_secs,
-            max_requests,
-            self.inner.size_cap,
-            now,
-        )
+        self.inner
+            .requests
+            .lock()
+            .record_at(ip, window_secs, max_requests, self.inner.size_cap, now)
+            .is_some()
+    }
+
+    #[cfg(test)]
+    fn set_ip_last_sweep(&self, now: std::time::Instant) {
+        self.inner.requests.lock().last_sweep = Some(now);
     }
 }
 
-/// RAII reservation guard for destination address rate limiting slot.
-/// Rolled back on drop unless committed.
+/// RAII reservation guard for a destination-address rate-limit slot.
+///
+/// Rolled back on drop unless [`commit`](Self::commit) has run. Commit before
+/// awaiting submit. [`rollback`](Self::rollback) undoes that commit when submit
+/// returns `Err`. A drop after commit, with no rollback, keeps the slot.
 struct AddressReservation {
     limiter: RateLimiter,
     address: String,
@@ -304,7 +319,16 @@ struct AddressReservation {
 }
 
 impl AddressReservation {
-    fn commit(mut self) {
+    /// Keep the slot if this guard is dropped. The guard stays usable so
+    /// [`rollback`](Self::rollback) can undo a failed submit.
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+
+    /// Release the slot and make [`Drop`] a no-op.
+    fn rollback(&mut self) {
+        self.limiter
+            .rollback_address_at(&self.address, self.timestamp);
         self.committed = true;
     }
 }
@@ -673,7 +697,7 @@ async fn faucet_handler(
     // on its own window and cap: an address must not become drainable just
     // because the caller rotates client IPs.
     let to_address_str = to_address.to_string();
-    let reservation = match state.rate_limiter.reserve_address(
+    let mut reservation = match state.rate_limiter.reserve_address(
         &to_address_str,
         state.config.address_rate_limit_window,
         state.config.address_max_requests,
@@ -806,7 +830,12 @@ async fn faucet_handler(
         }
     };
 
-    // Submit transaction
+    // Commit before awaiting submit. A client disconnect drops this future
+    // while the tx may already be in the node mempool; the slot must stay
+    // consumed. `rollback` runs only when submit returns `Err`. Pre-submit
+    // failures return above, while the guard is still uncommitted, so `Drop`
+    // releases the slot.
+    reservation.commit();
     match submit_transaction(
         &state.client,
         &state.config.rpc_url,
@@ -816,7 +845,6 @@ async fn faucet_handler(
     .await
     {
         Ok(tx_hash) => {
-            reservation.commit();
             info!(to = %to_address, amount = state.config.dispense_amount, tx_hash = %tx_hash, "faucet dispensed");
             (
                 StatusCode::OK,
@@ -832,6 +860,7 @@ async fn faucet_handler(
                 .into_response()
         }
         Err(e) => {
+            reservation.rollback();
             warn!("Failed to submit transaction: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1286,14 +1315,30 @@ mod guard_tests {
         // Different IP is allowed
         assert!(limiter.check_and_record_ip(ip2, window, max_req));
 
-        // Address rate limiting test (even across different IPs)
-        assert!(limiter.check_and_record_address(addr1, window, max_req));
-        assert!(limiter.check_and_record_address(addr1, window, max_req));
+        // Address rate limiting goes through the reservation API. A committed
+        // reservation keeps the slot; a refused one does not open a new slot.
+        assert!(commit_address(&limiter, addr1, window, max_req));
+        assert!(commit_address(&limiter, addr1, window, max_req));
         // 3rd request to same PRO-21 address is throttled
-        assert!(!limiter.check_and_record_address(addr1, window, max_req));
+        assert!(!commit_address(&limiter, addr1, window, max_req));
 
         // Different address is allowed
-        assert!(limiter.check_and_record_address(addr2, window, max_req));
+        assert!(commit_address(&limiter, addr2, window, max_req));
+    }
+
+    fn commit_address(
+        limiter: &RateLimiter,
+        address: &str,
+        window: u64,
+        max_requests: usize,
+    ) -> bool {
+        match limiter.reserve_address(address, window, max_requests) {
+            Some(mut reservation) => {
+                reservation.commit();
+                true
+            }
+            None => false,
+        }
     }
 
     #[test]
@@ -1319,16 +1364,100 @@ mod guard_tests {
         let now = std::time::Instant::now();
         let window = 3600;
 
-        for i in 0..15 {
+        for i in 0..cap {
             let ip = format!("192.0.2.{i}");
-            assert!(limiter.record_ip_at(&ip, window, 1, now));
-            assert!(
-                limiter.ip_count() <= cap,
-                "ip_count {} must not exceed cap {}",
-                limiter.ip_count(),
-                cap
-            );
+            assert!(limiter.record_ip_at(&ip, window, 1, now), "{ip}");
         }
+        assert_eq!(limiter.ip_count(), cap);
+        for i in cap..15 {
+            let ip = format!("192.0.2.{i}");
+            assert!(
+                !limiter.record_ip_at(&ip, window, 1, now),
+                "new key {ip} must be refused at the cap"
+            );
+            assert_eq!(limiter.ip_count(), cap);
+        }
+        // The first key was not evicted to make room: its slot is still used.
+        assert!(!limiter.record_ip_at("192.0.2.0", window, 1, now));
+        assert_eq!(limiter.ip_count(), cap);
+    }
+
+    #[test]
+    fn cap_refuses_a_new_ip_and_does_not_evict_a_live_victim() {
+        let cap = 3;
+        let limiter = RateLimiter::with_capacity_limit(cap);
+        let now = std::time::Instant::now();
+        let window = 3600;
+        let victim = "192.0.2.1";
+
+        assert!(limiter.record_ip_at(victim, window, 1, now));
+        assert!(limiter.record_ip_at("192.0.2.2", window, 1, now));
+        assert!(limiter.record_ip_at("192.0.2.3", window, 1, now));
+        assert!(!limiter.record_ip_at("192.0.2.99", window, 1, now));
+        assert_eq!(limiter.ip_count(), cap);
+        assert!(
+            !limiter.record_ip_at(victim, window, 1, now),
+            "victim must keep its spent slot"
+        );
+        assert_eq!(limiter.ip_count(), cap);
+    }
+
+    #[test]
+    fn address_cap_refuses_a_new_key_and_keeps_the_victim_limit() {
+        let limiter = RateLimiter::with_capacity_limit(2);
+        let window = 3600;
+        let victim = "addr-victim";
+
+        assert!(commit_address(&limiter, victim, window, 1));
+        assert!(commit_address(&limiter, "addr-other", window, 1));
+        assert!(!commit_address(&limiter, "addr-new", window, 1));
+        assert!(
+            !commit_address(&limiter, victim, window, 1),
+            "victim must keep its spent slot"
+        );
+    }
+
+    #[test]
+    fn sweep_frees_capacity_after_expiry() {
+        let cap = 2;
+        let limiter = RateLimiter::with_capacity_limit(cap);
+        let now = std::time::Instant::now();
+        let window = 60;
+
+        assert!(limiter.record_ip_at("192.0.2.1", window, 1, now));
+        assert!(limiter.record_ip_at("192.0.2.2", window, 1, now));
+        assert!(!limiter.record_ip_at("192.0.2.3", window, 1, now));
+
+        let later = now + Duration::from_secs(window + 1);
+        limiter.sweep_ip_at(window, later);
+        assert_eq!(limiter.ip_count(), 0);
+        assert!(limiter.record_ip_at("192.0.2.3", window, 1, later));
+        assert_eq!(limiter.ip_count(), 1);
+    }
+
+    #[test]
+    fn amortised_sweep_frees_expired_entries_when_periodic_sweep_is_not_due() {
+        let cap = 2;
+        let limiter = RateLimiter::with_capacity_limit(cap);
+        let now = std::time::Instant::now();
+        let window = 60;
+
+        assert!(limiter.record_ip_at("192.0.2.1", window, 1, now));
+        assert!(limiter.record_ip_at("192.0.2.2", window, 1, now));
+        assert!(!limiter.record_ip_at("192.0.2.3", window, 1, now));
+
+        // `probe` is past the rate-limit window, but last_sweep is only 1s
+        // behind it, so the periodic full sweep does not run. Admission must
+        // still drop the expired keys via the bounded sweep and then accept.
+        let probe = now + Duration::from_secs(window + 1);
+        limiter.set_ip_last_sweep(probe - Duration::from_secs(1));
+        assert!(limiter.record_ip_at("192.0.2.3", window, 1, probe));
+        assert_eq!(limiter.ip_count(), 1);
+
+        assert!(limiter.record_ip_at("192.0.2.4", window, 1, probe));
+        assert_eq!(limiter.ip_count(), cap);
+        assert!(!limiter.record_ip_at("192.0.2.1", window, 1, probe));
+        assert!(!limiter.record_ip_at("192.0.2.5", window, 1, probe));
         assert_eq!(limiter.ip_count(), cap);
     }
 
@@ -1391,6 +1520,7 @@ mod http_tests {
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tower::ServiceExt;
 
     const DISPENSE_ATOMS: u64 = 10 * 1_000_000_000;
@@ -1400,6 +1530,10 @@ mod http_tests {
         balance_atoms: u64,
         dispensed: Arc<Mutex<Vec<u64>>>,
         fail_submit: Arc<Mutex<bool>>,
+        /// When set, the next `sendRawTransaction` signals `submit_started`
+        /// and then waits until the caller drops the request.
+        hold_submit: Arc<AtomicBool>,
+        submit_started: Arc<tokio::sync::Notify>,
     }
 
     async fn stub_rpc_handler(
@@ -1433,6 +1567,10 @@ mod http_tests {
                         }
                     }
                 }
+                if stub.hold_submit.swap(false, Ordering::SeqCst) {
+                    stub.submit_started.notify_one();
+                    std::future::pending::<()>().await;
+                }
                 json!("0xfeed")
             }
             _ => json!(null),
@@ -1440,14 +1578,29 @@ mod http_tests {
         Json(json!({ "jsonrpc": "2.0", "id": 1, "result": result }))
     }
 
-    /// Start an in-process JSON-RPC stub and return `(url, dispensed amounts, fail_submit flag)`.
-    async fn stub_node_ext(balance_atoms: u64) -> (String, Arc<Mutex<Vec<u64>>>, Arc<Mutex<bool>>) {
+    /// Start an in-process JSON-RPC stub.
+    ///
+    /// Returns `(url, dispensed amounts, fail_submit flag, submit-started notify)`.
+    /// `hold_submit` makes the first `sendRawTransaction` signal the notify and
+    /// then wait until the faucet request is dropped.
+    async fn spawn_stub(
+        balance_atoms: u64,
+        hold_submit: bool,
+    ) -> (
+        String,
+        Arc<Mutex<Vec<u64>>>,
+        Arc<Mutex<bool>>,
+        Arc<tokio::sync::Notify>,
+    ) {
         let dispensed = Arc::new(Mutex::new(Vec::new()));
         let fail_submit = Arc::new(Mutex::new(false));
+        let submit_started = Arc::new(tokio::sync::Notify::new());
         let stub = StubState {
             balance_atoms,
             dispensed: dispensed.clone(),
             fail_submit: fail_submit.clone(),
+            hold_submit: Arc::new(AtomicBool::new(hold_submit)),
+            submit_started: submit_started.clone(),
         };
         let app = Router::new()
             .route("/rpc", post(stub_rpc_handler))
@@ -1457,7 +1610,18 @@ mod http_tests {
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        (format!("http://{addr}/rpc"), dispensed, fail_submit)
+        (
+            format!("http://{addr}/rpc"),
+            dispensed,
+            fail_submit,
+            submit_started,
+        )
+    }
+
+    /// Start an in-process JSON-RPC stub and return `(url, dispensed amounts, fail_submit flag)`.
+    async fn stub_node_ext(balance_atoms: u64) -> (String, Arc<Mutex<Vec<u64>>>, Arc<Mutex<bool>>) {
+        let (url, dispensed, fail_submit, _) = spawn_stub(balance_atoms, false).await;
+        (url, dispensed, fail_submit)
     }
 
     /// Start an in-process JSON-RPC stub and return `(url, dispensed amounts)`.
@@ -1466,7 +1630,6 @@ mod http_tests {
         (url, dispensed)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn faucet_state(
         rpc_url: &str,
         ip_window: u64,
@@ -1475,6 +1638,29 @@ mod http_tests {
         address_max: usize,
         trusted: &str,
         min_balance_atoms: u64,
+    ) -> Arc<FaucetState> {
+        faucet_state_with(
+            rpc_url,
+            ip_window,
+            ip_max,
+            address_window,
+            address_max,
+            trusted,
+            min_balance_atoms,
+            RateLimiter::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn faucet_state_with(
+        rpc_url: &str,
+        ip_window: u64,
+        ip_max: usize,
+        address_window: u64,
+        address_max: usize,
+        trusted: &str,
+        min_balance_atoms: u64,
+        rate_limiter: RateLimiter,
     ) -> Arc<FaucetState> {
         let signer = SigningKey::from_bytes(&[7u8; 32]);
         let faucet_address = Address::from_public_key(&PublicKey::from(signer.verifying_key()));
@@ -1493,7 +1679,7 @@ mod http_tests {
             },
             signer,
             faucet_address,
-            rate_limiter: RateLimiter::default(),
+            rate_limiter,
             client: reqwest::Client::new(),
         })
     }
@@ -1823,6 +2009,135 @@ mod http_tests {
         assert_eq!(
             rate_limited_count, 1,
             "exactly one request should be rate limited"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_after_submit_started_keeps_address_slot() {
+        let (rpc, dispensed, _, started) = spawn_stub(1_000 * 1_000_000_000, true).await;
+        let app = app(faucet_state(&rpc, 60, 100, 86_400, 1, "", 0));
+        let address = canonical(21);
+
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/faucet")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "address": address }).to_string()))
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(
+            "192.0.2.10:5000".parse::<SocketAddr>().unwrap(),
+        ));
+
+        let mut in_flight = std::pin::pin!(app.clone().oneshot(req));
+        tokio::select! {
+            finished = &mut in_flight => {
+                let status = finished.expect("handler response").status();
+                panic!("handler finished before the stub held submit: {status}");
+            }
+            _ = started.notified() => {}
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                panic!("timed out waiting for the stub to receive the transaction");
+            }
+        }
+        // Client cancelled after the node accepted the tx. The slot stays taken.
+        drop(in_flight);
+        assert_eq!(
+            dispensed.lock().len(),
+            1,
+            "the stub must have received the transaction before cancel"
+        );
+
+        let (status, body) =
+            post_faucet(&app, "192.0.2.11:5000", None, json!({ "address": address })).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("address"),
+            "cancelled submit must keep the address slot, got {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn low_balance_refusal_does_not_consume_the_address_slot() {
+        let (rpc, _) = stub_node(0).await;
+        let app = app(faucet_state(
+            &rpc,
+            60,
+            100,
+            86_400,
+            1,
+            "",
+            100 * 1_000_000_000,
+        ));
+        let address = canonical(33);
+
+        let (first, _) =
+            post_faucet(&app, "192.0.2.40:5000", None, json!({ "address": address })).await;
+        assert_eq!(first, StatusCode::SERVICE_UNAVAILABLE);
+
+        let (second, body) =
+            post_faucet(&app, "192.0.2.41:5000", None, json!({ "address": address })).await;
+        assert_eq!(
+            second,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "pre-submit failure must roll the slot back, got {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cap_returns_429_and_keeps_a_live_victim() {
+        let (rpc, _) = stub_node(1_000 * 1_000_000_000).await;
+        let app = app(faucet_state_with(
+            &rpc,
+            60,
+            10,
+            86_400,
+            10,
+            "",
+            0,
+            RateLimiter::with_capacity_limit(1),
+        ));
+        let victim_ip = "192.0.2.20:5000";
+        let addr_a = canonical(30);
+
+        let (ok, _) = post_faucet(&app, victim_ip, None, json!({ "address": addr_a })).await;
+        assert_eq!(ok, StatusCode::OK);
+
+        let (blocked_ip, body_ip) = post_faucet(
+            &app,
+            "192.0.2.21:5000",
+            None,
+            json!({ "address": canonical(31) }),
+        )
+        .await;
+        assert_eq!(blocked_ip, StatusCode::TOO_MANY_REQUESTS, "{body_ip}");
+        assert!(
+            body_ip["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("IP"),
+            "a new IP at the cap must be limited, got {body_ip}"
+        );
+
+        let (blocked_addr, body_addr) =
+            post_faucet(&app, victim_ip, None, json!({ "address": canonical(32) })).await;
+        assert_eq!(blocked_addr, StatusCode::TOO_MANY_REQUESTS, "{body_addr}");
+        assert!(
+            body_addr["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("address"),
+            "a new address at the cap must be limited, got {body_addr}"
+        );
+
+        let (again, again_body) =
+            post_faucet(&app, victim_ip, None, json!({ "address": addr_a })).await;
+        assert_eq!(
+            again,
+            StatusCode::OK,
+            "live victim entries must stay usable, got {again_body}"
         );
     }
 }

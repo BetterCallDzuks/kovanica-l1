@@ -1,4 +1,4 @@
-//! Plaintext payload padding — `docs/COMMS-M1-INTERFACES.md` §3.2.
+//! Plaintext payload padding. Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §3.2).
 //!
 //! The plaintext inside `ct` is compact JSON (`serde_json::to_vec` /
 //! `JSON.stringify`), then zero-padded up to the next bucket. The receiver

@@ -1,7 +1,7 @@
 //! Kovanica comms relay (M1 + M2) — store-and-forward for opaque envelopes.
 //!
-//! M1 spec: `docs/COMMS-M1-INTERFACES.md` §3 (§4 HTTP). M2 spec:
-//! `docs/COMMS-M2-INTERFACES.md` — PoW bound to envelope `id` and prepaid
+//! Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247.
+//! Former M1 §3 (§4 HTTP) and M2: PoW bound to envelope `id` and prepaid
 //! credit via HTLC payment proof. Wrapper submission preserves M1 `v=1` wire.
 
 #![deny(unsafe_code)]

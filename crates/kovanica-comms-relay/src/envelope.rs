@@ -1,4 +1,4 @@
-//! Envelope wire format v1 — `docs/COMMS-M1-INTERFACES.md` §3.
+//! Envelope wire format v1. Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §3).
 //!
 //! The `Envelope` struct mirrors §3.1 field-for-field. Byte fields are held as
 //! raw `Vec<u8>` in memory and rendered as **standard base64** (`A–Z a–z 0–9 + /`

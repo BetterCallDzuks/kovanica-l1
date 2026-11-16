@@ -1,7 +1,7 @@
 //! Minimal 1:1 end-to-end sealing for the Kovanica comms app (client-only).
 //!
-//! Spec: `docs/COMMS-M1-INTERFACES.md` §2 (E2E crypto v1, frozen API in §2.6) and
-//! §5 (cross-language KAT).
+//! Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247.
+//! Former M1 §2 (E2E crypto v1, frozen API in §2.6) and §5 (cross-language KAT).
 #![deny(unsafe_code)]
 
 use chacha20poly1305::aead::Aead;
