@@ -52,33 +52,42 @@ Preconditions:
 4. Nothing is published on a host port: the funder shares the node's network
    namespace and listens on loopback only.
 
-Run on seed1 (these paths are the ones used in the blocked attempt):
+Run on seed1. `<retired-keystore>` is
+`faucet.keystore.retired-20261116` on the deploy host; the passphrase file is the
+operator-supplied `0600` file:
 
 ```sh
-docker run -d --name kovanica-faucet-topup \
-  --network container:kovanica-chain2-node1 \
+docker run --rm --name kovanica-faucet-topup \
   --user 0:0 \
+  --network container:kovanica-chain2-node1 \
   --env-file /root/kovanica-chain2-rpc.env \
-  -v /root/faucet-topup/sender.json:/k.json:ro \
-  -v /root/faucet-topup/passphrase:/p.txt:ro \
+  -v <retired-keystore>:/keystore:ro \
+  -v /root/faucet-topup/old.pass:/pass:ro \
   --entrypoint kovanica-faucet kovanica-node:local \
   --chain-id 2 \
-  --keystore /k.json \
-  --passphrase-file /p.txt \
+  --keystore /keystore \
+  --passphrase-file /pass \
   --rpc-url http://127.0.0.1:8545/rpc \
   --listen 127.0.0.1:18500 \
   --dispense-kovanica 99999
 ```
 
+- There is no separate `kovanica-faucet` image: the repo builds one image
+  (`kovanica-node:local`) that ships both binaries, hence
+  `--entrypoint kovanica-faucet`.
+- `--chain-id 2` is mandatory — the binary has no default on purpose and refuses
+  to start without it.
+- `--dispense-kovanica 99999` must exceed the live faucet's 100 KVNC floor or the
+  top-up arrives and the faucet still refuses to dispense. 99 999 KVNC leaves
+  about 0.999 KVNC in the sender (fee 0.001 KVNC). Any amount
+  ≤ `balance − 0.001` works.
 - `--user 0:0` is needed because the bind-mounted keystore/passphrase are
   root-owned `0600`: the container user must be able to read them, and
   `read_passphrase_file` separately rejects any file that is group- or
   world-readable. (The long-running compose faucet runs as uid 10001 and
   therefore takes its passphrase from the env instead.)
-- `--dispense-kovanica 99999` drains the sender down to the 0.001 KVNC fee plus
-  dust. Use any amount ≤ `balance − 0.001`.
-- There is no per-request cap and the request body's `amount` is ignored; the
-  dispense size is fixed by this flag.
+- `--rm` is fine because the `tx_hash` comes back in the HTTP response, not from
+  the container log. If the `POST` fails, rerun without `--rm` to read why.
 
 Then request the single dispense from inside the node's namespace (the funder is
 not reachable from the host):
@@ -90,17 +99,23 @@ docker exec kovanica-chain2-node1 curl -s \
   http://127.0.0.1:18500/faucet
 ```
 
-The response carries `tx_hash`. Verify:
+The response carries `tx_hash`. The body has no per-request cap and its `amount`
+field is ignored: the dispense size is fixed by `--dispense-kovanica`.
+
+Verify the faucet, not the funder:
 
 ```sh
-docker exec kovanica-chain2-faucet curl -s -o /dev/null -w '%{http_code}\n' \
-  http://127.0.0.1:3000/health
-# balance for the faucet address via kovanica_getBalance on 127.0.0.1:8545/rpc
+docker exec kovanica-chain2-faucet sh -lc \
+  'curl -s -o /dev/null -w "health=%{http_code}\n" http://127.0.0.1:3000/health'
+docker exec kovanica-chain2-node1 curl -s -X POST \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"kovanica_getBalance","params":["kvnc8a4atp0g5tngcua9h90anhel7233alyd5y88h0yc592cv8adu5uyz46d3dag"]}' \
+  http://127.0.0.1:8545/rpc
 ```
 
-Clean up: `docker rm -f kovanica-faucet-topup`, and delete the copied keystore
-and passphrase file. Do **not** start the funder with `--rm`: its log has to
-survive long enough to read the `tx_hash` and any error.
+Report the `tx_hash` and the new balance only. Then shred the passphrase file
+(`shred -u /root/faucet-topup/old.pass`) and delete any keystore copy:
+`docker rm -f kovanica-faucet-topup` if it is still around.
 
 ## Guardrails
 
@@ -114,10 +129,11 @@ survive long enough to read the `tx_hash` and any error.
   An `--env-file` reference keeps the token out of the process list.
 - Set `--address-max-requests` to `1` for the top-up. A funded faucet with a
   high per-address cap is a drain target.
-- Fund **last**. If the live faucet's passphrase has ever been handled in a way
-  that could have echoed it (a pty wrapper, a shell with tracing, a pasted
-  command line), rotate the faucet keystore *before* the top-up lands, not after:
-  an empty faucet is the cheapest possible moment to rotate.
+- A prior `docker run -i` attempt **echoed a passphrase to the terminal**. Treat
+  that passphrase as exposed and rotate the live faucet passphrase once funding
+  works — the new value goes in the host env file only, never in git.
+- Do not add new secrets to the repo; the tracked ones stay where they are until
+  a separate, explicitly approved cleanup lands.
 
 ## Status on 2026-11-16: BLOCKED
 
@@ -143,17 +159,15 @@ node-volume signing keys (`validator.key`, legacy file name) and the
 identities hold 2 137.5 KVNC of earned block rewards between them, but no host
 key derives to those addresses either.
 
-### Unblock options
+### Paths
 
-1. Operator supplies the pre-rotation passphrase in a `0600` file on seed1 →
-   run the procedure above and record the `tx_hash`.
-2. Operator supplies any other funded, signable key on chain 2 → same procedure
-   with that keystore.
-3. Accept a faucet at `0` for now → the faucet stays healthy but dispenses
-   nothing; `STATE.md` gap #5 stays open.
-
-Only option 1 recovers the 100 000 KVNC already sitting in the genesis-funded
-account.
+- **Path A (the only one that recovers the funds):** the operator supplies the
+  pre-rotation passphrase in a `0600` file on seed1, then runs the one-shot
+  funder above and reports the `tx_hash` plus the new balance.
+- **Path B (not available):** fund from a genesis bootstrap identity. No host key
+  derives to those addresses, and they hold only earned block rewards.
+- **Path C:** leave the faucet at `0x0`. The faucet stays healthy but dispenses
+  nothing, and `STATE.md` gap #5 stays open.
 
 ## Secret hygiene findings (follow-up, needs its own PR)
 

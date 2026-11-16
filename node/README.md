@@ -162,6 +162,14 @@ snapshot is at least that new).
 
 kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) have no validator committee and no stake in consensus: blocks come from Hybrid PoW + GHOSTDAG mining. The installer never generates or handles validator keys — it produces a read-only full node. Mining setup is documented in [`docs/MINING.md`](../docs/MINING.md); staking operations are refused fail-closed on hybrid networks (#233).
 
+## Faucet (chain 2)
+
+The faucet is a separate process (`kovanica-faucet`, shipped in the same image) that signs
+transfers from its own keystore. After a re-genesis it can be healthy and still unable to
+dispense: `funded_accounts.toml` is a genesis input, so a top-up is an ordinary transfer from
+an already-funded account, not a genesis edit. Procedure, preconditions and the current
+blocked status: [`docs/FAUCET-FUNDING.md`](../docs/FAUCET-FUNDING.md).
+
 ## Cutting a release
 
 ```sh
