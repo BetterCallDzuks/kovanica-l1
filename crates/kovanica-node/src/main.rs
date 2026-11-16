@@ -85,6 +85,7 @@ use kovanica_types::{
 /// Command line arguments.
 #[derive(Parser, Debug)]
 #[command(name = "kovanica-node")]
+#[command(version)]
 #[command(about = "Kovanica (KVNC) full node", long_about = None)]
 #[command(subcommand_required = false, arg_required_else_help = false)]
 struct Args {

@@ -377,7 +377,7 @@ Default network configuration parameters (`crates/kovanica-node/src/config.rs`):
 
 ### Chain ID Registry
 - **`1`**: **kovanica-mainnet** (chain ID 1) (`MAINNET`) — strictly enforces PRO-21 canonical base32 addresses; consensus parameters frozen. `funded_accounts.toml` strictly forbidden. Release tag `v1.0.0-mainnet`.
-- **`2`**: **kovanica-testnet** (chain ID 2) (`TESTNET` / `HYBRID_TESTNET`) — canonical Hybrid PoW + GHOSTDAG public testnet; enforces PRO-21 base32 addresses (legacy hex rejected). Official network tag: `2-acfdf6a6c80fd28a`. Host topology is seed1-only (`seed1.kovanica.online`; seed2 and seed3 are no longer hosts).
+- **`2`**: **kovanica-testnet** (chain ID 2) (`TESTNET` / `HYBRID_TESTNET`) — canonical Hybrid PoW + GHOSTDAG public testnet; enforces PRO-21 base32 addresses (legacy hex rejected). Official network tag: `2-acfdf6a6c80fd28a`. Node release: `v0.3.0-node`. External peers bootstrap at `seed1.kovanica.online:8000` (DNS name only; seed2 and seed3 are not hosts).
 - **`3`**: **kovanica-devnet** (chain ID 3) (`DEVNET`) — lenient address parsing; allows parameter overrides.
 - **`1337`**: **local** (chain ID 1337) (`LOCAL`) — single-node / local cluster testing.
 

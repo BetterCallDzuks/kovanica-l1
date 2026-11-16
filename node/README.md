@@ -18,7 +18,11 @@ Chain 4 (`TESTNET_V2`) is **retired** and no longer registered: a binary built
 from current `main` refuses to start on it. See
 `docs/dev/CANONICAL-TESTNET-2.md`.
 
-## Install (public testnet, kovanica-testnet (chain ID 2))
+## Install (kovanica-testnet, release `v0.3.0-node`)
+
+The default installer downloads `v0.3.0-node`, writes a bootnode of
+`seed1.kovanica.online:8000` (DNS name only), and refuses to finish unless
+`kovanica-node network-tag` prints `2-acfdf6a6c80fd28a`.
 
 ```sh
 curl -fsSL https://kovanica.online/download/install.sh | sh
@@ -34,8 +38,9 @@ The installer:
 3. copies the genesis bundle into the data directory (default
    `/var/lib/kovanica`), refusing a data directory that already holds chain
    data;
-4. writes a non-validating config (`/etc/kovanica/kovanica.toml`) with the
-   current seed nodes as bootnodes and RPC bound to loopback;
+4. writes a non-validating config (`/etc/kovanica/kovanica.toml`) with
+   `seed1.kovanica.online:8000` as the bootnode (DNS name only) and RPC bound
+   to loopback;
 5. runs `kovanica-node --check-config` and `kovanica-node network-tag` against
    that candidate config and **refuses to continue** on a mismatch, before the
    config is moved into place;
@@ -58,11 +63,13 @@ has no peers. See `docs/TESTNET-RESET.md`.
 The installer takes the expected tag from, in order:
 
 1. `--expected-tag` (or `KOVANICA_EXPECTED_TAG`);
-2. an `expected-tag` file inside the checksum-verified bundle.
+2. on kovanica-testnet, the built-in pin `2-acfdf6a6c80fd28a`;
+3. an `expected-tag` file inside the checksum-verified bundle.
 
-If neither exists it **fails closed** — an unpinned install cannot tell a
-forked or wrong-network bundle from the right one. `--skip-tag-check` is the
-explicit opt-out; the node still prints its tag.
+A bundle `expected-tag` that disagrees with the pin is refused. If none of
+the three exists it **fails closed**. `--skip-tag-check` is the explicit
+opt-out; the node still prints its tag. `--version` and
+`KOVANICA_RELEASE_BASE` still override the download.
 
 ## Cutting a genesis bundle
 
@@ -131,19 +138,17 @@ kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) have no validato
 ## Cutting a release
 
 ```sh
-git tag v0.2.0-node
-git push origin v0.2.0-node
+git tag -a v0.3.0-node <merge SHA> -m "kovanica-node 0.3.0 (kovanica-testnet)"
+git push origin v0.3.0-node
 ```
 
-The workflow builds both architectures, runs the tag check against the bundle
-source, and publishes the tarballs, the bundle and `SHA256SUMS`. The bundle is
-expected to contain an `expected-tag` file (the installer reads it when no
-`--expected-tag` is given). Bump the default `VERSION` in
-`node/scripts/install.sh` when the download should move to the new release.
+The workflow builds both architectures, fails unless `network-tag` prints
+`2-acfdf6a6c80fd28a`, and on a tag publishes the tarballs, the
+kovanica-testnet genesis bundle and `SHA256SUMS`. `workflow_dispatch` builds
+the same artifacts and does not publish. The installer defaults to
+`VERSION=0.3.0` and pins that network tag. Earlier tags `v0.1.0-node` and
+`v0.2.0-node` stay where they are.
 
-> **Known follow-up:** `.github/workflows/release-node.yml` cuts the chain-2
-> bundle from `testnet/chain2/` with `kovanica-node genesis-bundle --chain-id 2`
-> and verifies it against a node's network tag. While `testnet/chain2/` exists in
-> the repository, publishing an official production chain-2 release bundle waits
-> on the final key ceremony output (`ops/genesis/ceremony.sh`) with the
-> production PRO-21 founder, treasury and bootstrap validator addresses.
+> The release workflow cuts the kovanica-testnet bundle from `testnet/chain2/`
+> with `kovanica-node genesis-bundle --chain-id 2` and requires the computed
+> network tag to be `2-acfdf6a6c80fd28a`.

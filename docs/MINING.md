@@ -1,6 +1,8 @@
 # Kovanica Proof-of-Work Mining Manual
 
-This document is the authoritative operator and developer guide for mining on the **Kovanica** Layer-1 blockchain (native ticker **KVNC**). It details the consensus invariants for the Hybrid PoW + GHOSTDAG network (Chain ID 2), the memory-hard **KovanicaHash** algorithm, local benchmarking via `kovanica miner bench`, solo mining operations, mining pool and Stratum protocol integration, JSON-RPC APIs, and VPS sizing guidelines.
+This document is the authoritative operator and developer guide for mining on the **Kovanica** Layer-1 blockchain (native ticker **KVNC**). It details the consensus invariants for Hybrid PoW + GHOSTDAG on **kovanica-testnet**, the memory-hard **KovanicaHash** algorithm, local benchmarking via `kovanica miner bench`, solo mining operations, mining pool and Stratum protocol integration, JSON-RPC APIs, and VPS sizing guidelines.
+
+**Release:** `v0.3.0-node`. **Network tag:** `2-acfdf6a6c80fd28a`. External peers bootstrap at `seed1.kovanica.online:8000` (DNS name only). See [Testnet Seed Nodes](TESTNET-SEED-NODES.md).
 
 ---
 
@@ -196,7 +198,7 @@ Example payout address:
 
 #### Mode A: Standalone CLI Solo Miner (`kovanica miner run`)
 
-The standalone CLI solo miner connects to any local or remote Kovanica node running Chain ID 2:
+The standalone CLI solo miner connects to a local or remote node on kovanica-testnet (`v0.3.0-node`, network tag `2-acfdf6a6c80fd28a`). Bootstrap is `seed1.kovanica.online:8000` (DNS name only):
 
 ```bash
 kovanica miner run \
