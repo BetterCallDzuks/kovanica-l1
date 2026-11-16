@@ -1719,10 +1719,12 @@ mod http_tests {
             "kovanica_getBalance" => json!(format!("0x{:x}", stub.balance_atoms)),
             "kovanica_getNonce" => json!("0x0"),
             "kovanica_sendRawTransaction" => {
-                if let Some(delay) = *stub.submit_delay_ms.lock() {
+                let delay = *stub.submit_delay_ms.lock();
+                if let Some(delay) = delay {
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
-                if let Some(err) = stub.submit_error.lock().take() {
+                let err = stub.submit_error.lock().take();
+                if let Some(err) = err {
                     return (
                         StatusCode::OK,
                         Json(json!({
