@@ -1,43 +1,44 @@
 {
   "chain_id": 1,
-  "comment": "UNUSABLE TEMPLATE: Placeholders must be filled by the offline genesis ceremony (ops/genesis/ceremony.sh) with Toni's verified public keys and addresses before kovanica-mainnet launch (1.1.2027). The node fails closed if placeholders remain.",
-  "emission_policy": "no-stake-82m",
+  "comment": "UNUSABLE TEMPLATE: Placeholders (digest_hex, signature_hex, founder/treasury addresses, bootstrap seed keys) must be filled by the offline genesis ceremony (ops/genesis/ceremony.sh) with Toni's verified public keys and PRO-21 addresses before kovanica-mainnet launch (1.1.2027). Premine (200k KVNC), treasury schedule (8M KVNC at 1M/yr), MAX_TARGET_BITS (0x1f00ffff), and genesis time are fixed in kovanica-params / consensus, not ceremony input. The node fails closed if placeholders remain.",
   "genesis_block": {
     "author": 0,
     "round": 0,
     "digest_hex": "PLACEHOLDER_MAINNET_GENESIS_DIGEST",
     "signature_hex": "PLACEHOLDER_MAINNET_GENESIS_SIGNATURE",
-    "timestamp": "PLACEHOLDER_MAINNET_GENESIS_TIMESTAMP_2027_01_01",
-    "initial_target_bits": "PLACEHOLDER_MAINNET_INITIAL_TARGET_BITS",
-    "parents": [],
+    "transactions": [],
     "statements": [],
-    "transactions": []
+    "parents": []
   },
   "staking_state": {
+    "committed_leader_height": 0,
+    "delegations": [],
+    "total_mining_issued": 0,
+    "total_staked": 0,
     "treasury": "PLACEHOLDER_MAINNET_TREASURY_ADDRESS",
     "validators": {}
   },
   "allocations": {
     "emission_policy": "no-stake-82m",
-    "founder_address_bytes": "PLACEHOLDER_MAINNET_FOUNDER_ADDRESS_BYTES",
-    "founder_address_hex": "PLACEHOLDER_MAINNET_FOUNDER_ADDRESS",
-    "founder_premine_atoms": "PLACEHOLDER_MAINNET_FOUNDER_PREMINE_ATOMS",
-    "treasury_address_bytes": "PLACEHOLDER_MAINNET_TREASURY_ADDRESS_BYTES",
     "treasury_address_hex": "PLACEHOLDER_MAINNET_TREASURY_ADDRESS",
-    "treasury_premine_atoms": "PLACEHOLDER_MAINNET_TREASURY_PREMINE_ATOMS",
+    "treasury_address_bytes": "PLACEHOLDER_MAINNET_TREASURY_ADDRESS_BYTES",
+    "founder_address_hex": "PLACEHOLDER_MAINNET_FOUNDER_ADDRESS",
+    "founder_address_bytes": "PLACEHOLDER_MAINNET_FOUNDER_ADDRESS_BYTES",
+    "founder_premine_atoms": 200000000000000,
+    "founder_premine_kovanica": 200000,
     "mining_subsidy_budget_atoms": 82000000000000000,
     "mining_subsidy_budget_kovanica": 82000000,
     "genesis_validator_allocation_atoms": 0,
-    "genesis_validator_allocation_kuna": 0,
+    "genesis_validator_allocation_kovanica": 0,
     "validators": [
       {
-        "comment": "PLACEHOLDER_MAINNET_BOOTSTRAP_SEEDS: Toni decides bootstrap seed identities and public addresses",
         "address_hex": "PLACEHOLDER_MAINNET_BOOTSTRAP_SEED_ADDRESS",
-        "public_key_hex": "PLACEHOLDER_MAINNET_BOOTSTRAP_SEED_PUBLIC_KEY",
         "genesis_liquid_atoms": 0,
         "genesis_share_atoms": 0,
+        "public_key_hex": "PLACEHOLDER_MAINNET_BOOTSTRAP_SEED_PUBLIC_KEY",
         "stake": 0
       }
     ]
-  }
+  },
+  "validator_keys": []
 }

@@ -622,11 +622,10 @@ fn run_genesis(args: GenesisArgs) -> Result<()> {
             "founder_address_bytes": hex::encode(founder.0),
             "founder_premine_atoms": FOUNDER_PREMINE,
             "founder_premine_kovanica": FOUNDER_PREMINE / ONE_KUNA,
-            "founder_premine_kuna": FOUNDER_PREMINE / ONE_KUNA,
             "mining_subsidy_budget_atoms": policy.mining_budget(),
             "mining_subsidy_budget_kovanica": policy.mining_budget() / ONE_KUNA,
             "genesis_validator_allocation_atoms": policy.genesis_validator_allocation(),
-            "genesis_validator_allocation_kuna": policy.genesis_validator_allocation() / ONE_KUNA,
+            "genesis_validator_allocation_kovanica": policy.genesis_validator_allocation() / ONE_KUNA,
             "validators": declared_validators.iter().map(|(address, stake, pk)| {
                 let share = alloc_entries
                     .iter()
@@ -13822,7 +13821,7 @@ mod b1_epoch_restart_repro {
         let validators_path = dir.path().join("validators.json");
         let genesis_out_path = dir.path().join("genesis.json");
 
-        // Generate 2 dummy deterministic public test keys (marked test-only)
+        // Generate 2 dummy random keys (marked test-only)
         let (_sk1, pk1) = kovanica_crypto::generate_keypair();
         let (_sk2, pk2) = kovanica_crypto::generate_keypair();
         let addr1 = Address::from_public_key(&pk1).to_string();
@@ -13868,7 +13867,8 @@ mod b1_epoch_restart_repro {
 
         assert_eq!(val["allocations"]["emission_policy"], "no-stake-82m");
         assert_eq!(val["allocations"]["genesis_validator_allocation_atoms"], 0);
-        assert_eq!(val["allocations"]["genesis_validator_allocation_kuna"], 0);
+        assert_eq!(val["allocations"]["genesis_validator_allocation_kovanica"], 0);
+        assert_eq!(val["allocations"]["founder_premine_kovanica"], 200_000);
         assert_eq!(
             val["allocations"]["mining_subsidy_budget_kovanica"],
             82_000_000
