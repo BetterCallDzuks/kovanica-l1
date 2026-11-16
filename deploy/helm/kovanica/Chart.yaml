@@ -2,8 +2,8 @@ apiVersion: v2
 name: kovanica
 description: Production Helm chart for deploying Kovanica (KVNC) blockchain nodes
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.3.0
+appVersion: "0.3.0"
 keywords:
   - blockchain
   - layer-1

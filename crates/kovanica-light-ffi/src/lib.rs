@@ -1818,9 +1818,11 @@ fn dispatch_local_rpc(
         }
         "eth_chainId" => Ok(serde_json::json!(format!("0x{:x}", chain_id))),
         "net_version" => Ok(serde_json::json!(chain_id.to_string())),
-        "web3_clientVersion" => Ok(serde_json::json!(
-            "KovanicaMobileNode/0.2.0 (Android; Wasmi-v0.40)"
-        )),
+        "web3_clientVersion" => Ok(serde_json::json!(concat!(
+            "KovanicaMobileNode/",
+            env!("CARGO_PKG_VERSION"),
+            " (Android; Wasmi-v0.40)"
+        ))),
         _ => Err(format!(
             "Method `{}` not supported on local mobile node",
             method
