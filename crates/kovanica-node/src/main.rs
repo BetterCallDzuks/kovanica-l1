@@ -13867,7 +13867,10 @@ mod b1_epoch_restart_repro {
 
         assert_eq!(val["allocations"]["emission_policy"], "no-stake-82m");
         assert_eq!(val["allocations"]["genesis_validator_allocation_atoms"], 0);
-        assert_eq!(val["allocations"]["genesis_validator_allocation_kovanica"], 0);
+        assert_eq!(
+            val["allocations"]["genesis_validator_allocation_kovanica"],
+            0
+        );
         assert_eq!(val["allocations"]["founder_premine_kovanica"], 200_000);
         assert_eq!(
             val["allocations"]["mining_subsidy_budget_kovanica"],
