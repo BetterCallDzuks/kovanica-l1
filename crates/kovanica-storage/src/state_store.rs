@@ -190,9 +190,74 @@ pub struct VerifiedSnapshot {
     pub leader_round: u64,
 }
 
+/// Outcome of [`StateStore::backfill_leader_digest_index`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaderDigestIndexBackfill {
+    /// The meta key was already set, so no header was scanned.
+    pub already_present: bool,
+    /// Headers written into the index. Zero when `already_present` is set.
+    pub count: u64,
+    /// Wall time of this call.
+    pub duration: std::time::Duration,
+}
+
 /// State store for accounts, contracts, and staking.
 pub struct StateStore {
     pruning: PruningConfig,
+}
+
+fn remove_digest_key_if_height(
+    table: &mut redb::Table<'_, [u8; 32], u64>,
+    key: [u8; 32],
+    height: u64,
+) -> Result<(), StateStoreError> {
+    if table.get(key)?.is_some_and(|guard| guard.value() == height) {
+        table.remove(key)?;
+    }
+    Ok(())
+}
+
+fn leader_digest_index_marked_read(txn: &ReadTransaction) -> Result<bool, StateStoreError> {
+    let table = match txn.open_table(crate::tables::INDEX_META) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
+        Err(err) => return Err(err.into()),
+    };
+    let present = table
+        .get(crate::tables::LEADER_DIGEST_INDEX_META_KEY)?
+        .is_some();
+    Ok(present)
+}
+
+fn leader_digest_index_marked_write(txn: &WriteTransaction) -> Result<bool, StateStoreError> {
+    let table = txn.open_table(crate::tables::INDEX_META)?;
+    let present = table
+        .get(crate::tables::LEADER_DIGEST_INDEX_META_KEY)?
+        .is_some();
+    Ok(present)
+}
+
+fn fill_leader_digest_index(txn: &WriteTransaction) -> Result<u64, StateStoreError> {
+    let rows = {
+        let table = txn.open_table(crate::tables::LEADER_HEADERS)?;
+        let mut rows = Vec::new();
+        for entry in table.iter()? {
+            let (height, value) = entry?;
+            rows.push((height.value(), value.value().to_vec()));
+        }
+        rows
+    };
+    let mut index = txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)?;
+    let mut count = 0u64;
+    for (height, bytes) in rows {
+        let header: kovanica_types::LeaderHeader = bincode::deserialize(&bytes)?;
+        index.insert(header.leader_digest.0, height)?;
+        index.insert(header.hash().0, height)?;
+        count += 1;
+    }
+    let mut meta = txn.open_table(crate::tables::INDEX_META)?;
+    meta.insert(crate::tables::LEADER_DIGEST_INDEX_META_KEY, vec![1u8])?;
+    Ok(count)
 }
 
 impl StateStore {
@@ -212,6 +277,7 @@ impl StateStore {
             let _ = write_txn.open_table(crate::tables::STATE_ROOT)?;
             let _ = write_txn.open_table(crate::tables::LEADER_HEADERS)?;
             let _ = write_txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)?;
+            let _ = write_txn.open_table(crate::tables::INDEX_META)?;
             let _ = write_txn.open_table(crate::tables::COMMIT_SEALS)?;
             let _ = write_txn.open_table(crate::tables::EXECUTED_TX_HASHES)?;
             let _ = write_txn.open_table(crate::tables::LIGHT_SET)?;
@@ -859,7 +925,9 @@ impl StateStore {
     ///
     /// A header already stored at this height with a different hash is
     /// replaced, and every seal at that height is deleted. The local
-    /// execution result is the one later seals must match.
+    /// execution result is the one later seals must match. The same
+    /// transaction drops the replaced header's hash and leader-digest index
+    /// keys when those keys still point at this height.
     pub fn save_leader_header(
         &self,
         txn: &WriteTransaction,
@@ -868,35 +936,52 @@ impl StateStore {
         let bytes = bincode::serialize(header)?;
         let height = header.committed_height;
         let new_hash = header.hash();
-        let replaced = {
+        let old = {
             let table = txn.open_table(crate::tables::LEADER_HEADERS)?;
-            let existing = table.get(height)?.map(|guard| guard.value().to_vec());
-            match existing {
-                Some(bytes) => {
-                    let old: kovanica_types::LeaderHeader = bincode::deserialize(&bytes)?;
-                    old.hash() != new_hash
-                }
-                None => false,
+            let bytes = table.get(height)?.map(|guard| guard.value().to_vec());
+            drop(table);
+            match bytes {
+                Some(bytes) => Some(bincode::deserialize::<kovanica_types::LeaderHeader>(
+                    &bytes,
+                )?),
+                None => None,
             }
         };
+        let replaced = old.as_ref().is_some_and(|old| old.hash() != new_hash);
         if replaced {
             self.delete_seals_at(txn, height)?;
         }
-        let mut table = txn.open_table(crate::tables::LEADER_HEADERS)?;
-        table.insert(height, bytes)?;
+        {
+            let mut table = txn.open_table(crate::tables::LEADER_HEADERS)?;
+            table.insert(height, bytes)?;
+        }
         let mut digest_table = txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)?;
+        if let Some(old) = old.as_ref().filter(|old| old.hash() != new_hash) {
+            let old_hash = old.hash().0;
+            let old_digest = old.leader_digest.0;
+            remove_digest_key_if_height(&mut digest_table, old_hash, height)?;
+            if old_digest != old_hash {
+                remove_digest_key_if_height(&mut digest_table, old_digest, height)?;
+            }
+        }
         digest_table.insert(header.leader_digest.0, height)?;
         digest_table.insert(new_hash.0, height)?;
         Ok(())
     }
 
     /// Lookup committed leader height by leader block digest or header hash.
+    ///
+    /// A database that has never created the index table is a miss, not an error.
     pub fn get_leader_height_by_digest(
         &self,
         txn: &ReadTransaction,
         digest: &kovanica_types::Hash,
     ) -> Result<Option<u64>, StateStoreError> {
-        let table = txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)?;
+        let table = match txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
         Ok(table.get(digest.0)?.map(|guard| guard.value()))
     }
 
@@ -914,20 +999,68 @@ impl StateStore {
         }
     }
 
-    /// Highest stored leader header. Keys are committed heights, so the
-    /// last row is the latest.
+    /// Highest stored leader header.
+    ///
+    /// Keys are committed heights, so the last row is the latest. This is one
+    /// `last()` read, not a scan of the table.
     pub fn get_latest_leader_header(
         &self,
         txn: &ReadTransaction,
     ) -> Result<Option<kovanica_types::LeaderHeader>, StateStoreError> {
-        let table = txn.open_table(crate::tables::LEADER_HEADERS)?;
-        let mut latest = None;
-        for entry in table.iter()? {
-            let (_height, value) = entry?;
-            let bytes = value.value().to_vec();
-            latest = Some(bincode::deserialize(&bytes)?);
+        let table = match txn.open_table(crate::tables::LEADER_HEADERS) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let Some((_, value)) = table.last()? else {
+            return Ok(None);
+        };
+        let bytes = value.value();
+        Ok(Some(bincode::deserialize(&bytes)?))
+    }
+
+    /// Scan `LEADER_HEADERS` once and fill the digest/hash index.
+    ///
+    /// Runs only when `leader_digest_index_v1` is absent. The scan, the index
+    /// writes, and the meta key share one write transaction. A later call is
+    /// a no-op even if headers were inserted without going through
+    /// [`Self::save_leader_header`].
+    pub fn backfill_leader_digest_index(
+        &self,
+        db: &redb::Database,
+    ) -> Result<LeaderDigestIndexBackfill, StateStoreError> {
+        let started = std::time::Instant::now();
+        if leader_digest_index_marked_read(&db.begin_read()?)? {
+            tracing::debug!("leader digest index already present");
+            return Ok(LeaderDigestIndexBackfill {
+                already_present: true,
+                count: 0,
+                duration: started.elapsed(),
+            });
         }
-        Ok(latest)
+        let txn = db.begin_write()?;
+        if leader_digest_index_marked_write(&txn)? {
+            drop(txn);
+            tracing::debug!("leader digest index already present");
+            return Ok(LeaderDigestIndexBackfill {
+                already_present: true,
+                count: 0,
+                duration: started.elapsed(),
+            });
+        }
+        let count = fill_leader_digest_index(&txn)?;
+        txn.commit()?;
+        let duration = started.elapsed();
+        tracing::info!(
+            count,
+            duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+            "leader digest index backfill finished"
+        );
+        Ok(LeaderDigestIndexBackfill {
+            already_present: false,
+            count,
+            duration,
+        })
     }
 
     /// Store one seal. A different signature already stored for the same
@@ -2304,6 +2437,186 @@ mod leader_header_tests {
                 .unwrap(),
             None
         );
+        assert_eq!(
+            storage
+                .state()
+                .get_leader_height_by_digest(&txn, &first.hash())
+                .unwrap(),
+            None,
+            "the replaced header hash must leave the index"
+        );
+    }
+
+    #[test]
+    fn replaced_header_keeps_an_index_key_that_points_elsewhere() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::new(dir.path().join("repoint.db")).unwrap();
+        let first = header(1, 1);
+        let other = header(2, 2);
+        let txn = storage.begin_write().unwrap();
+        storage.state().save_leader_header(&txn, &first).unwrap();
+        storage.state().save_leader_header(&txn, &other).unwrap();
+        {
+            let mut index = txn
+                .open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)
+                .unwrap();
+            index.insert(first.hash().0, 2u64).unwrap();
+        }
+        txn.commit().unwrap();
+
+        let mut replacement = first.clone();
+        replacement.state_root = Hash::new([9u8]);
+        replacement.leader_digest = Hash::new([0x44]);
+        assert_ne!(replacement.hash(), first.hash());
+        assert_ne!(replacement.leader_digest, first.leader_digest);
+        let txn = storage.begin_write().unwrap();
+        storage
+            .state()
+            .save_leader_header(&txn, &replacement)
+            .unwrap();
+        txn.commit().unwrap();
+
+        let txn = storage.begin_read().unwrap();
+        assert_eq!(
+            storage
+                .state()
+                .get_leader_height_by_digest(&txn, &first.hash())
+                .unwrap(),
+            Some(2),
+            "a key that no longer names this height stays put"
+        );
+        assert_eq!(
+            storage
+                .state()
+                .get_leader_height_by_digest(&txn, &first.leader_digest)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .state()
+                .get_leader_height_by_digest(&txn, &replacement.hash())
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            storage
+                .state()
+                .get_leader_height_by_digest(&txn, &replacement.leader_digest)
+                .unwrap(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn backfill_indexes_headers_once() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::new(dir.path().join("backfill.db")).unwrap();
+        let headers: Vec<_> = (1..=3).map(|height| header(height, height as u8)).collect();
+        {
+            let txn = storage.begin_write().unwrap();
+            {
+                let mut table = txn.open_table(crate::tables::LEADER_HEADERS).unwrap();
+                for header in &headers {
+                    table
+                        .insert(header.committed_height, bincode::serialize(header).unwrap())
+                        .unwrap();
+                }
+            }
+            txn.commit().unwrap();
+        }
+        {
+            let txn = storage.begin_read().unwrap();
+            assert!(storage
+                .state()
+                .get_leader_height_by_digest(&txn, &headers[0].hash())
+                .unwrap()
+                .is_none());
+        }
+
+        let first = storage.backfill_leader_digest_index().unwrap();
+        assert!(!first.already_present);
+        assert_eq!(first.count, 3);
+        {
+            let txn = storage.begin_read().unwrap();
+            for header in &headers {
+                assert_eq!(
+                    storage
+                        .state()
+                        .get_leader_height_by_digest(&txn, &header.leader_digest)
+                        .unwrap(),
+                    Some(header.committed_height)
+                );
+                assert_eq!(
+                    storage
+                        .state()
+                        .get_leader_height_by_digest(&txn, &header.hash())
+                        .unwrap(),
+                    Some(header.committed_height)
+                );
+            }
+        }
+
+        // A second run must not rebuild the index, even if a row is wrong.
+        {
+            let txn = storage.begin_write().unwrap();
+            {
+                let mut index = txn
+                    .open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)
+                    .unwrap();
+                index.insert(headers[0].hash().0, 42u64).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        let second = storage.backfill_leader_digest_index().unwrap();
+        assert!(second.already_present);
+        assert_eq!(second.count, 0);
+        let txn = storage.begin_read().unwrap();
+        assert_eq!(
+            storage
+                .state()
+                .get_leader_height_by_digest(&txn, &headers[0].hash())
+                .unwrap(),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn latest_leader_header_is_the_highest_of_10k_rows() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::new(dir.path().join("latest.db")).unwrap();
+        {
+            let txn = storage.begin_read().unwrap();
+            assert!(storage
+                .state()
+                .get_latest_leader_header(&txn)
+                .unwrap()
+                .is_none());
+        }
+        let txn = storage.begin_write().unwrap();
+        storage
+            .state()
+            .save_leader_header(&txn, &header(9_999, 1))
+            .unwrap();
+        for height in 0..9_999 {
+            storage
+                .state()
+                .save_leader_header(&txn, &header(height, 2))
+                .unwrap();
+        }
+        txn.commit().unwrap();
+        let txn = storage.begin_read().unwrap();
+        let latest = storage
+            .state()
+            .get_latest_leader_header(&txn)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.committed_height, 9_999);
+        assert!(storage
+            .state()
+            .get_leader_header(&txn, 0)
+            .unwrap()
+            .is_some());
     }
 }
 

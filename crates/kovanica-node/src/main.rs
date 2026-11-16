@@ -915,6 +915,9 @@ where
     let consensus_storage = Arc::new(Storage::new(config.consensus_db_path())?);
     let dag_store = Arc::new(DagStore::from_storage(consensus_storage.clone()));
     let state_storage = Arc::new(Storage::new(config.state_db_path())?);
+    state_storage
+        .backfill_leader_digest_index()
+        .context("backfilling the leader-header hash index")?;
     info!(dir = %config.data_dir.display(), "opened storage");
 
     // ------------------------------------------------------------------

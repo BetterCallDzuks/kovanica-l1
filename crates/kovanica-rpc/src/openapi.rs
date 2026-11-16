@@ -158,7 +158,18 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
         json!({
             "type": "string",
             "pattern": "^0x[a-f0-9]+$",
-            "description": "Ethereum-style quantity (minimal hex)"
+            "description": "Ethereum-style quantity (minimal hex). Response fields use this form."
+        }),
+    );
+
+    spec.components.schemas.insert(
+        "QuantityParam".to_string(),
+        json!({
+            "description": "Request quantity. A JSON integer, or an Ethereum-style 0x hex quantity.",
+            "oneOf": [
+                { "type": "integer", "minimum": 0 },
+                { "type": "string", "pattern": "^0x[a-fA-F0-9]+$" }
+            ]
         }),
     );
 
@@ -264,17 +275,17 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             "properties": {
                 "fromBlock": {
                     "oneOf": [
-                        { "type": "string", "enum": ["latest", "earliest", "pending"] },
-                        { "$ref": "#/components/schemas/Quantity" }
+                        { "type": "string", "enum": ["latest", "earliest", "pending", "safe", "finalized"] },
+                        { "$ref": "#/components/schemas/QuantityParam" }
                     ],
-                    "description": "Start committed-leader height (default: latest)"
+                    "description": "Start committed-leader height (default: latest). pending, safe, and finalized alias the committed tip."
                 },
                 "toBlock": {
                     "oneOf": [
-                        { "type": "string", "enum": ["latest", "earliest", "pending"] },
-                        { "$ref": "#/components/schemas/Quantity" }
+                        { "type": "string", "enum": ["latest", "earliest", "pending", "safe", "finalized"] },
+                        { "$ref": "#/components/schemas/QuantityParam" }
                     ],
-                    "description": "End committed-leader height (default: latest)"
+                    "description": "End committed-leader height (default: latest). pending, safe, and finalized alias the committed tip."
                 },
                 "address": {
                     "oneOf": [
@@ -376,14 +387,14 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
         ),
         (
             "kovanica_getBlockByNumber",
-            "Get block by height/round",
+            "Get block by committed height",
             "Chain",
             json!({
                 "type": "array",
                 "items": [
                     {
                         "oneOf": [
-                            { "$ref": "#/components/schemas/Quantity" },
+                            { "$ref": "#/components/schemas/QuantityParam" },
                             { "type": "string", "enum": ["latest", "earliest"] }
                         ]
                     },
@@ -736,13 +747,13 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
         ),
         (
             "kovanica_getBlockHeaderByNumber",
-            "Get block header by height/round",
+            "Get block header by committed height",
             "Chain",
             json!({
                 "type": "array",
                 "items": [{
                     "oneOf": [
-                        { "$ref": "#/components/schemas/Quantity" },
+                        { "$ref": "#/components/schemas/QuantityParam" },
                         { "type": "string", "enum": ["latest", "earliest"] }
                     ]
                 }],
