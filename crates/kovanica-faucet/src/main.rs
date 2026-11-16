@@ -1703,7 +1703,7 @@ mod http_tests {
     async fn stub_rpc_handler(
         axum::extract::State(stub): axum::extract::State<StubState>,
         Json(req): Json<Value>,
-    ) -> impl IntoResponse {
+    ) -> (StatusCode, Json<Value>) {
         let method = req
             .get("method")
             .and_then(Value::as_str)
@@ -1713,8 +1713,7 @@ mod http_tests {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": "invalid transaction" })),
-            )
-                .into_response();
+            );
         }
         let result = match method {
             "kovanica_getBalance" => json!(format!("0x{:x}", stub.balance_atoms)),
@@ -1731,8 +1730,7 @@ mod http_tests {
                             "id": 1,
                             "error": { "code": -32000, "message": err }
                         })),
-                    )
-                        .into_response();
+                    );
                 }
                 if *stub.fail_submit.lock() {
                     return (
@@ -1742,8 +1740,7 @@ mod http_tests {
                             "id": 1,
                             "error": { "code": -32000, "message": "tx rejected" }
                         })),
-                    )
-                        .into_response();
+                    );
                 }
                 let raw = req
                     .get("params")
@@ -1770,7 +1767,6 @@ mod http_tests {
             StatusCode::OK,
             Json(json!({ "jsonrpc": "2.0", "id": 1, "result": result })),
         )
-            .into_response()
     }
 
     /// Start an in-process JSON-RPC stub.
