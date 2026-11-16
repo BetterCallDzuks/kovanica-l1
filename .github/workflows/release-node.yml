@@ -105,9 +105,14 @@ jobs:
           EOF
           tag="$(target/release/kovanica-node network-tag --config "$work/kovanica.toml")"
           expected="$(cat "$work/data/expected-tag")"
-          echo "network tag: $tag (bundle expected-tag: $expected)"
+          canonical="2-acfdf6a6c80fd28a"
+          echo "network tag: $tag (bundle expected-tag: $expected, kovanica-testnet: $canonical)"
           if [ "$tag" != "$expected" ]; then
             echo "::error::network tag $tag does not match the bundle's expected-tag $expected; a node installing this bundle would be isolated from the mesh"
+            exit 1
+          fi
+          if [ "$tag" != "$canonical" ]; then
+            echo "::error::network tag $tag is not the kovanica-testnet tag $canonical"
             exit 1
           fi
           ( cd "$work/data" && sha256sum -c SHA256SUMS )
@@ -169,9 +174,36 @@ jobs:
           path: dist/kovanica-chain2-genesis.tar.gz
           if-no-files-found: error
 
+  checksums:
+    name: SHA256SUMS
+    needs: [build, bundle]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write SHA256SUMS
+        run: |
+          set -eu
+          cd dist
+          sha256sum ./*.tar.gz | sed 's| \./| |' >SHA256SUMS
+          test -s SHA256SUMS
+          grep -q 'kovanica-node-x86_64-linux.tar.gz' SHA256SUMS
+          grep -q 'kovanica-node-aarch64-linux.tar.gz' SHA256SUMS
+          grep -q 'kovanica-chain2-genesis.tar.gz' SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: dist/SHA256SUMS
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: [build, bundle]
+    needs: [build, bundle, checksums]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     steps:
@@ -189,6 +221,10 @@ jobs:
           # Strip the `./` that `sha256sum ./*` puts in front of each name so
           # install.sh can match on the bare asset name.
           sha256sum ./*.tar.gz | sed 's| \./| |' >SHA256SUMS
+          test -s SHA256SUMS
+          grep -q 'kovanica-node-x86_64-linux.tar.gz' SHA256SUMS
+          grep -q 'kovanica-node-aarch64-linux.tar.gz' SHA256SUMS
+          grep -q 'kovanica-chain2-genesis.tar.gz' SHA256SUMS
           cat SHA256SUMS
 
       - name: Create the GitHub release
@@ -198,9 +234,11 @@ jobs:
           set -eu
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Kovanica node ${GITHUB_REF_NAME%-node} - Linux (testnet, chain 2)" \
+            --title "kovanica-node ${GITHUB_REF_NAME%-node} (kovanica-testnet)" \
             --notes "$(cat <<'EOF'
-          Prebuilt `kovanica-node` for the public Kovanica testnet (chain 2).
+          Prebuilt `kovanica-node` for kovanica-testnet.
+
+          Network tag: `2-acfdf6a6c80fd28a`. External peers bootstrap at `seed1.kovanica.online:8000` (DNS name only).
 
           | Asset | Target |
           |---|---|
