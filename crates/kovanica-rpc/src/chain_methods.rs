@@ -5232,11 +5232,14 @@ mod tests {
         let ts1 = 1_700_000_100_000u64;
         let ts2 = 1_700_000_104_000u64; // +4s later
 
+        let pow_hash1 = Hash([0x11; 32]);
+        let pow_hash2 = Hash([0x12; 32]);
+
         let stmts1 = kovanica_types::encode_pow_statement(
             ts1,
             0x1f7f_ffff,
             101,
-            Some(Hash::new([0x11; 32])),
+            Some(pow_hash1),
             Some(Address([0x01; 32])),
         );
         let block1 = StatementBlock {
@@ -5246,7 +5249,7 @@ mod tests {
             transactions: vec![],
             statements: stmts1,
             signature: kovanica_types::Signature([1u8; 64]),
-            digest: Hash::new([0x21; 32]),
+            digest: Hash([0x21; 32]),
             merkle_root: Hash::zero(),
         };
 
@@ -5254,7 +5257,7 @@ mod tests {
             ts2,
             0x1f7f_ffff,
             102,
-            Some(Hash::new([0x12; 32])),
+            Some(pow_hash2),
             Some(Address([0x02; 32])),
         );
         let block2 = StatementBlock {
@@ -5268,7 +5271,7 @@ mod tests {
             transactions: vec![],
             statements: stmts2,
             signature: kovanica_types::Signature([2u8; 64]),
-            digest: Hash::new([0x22; 32]),
+            digest: Hash([0x22; 32]),
             merkle_root: Hash::zero(),
         };
 
@@ -5289,7 +5292,7 @@ mod tests {
             non_blue_root: Hash::zero(),
             blue_root: Hash::zero(),
             mysticghost: true,
-            state_root: Hash::new([0x31; 32]),
+            state_root: Hash([0x31; 32]),
             epoch: 0,
             committee_hash: Hash::zero(),
             timestamp: 0, // historical placeholder
@@ -5305,7 +5308,7 @@ mod tests {
             non_blue_root: Hash::zero(),
             blue_root: Hash::zero(),
             mysticghost: true,
-            state_root: Hash::new([0x32; 32]),
+            state_root: Hash([0x32; 32]),
             epoch: 0,
             committee_hash: Hash::zero(),
             timestamp: 0, // historical placeholder
@@ -5337,7 +5340,7 @@ mod tests {
         assert_eq!(res_num1["nonce"], json!(101));
         assert_eq!(
             res_num1["pow_hash"],
-            json!(format!("0x{}", hex::encode([0x11; 32])))
+            json!(format!("0x{}", hex::encode(pow_hash1.0)))
         );
         assert_eq!(res_num1["parent_hashes"], json!([]));
         assert_eq!(res_num1["transactions"], json!([]));
