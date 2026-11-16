@@ -93,6 +93,26 @@ web app on `127.0.0.1:3010`, which calls the faucet container on
 `127.0.0.1:3000`; that port is never proxied publicly. The faucet runs only on
 kovanica-testnet (chain ID 2) with a fixed amount, no client-chosen value.
 
+### CORS `Access-Control-Allow-Headers` vs. upstream `Authorization`
+
+When auditing `nginx -T` on `seed1` (`grep -i authorization`), matches in
+`add_header 'Access-Control-Allow-Headers' '...,Authorization'` are **CORS
+response headers** (`ops/ingress/nginx/cors.conf`), not injected upstream
+credentials:
+
+- `Access-Control-Allow-Headers` tells browsers that a cross-origin caller is
+  permitted to send its own `Authorization` header (e.g. a bearer token on
+  authenticated RPC writes). It does not add or forward any credential.
+- `proxy_set_header Authorization ...` injects an `Authorization` header onto
+  every proxied upstream request. **nginx must never add `proxy_set_header
+  Authorization`** on public vhosts.
+- **Current state:** The `dash.kovanica.online`, `mainnet.kovanica.online`, and
+  `testnet.kovanica.online` vhosts (and all other live vhosts on `seed1`) do
+  **not** set `proxy_set_header Authorization`.
+- **Future deploy check:** Verify with `nginx -T | grep -iE 'proxy_set_header.*authorization'`
+  (expected: empty) rather than a bare `authorization` grep that also matches
+  the CORS allow-list.
+
 Its two limiters are configured independently
 (`ops/docker/docker-compose.chain2.yml`): 5 requests per hour per client IP and
 1 per 24 h per destination address. Flag/env details are in
