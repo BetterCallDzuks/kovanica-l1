@@ -54,8 +54,8 @@ EXPOSE 8000 8545
 
 USER kovanica
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${KOVANICA_RPC_PORT:-8545}/health" >/dev/null || exit 1
+HEALTHCHECK --interval=30s --timeout=15s --start-period=40s --retries=5 \
+    CMD curl -fsS --max-time 10 "http://127.0.0.1:${KOVANICA_RPC_PORT:-8545}/health" >/dev/null || exit 1
 
 # The entrypoint provisions a persistent validator seed inside the data volume
 # (never in the image) and then execs the node.

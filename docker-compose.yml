@@ -33,11 +33,13 @@ x-node: &node
     KOVANICA_EMISSION_POLICY: "no-stake-82m"
     RUST_LOG: "info"
 
+# Same probe budget as the chain2 compose: longer than one KovanicaHash
+# verify, shorter than hiding a commit stall (HTTP 503 still fails).
 x-healthcheck: &healthcheck
-  interval: 10s
-  timeout: 5s
+  interval: 15s
+  timeout: 15s
   retries: 5
-  start_period: 20s
+  start_period: 40s
 
 services:
   seed:
@@ -55,7 +57,7 @@ services:
       - ./ops/docker/validators/funded_accounts.toml:/var/lib/kovanica/funded_accounts.toml:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8545/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8545/health"]
 
   val1:
     <<: *node
@@ -78,7 +80,7 @@ services:
       - ./ops/docker/validators/funded_accounts.toml:/var/lib/kovanica/funded_accounts.toml:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8546/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8546/health"]
 
   val2:
     <<: *node
@@ -101,7 +103,7 @@ services:
       - ./ops/docker/validators/funded_accounts.toml:/var/lib/kovanica/funded_accounts.toml:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8547/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8547/health"]
 
   val3:
     <<: *node
@@ -124,7 +126,7 @@ services:
       - ./ops/docker/validators/funded_accounts.toml:/var/lib/kovanica/funded_accounts.toml:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8548/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8548/health"]
 
   val4:
     <<: *node
@@ -147,7 +149,7 @@ services:
       - ./ops/docker/validators/funded_accounts.toml:/var/lib/kovanica/funded_accounts.toml:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8549/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8549/health"]
 
   val5:
     <<: *node
@@ -170,7 +172,7 @@ services:
       - ./ops/docker/validators/funded_accounts.toml:/var/lib/kovanica/funded_accounts.toml:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8550/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8550/health"]
 
 volumes:
   seed-data:

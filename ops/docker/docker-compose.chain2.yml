@@ -45,11 +45,14 @@ x-node: &node
     KOVANICA_MEMPOOL_MIN_FEE_RATE: "0"
     RUST_LOG: "info"
 
+# A 3s probe timed out while KovanicaHash held the event loop, so Docker
+# marked a node unhealthy even when /health would return 200. The timeout
+# stays above curl --max-time. HTTP 503 (commit stall) still fails the probe.
 x-healthcheck: &healthcheck
-  interval: 5s
-  timeout: 3s
-  retries: 10
-  start_period: 10s
+  interval: 15s
+  timeout: 15s
+  retries: 5
+  start_period: 40s
 
 services:
   node1:
@@ -73,7 +76,7 @@ services:
       - ./chain2/node1_p2p.key:/etc/kovanica/node1_p2p.key:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8545/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8545/health"]
 
   node2:
     <<: *node
@@ -95,7 +98,7 @@ services:
       - ../../testnet/chain2/funded_accounts.toml:/var/lib/kovanica/funded_accounts.toml:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8546/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8546/health"]
 
   node3:
     <<: *node
@@ -117,7 +120,7 @@ services:
       - ../../testnet/chain2/funded_accounts.toml:/var/lib/kovanica/funded_accounts.toml:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8547/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8547/health"]
 
   observer:
     <<: *node
@@ -141,7 +144,7 @@ services:
       - ../../testnet/chain2/funded_accounts.toml:/var/lib/kovanica/funded_accounts.toml:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8548/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:8548/health"]
 
   faucet:
     <<: *node
@@ -187,7 +190,7 @@ services:
       - ./chain2/faucet_passphrase:/var/lib/kovanica/faucet_passphrase:ro
     healthcheck:
       <<: *healthcheck
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
+      test: ["CMD", "curl", "-fsS", "--max-time", "10", "http://127.0.0.1:3000/health"]
 
   miner:
     <<: *node

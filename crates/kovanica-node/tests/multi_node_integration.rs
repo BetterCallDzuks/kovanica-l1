@@ -27,6 +27,10 @@
 //!
 //! For a 4-authority committee with equal stake, `quorum_threshold = 3`. This
 //! makes the partition arithmetic exact: 3 votes commit, 2 votes (or 1) do not.
+//!
+//! Hybrid PoW commit order is [`hybrid_three_nodes_commit_without_replay_or_gap`].
+//! Header timestamps stand in for block time, so that test does not sleep and
+//! is not one of the wall-clock cluster tests CI skips.
 
 #[path = "../../kovanica-consensus/tests/common/mod.rs"]
 mod common;
@@ -487,4 +491,109 @@ fn a_vote_timeout_split_union_commits_on_every_node() {
         );
         assert_eq!(node.engine.last_decided_round(), 9);
     }
+}
+
+/// Hybrid PoW liveness, in process. Three committers and a miner are not
+/// wall-clock tasks: block time is the header timestamp (`round * 4000 ms`),
+/// so the assertions do not sleep and do not depend on the cluster tests CI
+/// skips. A commit gap is the timestamp delta between successive leaders.
+#[test]
+fn hybrid_three_nodes_commit_without_replay_or_gap() {
+    use kovanica_consensus::ghostdag::{CommitWaitReason, GhostdagCommitter};
+    use kovanica_types::block::{BlockHeader, BlockReference};
+
+    const TARGET_MS: u64 = 4_000;
+    const M: u64 = 12;
+    const GAP_LIMIT: u64 = 3 * TARGET_MS;
+
+    fn pow_block(
+        round: u64,
+        author: u16,
+        parents: Vec<BlockReference>,
+        nonce: u64,
+    ) -> StatementBlock {
+        let mut header = BlockHeader::new(
+            kovanica_params::CHAIN_ID_HYBRID_TESTNET,
+            round,
+            author,
+            parents,
+            Hash::zero(),
+            1_700_000_000_000 + round * TARGET_MS,
+            0x207f_ffff,
+            nonce,
+        );
+        header.pow_hash = Some(header.compute_pow_hash());
+        header.to_statement_block(Vec::new())
+    }
+
+    fn digests(subdags: &[CommittedSubDag]) -> Vec<Hash> {
+        subdags.iter().map(|sub| sub.leader.digest).collect()
+    }
+
+    let mut nodes = [
+        GhostdagCommitter::new(5),
+        GhostdagCommitter::new(5),
+        GhostdagCommitter::new(5),
+    ];
+    let mut previous = pow_block(0, 0, vec![], 0);
+    let mut committed: Vec<Hash> = Vec::new();
+    let mut last_ts = 1_700_000_000_000u64;
+    for round in 0..M {
+        let block = if round == 0 {
+            previous.clone()
+        } else {
+            pow_block(round, (round % 3) as u16, vec![previous.reference()], round)
+        };
+        let mut orders = Vec::new();
+        for node in &mut nodes {
+            node.add_block(block.clone());
+            let committed_now = node.commit_uncommitted_selected_chain();
+            assert_eq!(committed_now.len(), 1, "round {round} stalled");
+            let ts = 1_700_000_000_000 + round * TARGET_MS;
+            if round > 0 {
+                assert!(ts.saturating_sub(last_ts) <= GAP_LIMIT);
+            }
+            orders.push(digests(&committed_now));
+        }
+        assert_eq!(orders[0], orders[1]);
+        assert_eq!(orders[1], orders[2]);
+        assert!(!committed.contains(&orders[0][0]));
+        committed.push(orders[0][0]);
+        last_ts = 1_700_000_000_000 + round * TARGET_MS;
+        previous = block;
+    }
+    assert!(nodes[0].commit_uncommitted_selected_chain().is_empty());
+    assert_eq!(
+        nodes[0].last_commit_observation().reason,
+        CommitWaitReason::TipAlreadyCommitted
+    );
+
+    // Heavier fork off round 2. Already-executed prefix leaders must not be
+    // returned, and all three nodes must emit the new leaders in one order.
+    let mut anchor = pow_block(0, 0, vec![], 0);
+    for round in 1..=2 {
+        anchor = pow_block(round, (round % 3) as u16, vec![anchor.reference()], round);
+    }
+    let mut fork_parent = anchor;
+    let mut fork = Vec::new();
+    for offset in 1..=(M - 2 + 1) {
+        let block = pow_block(2 + offset, 4, vec![fork_parent.reference()], 500 + offset);
+        fork.push(block.clone());
+        fork_parent = block;
+    }
+    let mut fork_orders = Vec::new();
+    for node in &mut nodes {
+        for block in &fork {
+            node.add_block(block.clone());
+        }
+        let committed_now = node.commit_uncommitted_selected_chain();
+        let digests = digests(&committed_now);
+        for old in &committed {
+            assert!(!digests.contains(old), "replayed an executed leader");
+        }
+        assert!(!digests.is_empty());
+        fork_orders.push(digests);
+    }
+    assert_eq!(fork_orders[0], fork_orders[1]);
+    assert_eq!(fork_orders[1], fork_orders[2]);
 }

@@ -8,7 +8,9 @@ use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::{Registry, Unit};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Global metrics registry.
 static REGISTRY: Lazy<Mutex<Registry>> = Lazy::new(|| Mutex::new(Registry::default()));
@@ -554,6 +556,94 @@ pub fn record_committed_leader(round: i64, digest_prefix: u64) {
     // Prometheus gauges are i64; the fingerprint is used only for equality
     // comparisons, so its signedness does not matter.
     KOVANICA_LAST_COMMITTED_DIGEST_PREFIX.set(digest_prefix as i64);
+    observe_commit_gap();
+}
+
+/// Seconds between successive real commits. The first commit of a process
+/// has no previous sample and is not observed.
+static KOVANICA_COMMIT_GAP_SECONDS: Lazy<Histogram> = Lazy::new(|| {
+    let buckets: Vec<f64> =
+        prometheus_client::metrics::histogram::exponential_buckets(0.5, 2.0, 12).collect();
+    let histogram = Histogram::new(buckets);
+    let mut registry = REGISTRY.lock().unwrap();
+    registry.register_with_unit(
+        "kovanica_commit_gap",
+        "Seconds between successive committed leaders on this node",
+        Unit::Seconds,
+        histogram.clone(),
+    );
+    histogram
+});
+
+/// Unix time of the last real commit, in seconds.
+static KOVANICA_LAST_COMMIT_UNIX: Lazy<Gauge> = Lazy::new(|| {
+    let gauge = Gauge::default();
+    let mut registry = REGISTRY.lock().unwrap();
+    registry.register(
+        "kovanica_last_commit_unix",
+        "Unix time of the last committed leader, in seconds",
+        gauge.clone(),
+    );
+    gauge
+});
+
+/// Already-executed leader rounds the committer refused to re-queue, plus
+/// rounds execution no-op'd because the leader digest was already applied.
+static KOVANICA_REPLAY_ROUNDS_TOTAL: Lazy<Counter> = Lazy::new(|| {
+    let counter = Counter::default();
+    let mut registry = REGISTRY.lock().unwrap();
+    registry.register(
+        "kovanica_replay_rounds",
+        "Already-executed leader rounds skipped by the committer or no-op'd by execution",
+        counter.clone(),
+    );
+    counter
+});
+
+/// Legacy committee leader slots that reached the local deadline with no
+/// commit decision. Hybrid PoW chains do not increment this: the leader
+/// there is the block, and the validator clock is not running.
+static KOVANICA_LEADER_TIMEOUTS_TOTAL: Lazy<Counter> = Lazy::new(|| {
+    let counter = Counter::default();
+    let mut registry = REGISTRY.lock().unwrap();
+    registry.register(
+        "kovanica_leader_timeouts",
+        "Legacy committee leader slots that timed out with no commit decision",
+        counter.clone(),
+    );
+    counter
+});
+
+static LAST_COMMIT_UNIX_MS: AtomicU64 = AtomicU64::new(0);
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn observe_commit_gap() {
+    let now_ms = unix_ms();
+    let previous = LAST_COMMIT_UNIX_MS.swap(now_ms, Ordering::Relaxed);
+    KOVANICA_LAST_COMMIT_UNIX.set((now_ms / 1000) as i64);
+    // Touch the histogram so the series exists before the second commit.
+    let histogram = &*KOVANICA_COMMIT_GAP_SECONDS;
+    if previous > 0 && now_ms > previous {
+        histogram.observe((now_ms - previous) as f64 / 1000.0);
+    }
+}
+
+/// Count leader rounds that were already executed and must not be applied again.
+pub fn record_replay_rounds(count: u64) {
+    if count > 0 {
+        KOVANICA_REPLAY_ROUNDS_TOTAL.inc_by(count);
+    }
+}
+
+/// Count one legacy committee leader timeout.
+pub fn record_leader_timeout() {
+    KOVANICA_LEADER_TIMEOUTS_TOTAL.inc();
 }
 
 /// Timeouts this node signed for a leader slot it never voted for
@@ -598,6 +688,9 @@ pub fn record_skipped_leader(reason: SkipReason) {
             reason: reason.as_str(),
         })
         .inc();
+    if reason == SkipReason::Timeout {
+        record_leader_timeout();
+    }
 }
 
 /// Record a leader committed by the union-quorum rule (votes plus timeouts).
@@ -987,6 +1080,7 @@ mod tests {
         let _guard = serial();
         record_committed_leader(7, 0xdead_beef_0000_0001);
         record_skipped_leader(SkipReason::Timeout);
+        record_replay_rounds(2);
         observe_finality_latency(0.25);
         record_connected_peers(4);
         record_active_validators(17);
@@ -1011,6 +1105,10 @@ mod tests {
             "kovanica_skipped_leaders_total{reason=\"certified\"}",
             "kovanica_timeouts_signed_total",
             "kovanica_vote_timeout_equivocations_total",
+            "kovanica_commit_gap_seconds",
+            "kovanica_last_commit_unix",
+            "kovanica_replay_rounds_total",
+            "kovanica_leader_timeouts_total",
         ] {
             assert!(text.contains(expected), "missing {expected} in:\n{text}");
         }

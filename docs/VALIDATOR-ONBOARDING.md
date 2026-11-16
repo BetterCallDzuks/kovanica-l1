@@ -298,7 +298,9 @@ curl http://127.0.0.1:8545/metrics
 #   kovanica_finality_latency_seconds (histogram),
 #   kovanica_last_committed_round, kovanica_connected_peers,
 #   kovanica_active_validators, kovanica_sync_errors_total{kind},
-#   kovanica_last_committed_digest_prefix, kovanica_rss_bytes
+#   kovanica_last_committed_digest_prefix, kovanica_rss_bytes,
+#   kovanica_commit_gap_seconds, kovanica_last_commit_unix,
+#   kovanica_replay_rounds_total, kovanica_leader_timeouts_total
 ```
 
 `block_height` is the **committed leader** height; `current_round` is the local

@@ -923,6 +923,23 @@ where
 
     /// Main round loop - advances rounds and produces blocks.
     async fn round_loop(&self) -> Result<(), ConsensusError> {
+        // Hybrid PoW has no validator leader and no vote quorum. Running this
+        // clock anyway advances a round counter far past the DAG round and
+        // logs "Leader round N timed out" for a committee member who was
+        // never going to produce the block. The block is the leader; GHOSTDAG
+        // commits it. Stay alive so /health does not see the engine exit.
+        if !legacy_leader_clock_enabled(self.signing_ctx.chain_id) {
+            info!(
+                chain_id = self.signing_ctx.chain_id,
+                "hybrid PoW chain: legacy committee leader clock is off"
+            );
+            while *self.running.read() {
+                tokio::time::sleep(Duration::from_millis(self.config.round_duration_ms.max(1)))
+                    .await;
+            }
+            return Ok(());
+        }
+
         let mut round_interval = interval(Duration::from_millis(self.config.round_duration_ms));
 
         while *self.running.read() {
@@ -2292,6 +2309,15 @@ where
     }
 }
 
+/// The Mysticeti round ticker, validator leader slot, and skip timeout.
+///
+/// Off on hybrid PoW chains (kovanica-mainnet and kovanica-testnet). There
+/// the leader is the block GHOSTDAG selects, not `committee.leader(round)`,
+/// and a round with no PoW block is not a timed-out validator slot.
+pub fn legacy_leader_clock_enabled(chain_id: u64) -> bool {
+    !kovanica_types::signing::chain_id::is_hybrid(chain_id)
+}
+
 /// Errors that can occur in consensus operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ConsensusError {
@@ -2344,6 +2370,15 @@ mod tests {
     use super::*;
     const TEST_CTX: kovanica_types::SigningContext =
         kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL);
+
+    #[test]
+    fn hybrid_chains_do_not_run_the_legacy_leader_clock() {
+        use kovanica_types::signing::chain_id::{DEVNET, LOCAL, MAINNET, TESTNET};
+        assert!(!legacy_leader_clock_enabled(TESTNET));
+        assert!(!legacy_leader_clock_enabled(MAINNET));
+        assert!(legacy_leader_clock_enabled(LOCAL));
+        assert!(legacy_leader_clock_enabled(DEVNET));
+    }
 
     fn test_block_sig(
         key: &kovanica_types::SigningKey,
