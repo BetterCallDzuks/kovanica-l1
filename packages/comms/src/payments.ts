@@ -170,7 +170,7 @@ export function buildHtlcCallArgs(
   arg1: Uint8Array,
   arg2: Uint8Array,
   arg3: Uint8Array | bigint,
-  arg4?: bigint,
+  _arg4?: bigint,
   arg5?: bigint,
 ): Uint8Array {
   let c: Uint8Array;

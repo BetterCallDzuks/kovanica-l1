@@ -120,10 +120,8 @@ jobs:
 
   audit:
     name: cargo audit
-    # Advisory-database churn would block unrelated pull requests, so this runs
-    # on the nightly schedule and on demand only. Ignore entries are justified
-    # in .cargo/audit.toml.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Cargo audit gates PRs against known vulnerabilities. Ignore entries are
+    # justified in .cargo/audit.toml.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
