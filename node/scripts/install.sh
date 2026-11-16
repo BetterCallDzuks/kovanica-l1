@@ -8,13 +8,15 @@
 #
 #   curl -fsSL https://kovanica.online/download/install.sh | sh
 #
-# The default network is the canonical hybrid public testnet (chain_id 2).
-# Mainnet (1), devnet (3) and local (1337) are selectable with --chain-id, but
+# The default network is kovanica-testnet (chain ID 2). Its network tag is
+# pinned to 2-acfdf6a6c80fd28a: after install, `kovanica-node network-tag`
+# must print that value or the installer exits. kovanica-mainnet (1),
+# kovanica-devnet (3) and local (1337) are selectable with --chain-id, but
 # only a network whose bundle is published for that release can pass the tag
-# check.
+# check. External peers bootstrap at seed1.kovanica.online (DNS name only).
 #
 # Options (also accepted as arguments to a saved copy):
-#   --version <v>     node release version          (default 0.2.0)
+#   --version <v>     node release version          (default 0.3.0)
 #   --chain-id <id>   network to install for        (default 2, testnet)
 #   --bundle-asset <name>  genesis asset in the release
 #                          (default kovanica-chain<chain-id>-genesis.tar.gz)
@@ -43,7 +45,7 @@
 
 set -eu
 
-VERSION="${KOVANICA_VERSION:-0.2.0}"
+VERSION="${KOVANICA_VERSION:-0.3.0}"
 REPO="KovanicaDAG/kovanica-l1"
 RELEASE_BASE="${KOVANICA_RELEASE_BASE:-https://github.com/${REPO}/releases/download/v${VERSION}-node}"
 
@@ -74,7 +76,10 @@ TAG_CHECK=1
 UNINSTALL=0
 DRY_RUN=0
 
-BOOTNODES="${KOVANICA_BOOTNODES:-seed1.kovanica.online:8000,seed3.kovanica.online:8000}"
+# External peers bootstrap via seed1's DNS name only. KOVANICA_BOOTNODES
+# still overrides this list.
+BOOTNODES="${KOVANICA_BOOTNODES:-seed1.kovanica.online:8000}"
+CANONICAL_TESTNET_TAG="2-acfdf6a6c80fd28a"
 
 die() {
     printf 'install: error: %s\n' "$*" >&2
@@ -120,10 +125,10 @@ case "$CHAIN_ID" in
 esac
 
 case "$CHAIN_ID" in
-    1)    NETWORK_LABEL="mainnet (chain 1)" ;;
-    2)    NETWORK_LABEL="testnet (chain 2)" ;;
-    3)    NETWORK_LABEL="devnet (chain 3)" ;;
-    1337) NETWORK_LABEL="local devnet (chain 1337)" ;;
+    1)    NETWORK_LABEL="kovanica-mainnet" ;;
+    2)    NETWORK_LABEL="kovanica-testnet" ;;
+    3)    NETWORK_LABEL="kovanica-devnet" ;;
+    1337) NETWORK_LABEL="local" ;;
     *)    NETWORK_LABEL="chain ${CHAIN_ID}" ;;
 esac
 
@@ -157,6 +162,13 @@ if [ -n "$EXPECTED_TAG" ]; then
         || die "--expected-tag '${EXPECTED_TAG}' is not of the form <chain-id>-<16 lowercase hex>"
     [ "${EXPECTED_TAG%%-*}" = "$CHAIN_ID" ] \
         || die "--expected-tag ${EXPECTED_TAG} belongs to chain ${EXPECTED_TAG%%-*}, not chain ${CHAIN_ID}"
+fi
+
+# kovanica-testnet is pinned. --expected-tag and KOVANICA_EXPECTED_TAG still
+# override the pin; the default install does not.
+if [ "$CHAIN_ID" = "2" ] && [ -z "$EXPECTED_TAG" ]; then
+    EXPECTED_TAG="$CANONICAL_TESTNET_TAG"
+    say "kovanica-testnet network tag pin ${EXPECTED_TAG}"
 fi
 
 BIN_PATH="${PREFIX}/bin/kovanica-node"
@@ -301,14 +313,20 @@ if [ "$CHAIN_ID" = "1" ] || [ "$CHAIN_ID" = "2" ]; then
     [ -n "$RECORDED_TREASURY" ] || die "${BUNDLE_DIR}/genesis_validators.toml records no treasury_address; chain ${CHAIN_ID} requires one so the network tag binds the treasury"
 fi
 
-# The expected tag comes from the command line, the environment, or a file
-# inside the bundle - in that order. A bundle that names its own tag is what
-# lets a release add a network without touching this script.
-if [ -z "$EXPECTED_TAG" ] && [ -f "${BUNDLE_DIR}/expected-tag" ]; then
-    EXPECTED_TAG="$(tr -d '[:space:]' < "${BUNDLE_DIR}/expected-tag")"
-    tag_shape_ok "$EXPECTED_TAG" \
-        || die "the bundle's expected-tag '${EXPECTED_TAG}' is not of the form <chain-id>-<16 lowercase hex>"
-    say "expected tag ${EXPECTED_TAG} (from the bundle)"
+# The expected tag comes from the command line, the environment, the
+# kovanica-testnet pin, or a file inside the bundle - in that order. A bundle
+# whose expected-tag disagrees with the pin is refused.
+if [ -f "${BUNDLE_DIR}/expected-tag" ]; then
+    bundle_tag="$(tr -d '[:space:]' < "${BUNDLE_DIR}/expected-tag")"
+    tag_shape_ok "$bundle_tag" \
+        || die "the bundle's expected-tag '${bundle_tag}' is not of the form <chain-id>-<16 lowercase hex>"
+    if [ -n "$EXPECTED_TAG" ] && [ "$bundle_tag" != "$EXPECTED_TAG" ]; then
+        die "the bundle's expected-tag ${bundle_tag} does not match the required ${NETWORK_LABEL} tag (${EXPECTED_TAG}); refusing to install"
+    fi
+    if [ -z "$EXPECTED_TAG" ]; then
+        EXPECTED_TAG="$bundle_tag"
+        say "expected tag ${EXPECTED_TAG} (from the bundle)"
+    fi
 fi
 
 if [ -n "$EXPECTED_TAG" ]; then
@@ -400,7 +418,7 @@ ${treasury_block}
 # Non-validating full node: no signing key, no votes, RPC on loopback only.
 run_validator = false
 
-# Seed nodes. Plaintext TCP 8000; do not point these at a proxied hostname.
+# Bootstrap peer. DNS name only (seed1.kovanica.online); do not point this at a proxied hostname.
 bootnodes = [${boot_list}]
 
 max_peers = 50

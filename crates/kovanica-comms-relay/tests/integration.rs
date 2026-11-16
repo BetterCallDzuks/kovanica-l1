@@ -1,4 +1,4 @@
-//! Integration tests for `kovanica-comms-relay` — `docs/COMMS-M1-INTERFACES.md` §3–§5.
+//! Integration tests for `kovanica-comms-relay`. Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §3–§5).
 
 use std::sync::Arc;
 

@@ -1,8 +1,9 @@
 # Testnet seed nodes — kovanica L1
 
-**Network:** public/hybrid testnet: kovanica-testnet (chain ID 2) (kovanica-devnet (chain ID 3), local (chain ID 1337))
+**Network:** kovanica-testnet (chain ID 2). Node release: `v0.3.0-node`.
 **Network Tag:** `2-acfdf6a6c80fd28a`
 **Topology:** seed1-only host (seed2 and seed3 are retired as hosts; seed3 / seed-extra remain only as bootstrap identities in genesis)
+**External peers:** bootstrap at `seed1.kovanica.online:8000` only. Use that DNS name. Do not configure a numeric address.
 **P2P:** TCP 8000, libp2p swarm
 **RPC:** 8545 (loopback-only)
 

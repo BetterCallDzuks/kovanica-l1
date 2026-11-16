@@ -1,4 +1,4 @@
-//! In-memory relay store — `docs/COMMS-M1-INTERFACES.md` §4 semantics.
+//! In-memory relay store. Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §4 semantics).
 //!
 //! One [`Store`] holds every undelivered envelope for every recipient. Design
 //! points from the spec:

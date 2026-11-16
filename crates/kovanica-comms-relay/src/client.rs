@@ -1,4 +1,4 @@
-//! reqwest client for the relay HTTP API v1 (`docs/COMMS-M1-INTERFACES.md` §4).
+//! reqwest client for the relay HTTP API v1. Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §4).
 //!
 //! Small, typed wrapper so the CLI / desktop client never hand-builds URLs or
 //! re-parses §4 error bodies.

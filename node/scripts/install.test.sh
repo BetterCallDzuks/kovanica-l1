@@ -89,9 +89,9 @@ expect() { # <description> <pattern>
 }
 
 # --- a healthy chain-2 install -------------------------------------------------
-build_release chain2 kovanica-chain2-genesis.tar.gz 2-0123456789abcdef 2-0123456789abcdef
+build_release chain2 kovanica-chain2-genesis.tar.gz 2-acfdf6a6c80fd28a 2-acfdf6a6c80fd28a
 run chain2 ok
-expect "installs and verifies the tag" "matches the published testnet (chain 2) tag"
+expect "installs and verifies the tag" "matches the published kovanica-testnet tag"
 
 if [ "$status" -eq 0 ] && [ -x "$TMP/run-ok/prefix/bin/kovanica-node" ] \
    && [ -f "$TMP/run-ok/home/kovanica.toml" ]; then
@@ -103,10 +103,10 @@ fi
 conf="$TMP/run-ok/home/kovanica.toml"
 if grep -q '^chain_id = 2$' "$conf" \
    && grep -q "^treasury_address = \"$TREASURY\"\$" "$conf" \
-   && grep -q '^bootnodes = \["seed1.kovanica.online:8000", "seed3.kovanica.online:8000"\]$' "$conf"; then
-    pass "config targets chain 2 with the recorded treasury and the current seeds"
+   && grep -q '^bootnodes = \["seed1.kovanica.online:8000"\]$' "$conf"; then
+    pass "config targets kovanica-testnet with the recorded treasury and seed1"
 else
-    fail "config targets chain 2 with the current seeds"
+    fail "config targets kovanica-testnet with seed1"
     sed 's/^/    | /' "$conf"
 fi
 
@@ -127,7 +127,7 @@ fi
 run chain2 skip --skip-tag-check
 expect "--skip-tag-check is an explicit opt-out" "tag check skipped"
 
-build_release untreasured kovanica-chain2-genesis.tar.gz 2-0123456789abcdef 2-0123456789abcdef
+build_release untreasured kovanica-chain2-genesis.tar.gz 2-acfdf6a6c80fd28a 2-acfdf6a6c80fd28a
 reseal_bundle untreasured kovanica-chain2-genesis.tar.gz 'chain_id = 2'
 run untreasured no-treasury
 expect "a chain-2 bundle without a treasury is refused" "records no treasury_address"
@@ -139,7 +139,7 @@ fi
 
 build_release untagged kovanica-chain2-genesis.tar.gz "" 2-0123456789abcdef
 run untagged no-tag
-expect "fails closed when nothing pins the tag" "no expected network tag for chain 2"
+expect "default kovanica-testnet pin rejects a different binary tag" "does not match the published kovanica-testnet tag (2-acfdf6a6c80fd28a)"
 if [ "$status" -ne 0 ] && [ ! -f "$TMP/run-no-tag/home/kovanica.toml" ]; then
     pass "a failed tag check leaves no config behind"
 else
@@ -159,9 +159,13 @@ expect "a malformed tag is rejected" "is not of the form"
 run chain2 non-numeric --chain-id two
 expect "a non-numeric chain id is rejected" "must be a number"
 
-build_release tagged-wrong-tag kovanica-chain2-genesis.tar.gz 2-0123456789abcdef 2-ffffffffffffffff
+build_release tagged-wrong-tag kovanica-chain2-genesis.tar.gz 2-acfdf6a6c80fd28a 2-ffffffffffffffff
 run tagged-wrong-tag mismatch
-expect "a binary on the wrong set is refused" "does not match the published testnet (chain 2) tag"
+expect "a binary on the wrong set is refused" "does not match the published kovanica-testnet tag (2-acfdf6a6c80fd28a)"
+
+build_release bundle-disagrees kovanica-chain2-genesis.tar.gz 2-0123456789abcdef 2-acfdf6a6c80fd28a
+run bundle-disagrees bundle-tag
+expect "a bundle tag other than the kovanica-testnet pin is refused" "does not match the required kovanica-testnet tag (2-acfdf6a6c80fd28a)"
 
 # --- mainnet rules -------------------------------------------------------------
 build_release mainnet kovanica-chain1-genesis.tar.gz 1-0123456789abcdef 1-0123456789abcdef funded_accounts.toml
@@ -169,7 +173,7 @@ run mainnet funded --chain-id 1
 expect "mainnet refuses a bundle with funded_accounts.toml" "chain 1 (mainnet) forbids"
 
 # --- an existing config is never rewritten ------------------------------------
-build_release chain2c kovanica-chain2-genesis.tar.gz 2-0123456789abcdef 2-0123456789abcdef
+build_release chain2c kovanica-chain2-genesis.tar.gz 2-acfdf6a6c80fd28a 2-acfdf6a6c80fd28a
 mkdir -p "$TMP/run-treasury-mismatch/home"
 printf 'chain_id = 2\ntreasury_address = "%s"\n' "$OTHER_TREASURY" >"$TMP/run-treasury-mismatch/home/kovanica.toml"
 run chain2c treasury-mismatch
@@ -182,14 +186,14 @@ else
     sed 's/^/    | /' "$TMP/run-treasury-mismatch/home/kovanica.toml"
 fi
 
-build_release chain2d kovanica-chain2-genesis.tar.gz 2-0123456789abcdef 2-0123456789abcdef
+build_release chain2d kovanica-chain2-genesis.tar.gz 2-acfdf6a6c80fd28a 2-acfdf6a6c80fd28a
 mkdir -p "$TMP/run-treasury-match/home"
 printf 'chain_id = 2\ntreasury_address = "%s"\n' "$TREASURY" >"$TMP/run-treasury-match/home/kovanica.toml"
 run chain2d treasury-match
 expect "an existing config with the bundle treasury is kept" "existing config treasury matches the bundle"
 
 # --- an existing data dir is never overwritten --------------------------------
-build_release chain2b kovanica-chain2-genesis.tar.gz 2-0123456789abcdef 2-0123456789abcdef
+build_release chain2b kovanica-chain2-genesis.tar.gz 2-acfdf6a6c80fd28a 2-acfdf6a6c80fd28a
 mkdir -p "$TMP/run-busy/data"
 : >"$TMP/run-busy/data/consensus.redb"
 run chain2b busy

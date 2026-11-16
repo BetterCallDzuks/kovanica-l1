@@ -23,7 +23,7 @@ import { ALG_V1, e2eAad, encodePayload, sealTo } from "./messaging.js";
 
 const enc = new TextEncoder();
 
-// Pinned KAT inputs — docs/COMMS-M1-INTERFACES.md §5.
+// Pinned KAT inputs. Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §5).
 const SENDER_SEED = new Uint8Array(32).fill(1);
 const RECIPIENT_SEED = new Uint8Array(32).fill(2);
 const EPH_SECRET = new Uint8Array(32).fill(3);
