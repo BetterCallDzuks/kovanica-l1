@@ -124,7 +124,11 @@ Storage (redb / pruning / snapshots)
   (node-local: first sighting of the leader block → durable commit),
   `kovanica_last_committed_round`, `kovanica_connected_peers`,
   `kovanica_active_validators`, `kovanica_sync_errors_total{kind}`,
-  `kovanica_last_committed_digest_prefix`, `kovanica_rss_bytes`
+  `kovanica_last_committed_digest_prefix`, `kovanica_rss_bytes`,
+  `kovanica_commit_gap_seconds` (histogram; first commit of a process is not
+  a sample), `kovanica_last_commit_unix`, `kovanica_replay_rounds_total`,
+  `kovanica_leader_timeouts_total` (legacy committee clock only; hybrid PoW
+  leaves it flat)
 - `alerts_reference_registered_metrics` is a test, not a convention: it parses
   every `expr:` in `ops/prometheus/alerts.yml` and fails if a rule alerts on a
   series the registry never exports. Five series were dead before this test

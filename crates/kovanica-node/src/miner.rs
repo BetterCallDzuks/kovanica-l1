@@ -1,7 +1,7 @@
 //! Node mining worker and difficulty calculation for Hybrid PoW.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kovanica_consensus::daa::{calculate_next_target_bits, DaaConfig};
 use kovanica_consensus::ghostdag::GhostdagCommitter;
@@ -125,6 +125,8 @@ pub async fn run_mining_loop(
 
     let miner = NodeMiner::new(chain_id);
     let mut current_nonce: u64 = (author as u64).wrapping_mul(10_000_000);
+    // (round, when hashing it started, whether the 30s wait was logged).
+    let mut round_wait: Option<(u64, Instant, bool)> = None;
 
     loop {
         if *shutdown_rx.borrow() {
@@ -134,6 +136,11 @@ pub async fn run_mining_loop(
 
         let parents = select_parents_from_tips(&dag_store, kovanica_params::GHOSTDAG_K as usize);
         let round = next_round(&dag_store, &parents);
+        let (round_started, mut logged_wait) = match round_wait {
+            Some((waiting_round, started, logged)) if waiting_round == round => (started, logged),
+            _ => (Instant::now(), false),
+        };
+        round_wait = Some((round, round_started, logged_wait));
 
         let parent_refs: Vec<BlockReference> = parents
             .iter()
@@ -226,6 +233,15 @@ pub async fn run_mining_loop(
                     "abandoning header: a peer already settled this round"
                 );
                 break None;
+            }
+            if !logged_wait && round_started.elapsed() >= Duration::from_secs(30) {
+                info!(
+                    round,
+                    waited_secs = round_started.elapsed().as_secs(),
+                    "no PoW block yet for this round; commit waits for a header that meets the target"
+                );
+                logged_wait = true;
+                round_wait = Some((round, round_started, true));
             }
         };
 

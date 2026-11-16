@@ -369,24 +369,26 @@ impl ExecutionContext {
         // 1. Check idempotency first (before any execution). A replayed
         // sub-DAG must not freeze a committee snapshot: the live state is now
         // past that epoch, so a late snapshot would poison the epoch.
+        //
+        // The check is a read transaction. A write transaction per replay
+        // held the state-database lock and blocked the next real commit.
         {
-            let check = storage.begin_write()?;
-            let executed = {
-                let table = check
-                    .open_table(EXECUTED_SUBDAGS)
-                    .map_err(StorageError::Table)?;
-                let present = table
+            let check = storage.begin_read()?;
+            let executed = match check.open_table(EXECUTED_SUBDAGS) {
+                Ok(table) => table
                     .get(subdag.leader.digest.0)
                     .map_err(StorageError::Storage)?
-                    .is_some();
-                present
+                    .is_some(),
+                Err(redb::TableError::TableDoesNotExist(_)) => false,
+                Err(error) => return Err(StorageError::Table(error).into()),
             };
             if executed {
                 let emission_policy = storage
                     .state()
-                    .load_emission_policy_write(&check)?
+                    .load_emission_policy(&check)?
                     .or(self.emission_policy)
                     .unwrap_or(EmissionPolicy::Legacy81M);
+                kovanica_consensus::metrics::record_replay_rounds(1);
                 return Ok(ExecutionResult {
                     reward: None,
                     txs_applied: 0,
@@ -397,7 +399,6 @@ impl ExecutionContext {
                     state_root: None,
                 });
             }
-            drop(check); // abort the empty txn before opening another write txn
         }
 
         // 1b. Pin the epoch committee BEFORE the sub-DAG's transactions run,
@@ -2416,12 +2417,15 @@ mod tests {
     }
 
     fn read_balance(storage: &Storage, address: &Address) -> u64 {
+        read_account(storage, address).balance
+    }
+
+    fn read_account(storage: &Storage, address: &Address) -> Account {
         let txn = storage.begin_read().expect("read txn");
         storage
             .state()
             .get_account_or_default(&txn, address)
             .expect("account")
-            .balance
     }
 
     // (c) execute_committed_subdag must credit the leader's payout address
@@ -2525,6 +2529,91 @@ mod tests {
             expected_leader_side + (reward2.amount * 80 / 100),
             "forfeit credits nothing"
         );
+    }
+
+    /// A second delivery of an executed leader must not move balances, the
+    /// sender nonce, the committed height, or a stored leader header.
+    #[test]
+    fn replay_does_not_double_apply_balance_nonce_height_or_header() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::new(dir.path().join("replay.redb")).expect("storage");
+        let mut ctx = ExecutionContext::new();
+        let validator = Address([1u8; 32]);
+        let payout = Address([9u8; 32]);
+        ctx.staking
+            .join_validator(
+                validator,
+                kovanica_staking::MIN_VALIDATOR_STAKE,
+                0,
+                Some(payout),
+                None,
+                None,
+            )
+            .expect("join validator");
+        persist_initial_staking_state(&storage, &ctx.staking);
+
+        let subdag = sample_committed_subdag(1, 0);
+        ctx.execute_committed_subdag(&subdag, &storage)
+            .expect("first commit");
+        let height = ctx.staking.committed_leader_height;
+        let supply = ctx.staking.circulating_supply();
+        let balance = read_balance(&storage, &payout);
+        let nonce = read_nonce(&storage, &payout);
+        assert!(height >= 1);
+        assert!(balance > 0);
+
+        let header = kovanica_types::LeaderHeader {
+            committed_height: height,
+            leader_round: subdag.leader_round,
+            leader_digest: subdag.leader.digest,
+            leader_author: subdag.leader_author,
+            parent_leader_digest: Hash::zero(),
+            tx_merkle_root: Hash::zero(),
+            executed_tx_root: Hash::zero(),
+            non_blue_root: Hash::zero(),
+            blue_root: Hash::zero(),
+            mysticghost: false,
+            state_root: Hash::new([0x11; 32]),
+            epoch: 0,
+            committee_hash: Hash::zero(),
+            timestamp: 0,
+        };
+        {
+            let txn = storage.begin_write().expect("header write");
+            storage
+                .state()
+                .save_leader_header(&txn, &header)
+                .expect("store header");
+            txn.commit().expect("commit header");
+        }
+
+        let replay = ctx
+            .execute_committed_subdag(&subdag, &storage)
+            .expect("replay");
+        assert!(replay.reward.is_none());
+        assert!(replay.state_root.is_none());
+        assert_eq!(replay.txs_applied, 0);
+        assert_eq!(ctx.staking.committed_leader_height, height);
+        assert_eq!(ctx.staking.circulating_supply(), supply);
+        assert_eq!(read_balance(&storage, &payout), balance);
+        assert_eq!(read_nonce(&storage, &payout), nonce);
+        let stored_height = {
+            let txn = storage.begin_read().expect("read height");
+            storage
+                .consensus()
+                .get_committed_leader_height(&txn)
+                .expect("height")
+        };
+        assert_eq!(stored_height, height);
+        let stored_header = {
+            let txn = storage.begin_read().expect("read header");
+            storage
+                .state()
+                .get_leader_header(&txn, height)
+                .expect("header read")
+                .expect("header present")
+        };
+        assert_eq!(stored_header, header);
     }
 
     /// Freeze a committee snapshot directly, as the first sub-DAG of an epoch

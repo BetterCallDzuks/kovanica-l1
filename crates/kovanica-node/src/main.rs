@@ -45,9 +45,9 @@ pub use config::ALLOW_GENESIS_MISMATCH_ENV;
 
 use kovanica_consensus::engine::{BlockManagerTrait, DagStoreTrait};
 use kovanica_consensus::metrics::{
-    record_active_validators, record_block_height, record_connected_peers, record_current_round,
-    record_mempool_size, record_peer_count, record_rss_bytes, record_rss_proxy, record_sync_error,
-    SyncErrorKind,
+    record_active_validators, record_block_height, record_committed_leader, record_connected_peers,
+    record_current_round, record_mempool_size, record_peer_count, record_rss_bytes,
+    record_rss_proxy, record_sync_error, SyncErrorKind,
 };
 use kovanica_consensus::{AuthorityInfo, CommitteeInfo, ConsensusConfig, ConsensusEngine, Vote};
 use kovanica_dag::{BlockManager, BlockManagerError, DagStore, DagStoreError};
@@ -2951,8 +2951,21 @@ fn ingest_block(
                 continue;
             }
 
-            // 4. Expensive PoW verification (memory-hard KovanicaHash computation and declared check)
-            if let Err(e) = header.verify_pow_with_clock(Some(now_ms)) {
+            // 4. Expensive PoW verification (memory-hard KovanicaHash computation and declared check).
+            // On the multi-thread runtime, mark this worker blocking so /health, the
+            // miner, and the rest of the runtime keep being polled. block_in_place
+            // panics on a current-thread runtime, which the unit tests use, so those
+            // verify inline. This stays synchronous: the catch-up lock must not be
+            // held across an await.
+            let pow_result = match tokio::runtime::Handle::try_current() {
+                Ok(handle)
+                    if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+                {
+                    tokio::task::block_in_place(|| header.verify_pow_with_clock(Some(now_ms)))
+                }
+                _ => header.verify_pow_with_clock(Some(now_ms)),
+            };
+            if let Err(e) = pow_result {
                 warn!(digest = %block.digest, error = %e, "rejected hybrid block: failed verify_pow_with_clock");
                 if current_is_initial {
                     return Err(match e {
@@ -4953,6 +4966,10 @@ async fn run_execution(
     enforce_min_active: bool,
 ) {
     // Execution verifies tx signatures with the node's configured chain id.
+    // Hybrid commits are not counted by the Mysticeti engine, so the gap and
+    // last-commit gauges are recorded here. Stake chains already record them
+    // in the engine; counting again would bisect every gap.
+    let record_hybrid_commit = kovanica_types::signing::chain_id::is_hybrid(signing_ctx.chain_id);
     let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
     ctx.log_publisher = Some(Box::new(EventLogPublisher(events.clone())));
     match state_storage.begin_read() {
@@ -4987,99 +5004,118 @@ async fn run_execution(
             maybe = subdags.recv() => match maybe {
                 Some(subdag) => match ctx.execute_committed_subdag(&subdag, &state_storage) {
                     Ok(result) => {
-                        info!(
-                            round = subdag.leader_round,
-                            txs = result.txs_applied,
-                            "executed committed sub-DAG"
-                        );
-                        record_block_height(ctx.staking.committed_leader_height as i64);
-                        record_current_round(subdag.leader_round as i64);
-                        // E1: epoch is a pure function of the committed leader
-                        // round. Compute it via the ONE shared unit and rebuild
-                        // the RPC committee at the boundary so `getCommittee`
-                        // and the light-client seal paths always see the current
-                        // epoch's committee.
-                        let committed_epoch = kovanica_types::epoch_for_round(subdag.leader_round);
-                        if let Some(prev) = last_epoch {
-                            if prev != committed_epoch {
-                                info!(
-                                    from_epoch = prev,
-                                    to_epoch = committed_epoch,
-                                    round = subdag.leader_round,
-                                    "epoch boundary crossed; rebuilding committee for RPC"
-                                );
-                                match build_committee_for_round(
-                                    &state_storage,
-                                    &public_key,
-                                    &validator_address,
-                                    &listen_addr,
-                                    subdag.leader_round,
-                                    enforce_min_active,
-                                ) {
-                                    Ok(new_committee) => {
-                                        let mut guard = rpc_committee.write().await;
-                                        *guard = new_committee;
-                                    }
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to rebuild committee at epoch boundary");
-                                    }
-                                }
+                        // state_root is None only on the already-executed early
+                        // return. A real empty block still has a root. Do not
+                        // log the replay as a fresh execution, and do not walk
+                        // the round gauge or the commit-stall clock back to
+                        // round 1.
+                        if result.state_root.is_none() {
+                            debug!(
+                                round = subdag.leader_round,
+                                "replayed already-executed sub-DAG"
+                            );
+                        } else {
+                            info!(
+                                round = subdag.leader_round,
+                                txs = result.txs_applied,
+                                "executed committed sub-DAG"
+                            );
+                            record_block_height(ctx.staking.committed_leader_height as i64);
+                            record_current_round(subdag.leader_round as i64);
+                            if record_hybrid_commit {
+                                let d = subdag.leader.digest.0;
+                                let digest_prefix = u64::from_be_bytes([
+                                    d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7],
+                                ]);
+                                record_committed_leader(subdag.leader_round as i64, digest_prefix);
                             }
-                        }
-                        last_epoch = Some(committed_epoch);
-                        if let Some(non_blue::ExecPool { mempool, returned }) = &pool {
-                            let committed: Vec<_> = subdag
-                                .blocks
-                                .iter()
-                                .flat_map(|block| block.transactions.iter().cloned())
-                                .collect();
-                            let removed = mempool.remove_committed_transactions(&committed);
-                            debug!(removed, "pruned committed transactions from mempool");
-                            // #13: state for this sub-DAG is durable now; hand
-                            // the red blocks' transactions back to the pool.
-                            if let Some(returned) = &returned {
-                                returned.reinsert(mempool, &subdag);
-                            }
-                        }
-                        events.publish_committed_leader(&subdag);
-                        if let (Some(root), Some(reward), Some(duty)) = (
-                            result.state_root,
-                            result.reward.as_ref(),
-                            seal_duty.as_ref(),
-                        ) {
-                            // Idempotent replay leaves state_root empty, so a
-                            // restart does not sign the same header again.
-                            match seals::publish_local_seal(
-                                &state_storage,
-                                &duty.ctx,
-                                &subdag,
-                                reward.height,
-                                root,
-                            ) {
-                                Ok(local) => {
-                                    if let Some(announcement) = local.gossip {
-                                        if duty
-                                            .broadcast
-                                            .send(NetworkCommand::BroadcastSeal(announcement))
-                                            .is_err()
-                                        {
-                                            warn!("network command channel closed; commit seal not gossiped");
+                            // E1: epoch is a pure function of the committed leader
+                            // round. Compute it via the ONE shared unit and rebuild
+                            // the RPC committee at the boundary so `getCommittee`
+                            // and the light-client seal paths always see the current
+                            // epoch's committee.
+                            let committed_epoch = kovanica_types::epoch_for_round(subdag.leader_round);
+                            if let Some(prev) = last_epoch {
+                                if prev != committed_epoch {
+                                    info!(
+                                        from_epoch = prev,
+                                        to_epoch = committed_epoch,
+                                        round = subdag.leader_round,
+                                        "epoch boundary crossed; rebuilding committee for RPC"
+                                    );
+                                    match build_committee_for_round(
+                                        &state_storage,
+                                        &public_key,
+                                        &validator_address,
+                                        &listen_addr,
+                                        subdag.leader_round,
+                                        enforce_min_active,
+                                    ) {
+                                        Ok(new_committee) => {
+                                            let mut guard = rpc_committee.write().await;
+                                            *guard = new_committee;
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "failed to rebuild committee at epoch boundary");
                                         }
                                     }
-                                    publish_sealed(&state_storage, &events, &local.header);
                                 }
-                                Err(e) => warn!(
-                                    error = %e,
-                                    round = subdag.leader_round,
-                                    "commit seal was not stored; consensus continues"
-                                ),
                             }
+                            last_epoch = Some(committed_epoch);
+                            if let Some(non_blue::ExecPool { mempool, returned }) = &pool {
+                                let committed: Vec<_> = subdag
+                                    .blocks
+                                    .iter()
+                                    .flat_map(|block| block.transactions.iter().cloned())
+                                    .collect();
+                                let removed = mempool.remove_committed_transactions(&committed);
+                                debug!(removed, "pruned committed transactions from mempool");
+                                // #13: state for this sub-DAG is durable now; hand
+                                // the red blocks' transactions back to the pool.
+                                if let Some(returned) = &returned {
+                                    returned.reinsert(mempool, &subdag);
+                                }
+                            }
+                            events.publish_committed_leader(&subdag);
+                            if let (Some(root), Some(reward), Some(duty)) = (
+                                result.state_root,
+                                result.reward.as_ref(),
+                                seal_duty.as_ref(),
+                            ) {
+                                // Idempotent replay leaves state_root empty, so a
+                                // restart does not sign the same header again.
+                                match seals::publish_local_seal(
+                                    &state_storage,
+                                    &duty.ctx,
+                                    &subdag,
+                                    reward.height,
+                                    root,
+                                ) {
+                                    Ok(local) => {
+                                        if let Some(announcement) = local.gossip {
+                                            if duty
+                                                .broadcast
+                                                .send(NetworkCommand::BroadcastSeal(announcement))
+                                                .is_err()
+                                            {
+                                                warn!("network command channel closed; commit seal not gossiped");
+                                            }
+                                        }
+                                        publish_sealed(&state_storage, &events, &local.header);
+                                    }
+                                    Err(e) => warn!(
+                                        error = %e,
+                                        round = subdag.leader_round,
+                                        "commit seal was not stored; consensus continues"
+                                    ),
+                                }
+                            }
+                            health.execution_progress(subdag.leader_round);
+                            // Commit liveness: the round loop and gossip keep
+                            // running even when the commit rule stalls, so only a
+                            // real commit proves the chain is progressing.
+                            health.commit_progress(subdag.leader_round);
                         }
-                        health.execution_progress(subdag.leader_round);
-                        // Commit liveness: the round loop and gossip keep
-                        // running even when the commit rule stalls, so only a
-                        // real commit proves the chain is progressing.
-                        health.commit_progress(subdag.leader_round);
                     }
                     Err(e) => {
                         error!(
