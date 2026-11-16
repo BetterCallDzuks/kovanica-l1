@@ -67,23 +67,32 @@ const DEFAULT_MAP_SIZE_CAP: usize = 100_000;
 const EXPIRED_SWEEP_BUDGET: usize = 32;
 
 #[derive(Default)]
+struct LimiterEntry {
+    generation: u64,
+    timestamps: Vec<std::time::Instant>,
+}
+
+#[derive(Default)]
 struct LimiterMap {
-    entries: std::collections::HashMap<String, Vec<std::time::Instant>>,
+    entries: std::collections::HashMap<String, LimiterEntry>,
     last_sweep: Option<std::time::Instant>,
+    next_gen: u64,
     /// Insertion-order ring. At-cap admission walks a bounded prefix and
-    /// rotates live keys to the back, so expiry is amortised across requests.
-    sweep_order: std::collections::VecDeque<String>,
+    /// rotates live keys to the back, lazily skipping dead/stale entries.
+    sweep_order: std::collections::VecDeque<(String, u64)>,
 }
 
 impl LimiterMap {
     fn sweep_at(&mut self, window_secs: u64, now: std::time::Instant) {
         let window_start = now.checked_sub(Duration::from_secs(window_secs));
-        self.entries.retain(|_, timestamps| {
-            timestamps.retain(|t| window_start.is_none_or(|start| *t > start));
-            !timestamps.is_empty()
+        self.entries.retain(|_, entry| {
+            entry
+                .timestamps
+                .retain(|t| window_start.is_none_or(|start| *t > start));
+            !entry.timestamps.is_empty()
         });
         self.sweep_order
-            .retain(|key| self.entries.contains_key(key));
+            .retain(|(key, gen)| self.entries.get(key).is_some_and(|e| e.generation == *gen));
         self.last_sweep = Some(now);
     }
 
@@ -101,24 +110,26 @@ impl LimiterMap {
     }
 
     /// Drop expired timestamps from up to `budget` keys. Live keys stay and
-    /// move to the back of the ring. Missing ring entries are skipped.
+    /// move to the back of the ring. Missing or stale generation entries are skipped.
     fn sweep_expired_budget(&mut self, window_secs: u64, now: std::time::Instant, budget: usize) {
         let window_start = now.checked_sub(Duration::from_secs(window_secs));
         for _ in 0..budget {
-            let Some(key) = self.sweep_order.pop_front() else {
+            let Some((key, gen)) = self.sweep_order.pop_front() else {
                 break;
             };
             let expired = match self.entries.get_mut(&key) {
-                Some(timestamps) => {
-                    timestamps.retain(|t| window_start.is_none_or(|start| *t > start));
-                    timestamps.is_empty()
+                Some(entry) if entry.generation == gen => {
+                    entry
+                        .timestamps
+                        .retain(|t| window_start.is_none_or(|start| *t > start));
+                    entry.timestamps.is_empty()
                 }
-                None => continue,
+                _ => continue,
             };
             if expired {
                 self.entries.remove(&key);
             } else {
-                self.sweep_order.push_back(key);
+                self.sweep_order.push_back((key, gen));
             }
         }
     }
@@ -142,7 +153,6 @@ impl LimiterMap {
 
     fn forget_key(&mut self, key: &str) {
         self.entries.remove(key);
-        self.sweep_order.retain(|existing| existing != key);
     }
 
     /// Shared admission path for the IP map and the address map.
@@ -162,11 +172,13 @@ impl LimiterMap {
         if self.entries.contains_key(key) {
             let reject_empty = {
                 let entry = self.entries.get_mut(key).expect("key just checked");
-                entry.retain(|t| window_start.is_none_or(|start| *t > start));
-                if entry.len() >= max_requests {
-                    Some(entry.is_empty())
+                entry
+                    .timestamps
+                    .retain(|t| window_start.is_none_or(|start| *t > start));
+                if entry.timestamps.len() >= max_requests {
+                    Some(entry.timestamps.is_empty())
                 } else {
-                    entry.push(now);
+                    entry.timestamps.push(now);
                     None
                 }
             };
@@ -182,18 +194,26 @@ impl LimiterMap {
         if max_requests == 0 || !self.try_admit_new_key(window_secs, size_cap, now) {
             return None;
         }
+        let gen = self.next_gen;
+        self.next_gen = self.next_gen.wrapping_add(1);
         let owned = key.to_string();
-        self.sweep_order.push_back(owned.clone());
-        self.entries.insert(owned, vec![now]);
+        self.sweep_order.push_back((owned.clone(), gen));
+        self.entries.insert(
+            owned,
+            LimiterEntry {
+                generation: gen,
+                timestamps: vec![now],
+            },
+        );
         Some(now)
     }
 
     fn rollback_at(&mut self, key: &str, timestamp: std::time::Instant) {
         let remove_key = if let Some(entry) = self.entries.get_mut(key) {
-            if let Some(pos) = entry.iter().position(|t| *t == timestamp) {
-                entry.remove(pos);
+            if let Some(pos) = entry.timestamps.iter().position(|t| *t == timestamp) {
+                entry.timestamps.remove(pos);
             }
-            entry.is_empty()
+            entry.timestamps.is_empty()
         } else {
             false
         };
@@ -349,6 +369,7 @@ struct FaucetState {
     faucet_address: Address,
     rate_limiter: RateLimiter,
     client: reqwest::Client,
+    pending_nonce: Mutex<Option<u64>>,
 }
 
 /// Request payload
@@ -515,12 +536,19 @@ async fn main() -> Result<()> {
         );
     }
 
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("building HTTP client with timeouts")?;
+
     let state = Arc::new(FaucetState {
         config,
         signer,
         faucet_address,
         rate_limiter: RateLimiter::default(),
-        client: reqwest::Client::new(),
+        client,
+        pending_nonce: Mutex::new(None),
     });
 
     let app = Router::new()
@@ -777,7 +805,7 @@ async fn faucet_handler(
     }
 
     // Get faucet nonce from RPC
-    let nonce = match get_nonce(
+    let committed_nonce = match get_nonce(
         &state.client,
         &state.config.rpc_url,
         state.config.rpc_token.as_deref(),
@@ -800,21 +828,32 @@ async fn faucet_handler(
         }
     };
 
-    // Build transaction
-    let tx = Transaction {
-        sender: state.faucet_address,
-        nonce,
-        fee: 1_000_000, // 0.001 KVNC fee
-        kind: TransactionKind::Transfer {
-            to: to_address,
-            amount: state.config.dispense_amount,
-        },
-        signature: Signature([0; 64]),
-        hash: Hash::zero(),
+    let mut nonce = {
+        let mut guard = state.pending_nonce.lock();
+        let next = match *guard {
+            Some(last_sent) => std::cmp::max(committed_nonce, last_sent.saturating_add(1)),
+            None => committed_nonce,
+        };
+        *guard = Some(next);
+        next
     };
 
-    // Sign transaction
-    let signed_tx = match sign_transaction(tx, &state.signer, &state.config.signing_ctx) {
+    let build_and_sign_tx = |n: u64| {
+        let tx = Transaction {
+            sender: state.faucet_address,
+            nonce: n,
+            fee: 1_000_000, // 0.001 KVNC fee
+            kind: TransactionKind::Transfer {
+                to: to_address,
+                amount: state.config.dispense_amount,
+            },
+            signature: Signature([0; 64]),
+            hash: Hash::zero(),
+        };
+        sign_transaction(tx, &state.signer, &state.config.signing_ctx)
+    };
+
+    let mut signed_tx = match build_and_sign_tx(nonce) {
         Ok(tx) => tx,
         Err(e) => {
             warn!("Failed to sign transaction: {}", e);
@@ -832,20 +871,69 @@ async fn faucet_handler(
 
     // Commit before awaiting submit. A client disconnect drops this future
     // while the tx may already be in the node mempool; the slot must stay
-    // consumed. `rollback` runs only when submit returns `Err`. Pre-submit
-    // failures return above, while the guard is still uncommitted, so `Drop`
-    // releases the slot.
+    // consumed. `rollback` runs only when submit explicitly fails with 4xx / node rejection.
+    // Pre-submit failures return above, while the guard is still uncommitted,
+    // so `Drop` releases the slot.
     reservation.commit();
-    match submit_transaction(
+
+    let mut submit_outcome = submit_transaction(
         &state.client,
         &state.config.rpc_url,
         state.config.rpc_token.as_deref(),
         &signed_tx,
     )
-    .await
-    {
-        Ok(tx_hash) => {
-            info!(to = %to_address, amount = state.config.dispense_amount, tx_hash = %tx_hash, "faucet dispensed");
+    .await;
+
+    // Nonce conflict retry: if rejected with "nonce too low / already proposed", resync from node and retry once
+    if let SubmitOutcome::ExplicitRejection(ref err) = submit_outcome {
+        if is_nonce_error(err) {
+            warn!(
+                nonce,
+                error = %err,
+                "nonce conflict detected; resyncing nonce from node and retrying once"
+            );
+            let fresh_committed = match get_nonce(
+                &state.client,
+                &state.config.rpc_url,
+                state.config.rpc_token.as_deref(),
+                &state.faucet_address,
+            )
+            .await
+            {
+                Ok(n) => n,
+                Err(e) => {
+                    warn!("Failed to resync faucet nonce: {}", e);
+                    committed_nonce
+                }
+            };
+            nonce = {
+                let mut guard = state.pending_nonce.lock();
+                let next = std::cmp::max(fresh_committed, nonce.saturating_add(1));
+                *guard = Some(next);
+                next
+            };
+            if let Ok(new_signed_tx) = build_and_sign_tx(nonce) {
+                signed_tx = new_signed_tx;
+                submit_outcome = submit_transaction(
+                    &state.client,
+                    &state.config.rpc_url,
+                    state.config.rpc_token.as_deref(),
+                    &signed_tx,
+                )
+                .await;
+            }
+        }
+    }
+
+    match submit_outcome {
+        SubmitOutcome::Success(tx_hash) => {
+            info!(
+                to = %to_address,
+                amount = state.config.dispense_amount,
+                nonce,
+                tx_hash = %tx_hash,
+                "faucet dispensed"
+            );
             (
                 StatusCode::OK,
                 Json(FaucetResponse {
@@ -859,9 +947,32 @@ async fn faucet_handler(
             )
                 .into_response()
         }
-        Err(e) => {
+        SubmitOutcome::Unknown(e) => {
+            // UNKNOWN outcome (transport error or timeout): keep address slot to prevent double payout.
+            warn!(
+                to = %to_address,
+                error = %e,
+                "faucet submit outcome unknown (transport/timeout); keeping address rate-limit slot to prevent double payout"
+            );
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(FaucetResponse {
+                    success: false,
+                    message: "Transaction submission status unknown, do not retry for 24h"
+                        .to_string(),
+                    tx_hash: None,
+                }),
+            )
+                .into_response()
+        }
+        SubmitOutcome::ExplicitRejection(e) => {
+            // Explicit rejection from node (e.g. invalid tx, balance insufficient): roll back address slot.
             reservation.rollback();
-            warn!("Failed to submit transaction: {}", e);
+            warn!(
+                to = %to_address,
+                error = %e,
+                "faucet submit explicitly rejected by node; rolling back address slot"
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(FaucetResponse {
@@ -996,32 +1107,81 @@ fn sign_transaction(
     Ok(tx)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum SubmitOutcome {
+    Success(String),
+    ExplicitRejection(String),
+    Unknown(String),
+}
+
+fn is_nonce_error(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("already in a proposed block")
+        || lower.contains("already proposed")
+        || lower.contains("invalid nonce")
+        || lower.contains("nonce too low")
+        || lower.contains("nonce in flight")
+}
+
 async fn submit_transaction(
     client: &reqwest::Client,
     rpc_url: &str,
     token: Option<&str>,
     tx: &Transaction,
-) -> Result<String> {
-    let raw = bincode::serialize(tx)?;
+) -> SubmitOutcome {
+    let raw = match bincode::serialize(tx) {
+        Ok(bytes) => bytes,
+        Err(e) => return SubmitOutcome::ExplicitRejection(format!("tx serialization error: {e}")),
+    };
     let req = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "kovanica_sendRawTransaction",
         "params": [hex::encode(raw)],
         "id": 1
     });
-    let resp: serde_json::Value = with_auth(client.post(rpc_url).json(&req), token)
+    let send_res = with_auth(client.post(rpc_url).json(&req), token)
         .send()
-        .await?
-        .json()
-        .await?;
-    if let Some(err) = resp.get("error") {
-        anyhow::bail!("rpc error: {err}");
+        .await;
+    let resp = match send_res {
+        Ok(r) => r,
+        Err(e) => {
+            return SubmitOutcome::Unknown(format!("transport/timeout error: {e}"));
+        }
+    };
+
+    let status = resp.status();
+    if status.is_client_error() {
+        let err_text = resp.text().await.unwrap_or_default();
+        return SubmitOutcome::ExplicitRejection(format!("HTTP {status}: {err_text}"));
     }
-    let result = resp
-        .get("result")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("invalid tx submit response: {resp}"))?;
-    Ok(result.to_string())
+    if status.is_server_error() {
+        let err_text = resp.text().await.unwrap_or_default();
+        return SubmitOutcome::Unknown(format!("HTTP {status}: {err_text}"));
+    }
+
+    let json_val: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            return SubmitOutcome::Unknown(format!("error reading response body: {e}"));
+        }
+    };
+
+    if let Some(err) = json_val.get("error") {
+        let err_msg = if let Some(m) = err.get("message").and_then(|v| v.as_str()) {
+            m.to_string()
+        } else if let Some(s) = err.as_str() {
+            s.to_string()
+        } else {
+            err.to_string()
+        };
+        return SubmitOutcome::ExplicitRejection(err_msg);
+    }
+
+    if let Some(result) = json_val.get("result").and_then(|v| v.as_str()) {
+        SubmitOutcome::Success(result.to_string())
+    } else {
+        SubmitOutcome::ExplicitRejection(format!("invalid tx submit response: {json_val}"))
+    }
 }
 
 /// Environment variable holding the faucet keystore passphrase.
@@ -1529,31 +1689,61 @@ mod http_tests {
     struct StubState {
         balance_atoms: u64,
         dispensed: Arc<Mutex<Vec<u64>>>,
+        dispensed_nonces: Arc<Mutex<Vec<u64>>>,
         fail_submit: Arc<Mutex<bool>>,
+        submit_error: Arc<Mutex<Option<String>>>,
         /// When set, the next `sendRawTransaction` signals `submit_started`
         /// and then waits until the caller drops the request.
         hold_submit: Arc<AtomicBool>,
         submit_started: Arc<tokio::sync::Notify>,
+        submit_delay_ms: Arc<Mutex<Option<u64>>>,
+        fail_with_http_400: Arc<AtomicBool>,
     }
 
     async fn stub_rpc_handler(
         axum::extract::State(stub): axum::extract::State<StubState>,
         Json(req): Json<Value>,
-    ) -> Json<Value> {
+    ) -> impl IntoResponse {
         let method = req
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if method == "kovanica_sendRawTransaction" && stub.fail_with_http_400.load(Ordering::SeqCst)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid transaction" })),
+            )
+                .into_response();
+        }
         let result = match method {
             "kovanica_getBalance" => json!(format!("0x{:x}", stub.balance_atoms)),
             "kovanica_getNonce" => json!("0x0"),
             "kovanica_sendRawTransaction" => {
+                if let Some(delay) = *stub.submit_delay_ms.lock() {
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+                if let Some(err) = stub.submit_error.lock().take() {
+                    return (
+                        StatusCode::OK,
+                        Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "error": { "code": -32000, "message": err }
+                        })),
+                    )
+                        .into_response();
+                }
                 if *stub.fail_submit.lock() {
-                    return Json(json!({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "error": { "code": -32000, "message": "tx rejected" }
-                    }));
+                    return (
+                        StatusCode::OK,
+                        Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "error": { "code": -32000, "message": "tx rejected" }
+                        })),
+                    )
+                        .into_response();
                 }
                 let raw = req
                     .get("params")
@@ -1562,6 +1752,7 @@ mod http_tests {
                     .unwrap_or_default();
                 if let Ok(bytes) = hex::decode(raw) {
                     if let Ok(tx) = bincode::deserialize::<Transaction>(&bytes) {
+                        stub.dispensed_nonces.lock().push(tx.nonce);
                         if let TransactionKind::Transfer { amount, .. } = tx.kind {
                             stub.dispensed.lock().push(amount);
                         }
@@ -1575,7 +1766,11 @@ mod http_tests {
             }
             _ => json!(null),
         };
-        Json(json!({ "jsonrpc": "2.0", "id": 1, "result": result }))
+        (
+            StatusCode::OK,
+            Json(json!({ "jsonrpc": "2.0", "id": 1, "result": result })),
+        )
+            .into_response()
     }
 
     /// Start an in-process JSON-RPC stub.
@@ -1592,15 +1787,42 @@ mod http_tests {
         Arc<Mutex<bool>>,
         Arc<tokio::sync::Notify>,
     ) {
+        let (url, dispensed, fail_submit, notify, _, _, _, _) =
+            spawn_stub_full(balance_atoms, hold_submit).await;
+        (url, dispensed, fail_submit, notify)
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn spawn_stub_full(
+        balance_atoms: u64,
+        hold_submit: bool,
+    ) -> (
+        String,
+        Arc<Mutex<Vec<u64>>>,
+        Arc<Mutex<bool>>,
+        Arc<tokio::sync::Notify>,
+        Arc<Mutex<Vec<u64>>>,
+        Arc<Mutex<Option<String>>>,
+        Arc<Mutex<Option<u64>>>,
+        Arc<AtomicBool>,
+    ) {
         let dispensed = Arc::new(Mutex::new(Vec::new()));
+        let dispensed_nonces = Arc::new(Mutex::new(Vec::new()));
         let fail_submit = Arc::new(Mutex::new(false));
+        let submit_error = Arc::new(Mutex::new(None));
         let submit_started = Arc::new(tokio::sync::Notify::new());
+        let submit_delay_ms = Arc::new(Mutex::new(None));
+        let fail_with_http_400 = Arc::new(AtomicBool::new(false));
         let stub = StubState {
             balance_atoms,
             dispensed: dispensed.clone(),
+            dispensed_nonces: dispensed_nonces.clone(),
             fail_submit: fail_submit.clone(),
+            submit_error: submit_error.clone(),
             hold_submit: Arc::new(AtomicBool::new(hold_submit)),
             submit_started: submit_started.clone(),
+            submit_delay_ms: submit_delay_ms.clone(),
+            fail_with_http_400: fail_with_http_400.clone(),
         };
         let app = Router::new()
             .route("/rpc", post(stub_rpc_handler))
@@ -1615,6 +1837,10 @@ mod http_tests {
             dispensed,
             fail_submit,
             submit_started,
+            dispensed_nonces,
+            submit_error,
+            submit_delay_ms,
+            fail_with_http_400,
         )
     }
 
@@ -1662,6 +1888,36 @@ mod http_tests {
         min_balance_atoms: u64,
         rate_limiter: RateLimiter,
     ) -> Arc<FaucetState> {
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        faucet_state_with_client(
+            rpc_url,
+            ip_window,
+            ip_max,
+            address_window,
+            address_max,
+            trusted,
+            min_balance_atoms,
+            rate_limiter,
+            client,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn faucet_state_with_client(
+        rpc_url: &str,
+        ip_window: u64,
+        ip_max: usize,
+        address_window: u64,
+        address_max: usize,
+        trusted: &str,
+        min_balance_atoms: u64,
+        rate_limiter: RateLimiter,
+        client: reqwest::Client,
+    ) -> Arc<FaucetState> {
         let signer = SigningKey::from_bytes(&[7u8; 32]);
         let faucet_address = Address::from_public_key(&PublicKey::from(signer.verifying_key()));
         Arc::new(FaucetState {
@@ -1680,7 +1936,8 @@ mod http_tests {
             signer,
             faucet_address,
             rate_limiter,
-            client: reqwest::Client::new(),
+            client,
+            pending_nonce: Mutex::new(None),
         })
     }
 
@@ -2141,6 +2398,196 @@ mod http_tests {
             again,
             StatusCode::OK,
             "live victim entries must stay usable, got {again_body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn back_to_back_dispenses_get_consecutive_nonces() {
+        let (rpc, _, _, _, nonces, _, _, _) = spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        let app = app(faucet_state(&rpc, 60, 100, 86_400, 100, "", 0));
+
+        let (s1, b1) = post_faucet(
+            &app,
+            "192.0.2.1:5000",
+            None,
+            json!({ "address": canonical(1) }),
+        )
+        .await;
+        assert_eq!(s1, StatusCode::OK, "{b1}");
+
+        let (s2, b2) = post_faucet(
+            &app,
+            "192.0.2.2:5000",
+            None,
+            json!({ "address": canonical(2) }),
+        )
+        .await;
+        assert_eq!(s2, StatusCode::OK, "{b2}");
+
+        let (s3, b3) = post_faucet(
+            &app,
+            "192.0.2.3:5000",
+            None,
+            json!({ "address": canonical(3) }),
+        )
+        .await;
+        assert_eq!(s3, StatusCode::OK, "{b3}");
+
+        let recorded = nonces.lock().clone();
+        assert_eq!(
+            recorded,
+            vec![0, 1, 2],
+            "dispenses back-to-back must get consecutive nonces"
+        );
+    }
+
+    #[tokio::test]
+    async fn nonce_retry_on_proposed_block_conflict() {
+        let (rpc, _, _, _, nonces, submit_error, _, _) =
+            spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        // First submit fails with "Nonce 0 is already in a proposed block"
+        *submit_error.lock() = Some("Nonce 0 is already in a proposed block".to_string());
+
+        let app = app(faucet_state(&rpc, 60, 100, 86_400, 100, "", 0));
+        let (status, body) = post_faucet(
+            &app,
+            "192.0.2.1:5000",
+            None,
+            json!({ "address": canonical(1) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["success"], true);
+
+        // First attempt sent nonce 0 (and was rejected), retry sent nonce 1 (and succeeded)
+        let recorded = nonces.lock().clone();
+        assert_eq!(
+            recorded,
+            vec![1],
+            "retried transaction must be submitted with incremented nonce"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_on_submit_preserves_address_slot_and_returns_bad_gateway() {
+        let (rpc, _, _, _, _, _, submit_delay_ms, _) =
+            spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        // Node delays sendRawTransaction by 200ms
+        *submit_delay_ms.lock() = Some(200);
+
+        // Faucet HTTP client with 40ms timeout
+        let fast_timeout_client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(40))
+            .build()
+            .unwrap();
+
+        let state = faucet_state_with_client(
+            &rpc,
+            60,
+            100,
+            86_400,
+            1, // max 1 per address
+            "",
+            0,
+            RateLimiter::default(),
+            fast_timeout_client,
+        );
+        let app = app(state);
+        let target_address = canonical(55);
+
+        // First attempt times out -> UNKNOWN outcome -> HTTP 502 Bad Gateway
+        let (status1, body1) = post_faucet(
+            &app,
+            "192.0.2.1:5000",
+            None,
+            json!({ "address": target_address }),
+        )
+        .await;
+        assert_eq!(status1, StatusCode::BAD_GATEWAY, "{body1}");
+        let msg = body1["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("status unknown, do not retry for 24h"),
+            "expected unknown outcome message, got: {msg}"
+        );
+
+        // Reset submit delay on node so it would succeed
+        *submit_delay_ms.lock() = None;
+
+        // Second attempt to same address from a different IP: MUST be rejected with 429 because slot was kept
+        let (status2, body2) = post_faucet(
+            &app,
+            "192.0.2.2:5000",
+            None,
+            json!({ "address": target_address }),
+        )
+        .await;
+        assert_eq!(status2, StatusCode::TOO_MANY_REQUESTS, "{body2}");
+        assert!(
+            body2["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("address"),
+            "address slot must be preserved on timeout, got: {body2}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_4xx_rejection_rolls_back_address_slot() {
+        let (rpc, _, _, _, _, _, _, fail_with_http_400) =
+            spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        fail_with_http_400.store(true, Ordering::SeqCst);
+
+        let app = app(faucet_state(&rpc, 60, 100, 86_400, 1, "", 0));
+        let target_address = canonical(66);
+
+        // First attempt explicitly rejected with HTTP 400
+        let (status1, body1) = post_faucet(
+            &app,
+            "192.0.2.1:5000",
+            None,
+            json!({ "address": target_address }),
+        )
+        .await;
+        assert_eq!(status1, StatusCode::INTERNAL_SERVER_ERROR, "{body1}");
+
+        // Now fix the node
+        fail_with_http_400.store(false, Ordering::SeqCst);
+
+        // Second attempt to same address from a different IP: slot was rolled back, so it must succeed
+        let (status2, body2) = post_faucet(
+            &app,
+            "192.0.2.2:5000",
+            None,
+            json!({ "address": target_address }),
+        )
+        .await;
+        assert_eq!(
+            status2,
+            StatusCode::OK,
+            "slot must be rolled back on 4xx rejection, got: {body2}"
+        );
+        assert_eq!(body2["success"], true);
+    }
+
+    #[test]
+    fn forget_key_bounded_time_with_100k_entries() {
+        let mut map = LimiterMap::default();
+        let now = std::time::Instant::now();
+        for i in 0..100_000 {
+            let key = format!("addr_{i}");
+            map.record_at(&key, 3600, 10, 150_000, now);
+        }
+        assert_eq!(map.entries.len(), 100_000);
+
+        let start = std::time::Instant::now();
+        map.forget_key("addr_50000");
+        let elapsed = start.elapsed();
+
+        assert!(!map.entries.contains_key("addr_50000"));
+        assert!(
+            elapsed < Duration::from_millis(5),
+            "forget_key with 100k entries must run in < 5 ms, took: {:?}",
+            elapsed
         );
     }
 }
