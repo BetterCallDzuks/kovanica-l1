@@ -126,7 +126,8 @@ pub fn executed_tx_hashes(subdag: &CommittedSubDag) -> Vec<Hash> {
 
 /// Build the header a validator seals after execution.
 ///
-/// `timestamp` is always 0. When `mysticghost` is false, both colouring
+/// When the leader carries a PoW statement, `timestamp` is decoded from it;
+/// otherwise `0`. When `mysticghost` is false, both colouring
 /// roots are zero. When it is true, `blue_root` is the Merkle root of
 /// `subdag.blocks` digests in that order and `non_blue_root` is the Merkle
 /// root of `subdag.non_blue` digests. That matches the committer's blue
@@ -150,6 +151,9 @@ pub fn leader_header(
     } else {
         (Hash::zero(), Hash::zero())
     };
+    let timestamp = crate::block::decode_pow_statement(&subdag.leader.statements)
+        .map(|(ts, ..)| ts)
+        .unwrap_or(0);
     LeaderHeader {
         committed_height,
         leader_round: subdag.leader_round,
@@ -164,7 +168,7 @@ pub fn leader_header(
         state_root,
         epoch,
         committee_hash,
-        timestamp: 0,
+        timestamp,
     }
 }
 
@@ -749,6 +753,36 @@ mod tests {
         assert_eq!(header.blue_root, leader.digest);
         assert_eq!(header.non_blue_root, red.digest);
         assert_eq!(header.timestamp, 0);
+    }
+
+    #[test]
+    fn leader_header_extracts_pow_timestamp() {
+        let mut leader = empty_block(0, 3);
+        let expected_ts = 1_700_000_123_456u64;
+        leader.statements = crate::block::encode_pow_statement(
+            expected_ts,
+            0x1f7f_ffff,
+            42,
+            Some(Hash::new([1u8])),
+            None,
+        );
+        let subdag = crate::commit::CommittedSubDag {
+            blocks: vec![leader.clone()],
+            leader: leader.clone(),
+            leader_round: 3,
+            leader_author: 0,
+            non_blue: vec![],
+        };
+        let header = leader_header(
+            &subdag,
+            1,
+            Hash::zero(),
+            Hash::zero(),
+            0,
+            Hash::zero(),
+            false,
+        );
+        assert_eq!(header.timestamp, expected_ts);
     }
 
     #[test]

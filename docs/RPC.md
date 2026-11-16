@@ -103,6 +103,43 @@ in-place upgrade records history from the first commit after the upgrade.
 
 Rows are not removed when DAG blocks are pruned.
 
-Leader headers are saved in a later write, and `leader_header()` currently
-stores timestamp `0`. Clients should treat `timestamp: null` as "no
-producer time", not as an error.
+Leader headers are saved in a later write. On write, `leader_header()`
+extracts the PoW statement timestamp from the leader block. For historical
+headers that were persisted with placeholder `0`, read methods
+(`kovanica_getLeaderHeader`, `kovanica_getTransactionHistory`,
+`kovanica_getBlockByNumber`, `kovanica_getBlockByHash`) derive the canonical
+timestamp from the stored block statements.
+
+## `kovanica_getBlockByNumber`
+
+Fetch a block by committed height, round, or tag (`"latest"`, `"earliest"`). The call is read-only.
+
+### Parameters
+
+Array: `[number_or_tag, full_transactions?]`
+
+| Index | Field | Required | Meaning |
+| --- | --- | --- | --- |
+| 0 | `number` | yes | Committed-leader height (or DAG round) as a JSON number, `0x` hex quantity, or tag (`"latest"`, `"earliest"`). |
+| 1 | `full_transactions` | no | Boolean. When `false` (default), `transactions` contains an array of transaction hash strings (`"0x..."`). When `true`, returns full transaction objects. |
+
+### Result
+
+Block object with header fields, round, height, parents, parent_hashes, transactions, PoW fields (`timestamp`, `target_bits`, `nonce`, `pow_hash`), or `null` if the block does not exist.
+
+## `kovanica_getBlockByHash`
+
+Fetch a block by block digest or leader header hash. The call is read-only.
+
+### Parameters
+
+Array: `[hash, full_transactions?]`
+
+| Index | Field | Required | Meaning |
+| --- | --- | --- | --- |
+| 0 | `hash` | yes | 32-byte block digest or leader header hash (`0x...`). |
+| 1 | `full_transactions` | no | Boolean. When `false` (default), `transactions` contains an array of transaction hash strings (`"0x..."`). When `true`, returns full transaction objects. |
+
+### Result
+
+Block object with header fields, round, height (if committed), parents, parent_hashes, transactions, PoW fields (`timestamp`, `target_bits`, `nonce`, `pow_hash`), or `null` if the block is unknown.

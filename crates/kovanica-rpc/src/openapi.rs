@@ -199,11 +199,31 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
         "type": "object",
         "properties": {
             "hash": { "$ref": "#/components/schemas/Hash" },
-            "author": { "$ref": "#/components/schemas/Address" },
+            "digest": { "$ref": "#/components/schemas/Hash" },
+            "author": { "type": "integer" },
+            "number": { "$ref": "#/components/schemas/Quantity" },
+            "height": { "$ref": "#/components/schemas/Quantity" },
             "round": { "$ref": "#/components/schemas/Quantity" },
             "parents": { "type": "array", "items": { "$ref": "#/components/schemas/Hash" } },
-            "transactions": { "type": "array", "items": { "$ref": "#/components/schemas/Hash" } },
-            "timestamp": { "$ref": "#/components/schemas/Quantity" }
+            "parent_hashes": { "type": "array", "items": { "$ref": "#/components/schemas/Hash" } },
+            "transactions": {
+                "type": "array",
+                "items": {
+                    "oneOf": [
+                        { "$ref": "#/components/schemas/Hash" },
+                        { "$ref": "#/components/schemas/Transaction" }
+                    ]
+                }
+            },
+            "statements": { "type": "string" },
+            "signature": { "type": "string" },
+            "timestamp": { "type": "integer" },
+            "target_bits": { "$ref": "#/components/schemas/Quantity" },
+            "nonce": { "type": "integer" },
+            "pow_hash": { "$ref": "#/components/schemas/Hash" },
+            "payout": { "type": "string" },
+            "state_root": { "$ref": "#/components/schemas/Hash" },
+            "tx_merkle_root": { "$ref": "#/components/schemas/Hash" }
         }
     }));
 
@@ -346,11 +366,10 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
                 "maxItems": 2
             }),
             json!({
-                "type": "object",
-                "properties": {
-                    "block": { "$ref": "#/components/schemas/Block" },
-                    "full_transactions": { "type": "boolean" }
-                }
+                "oneOf": [
+                    { "$ref": "#/components/schemas/Block" },
+                    { "type": "null" }
+                ]
             }),
         ),
         (
@@ -367,11 +386,10 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
                 "maxItems": 2
             }),
             json!({
-                "type": "object",
-                "properties": {
-                    "block": { "$ref": "#/components/schemas/Block" },
-                    "full_transactions": { "type": "boolean" }
-                }
+                "oneOf": [
+                    { "$ref": "#/components/schemas/Block" },
+                    { "type": "null" }
+                ]
             }),
         ),
         (
