@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: kovanica-node
-          image: kovanica/kovanica-node:v0.2.0
+          image: kovanica/kovanica-node:v0.3.0
           imagePullPolicy: IfNotPresent
           command:
             - kovanica-node

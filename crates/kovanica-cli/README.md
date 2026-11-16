@@ -2,7 +2,7 @@
 
 `kovanica` is the Kovanica terminal wallet and node console. One binary
 covers Linux (`kovanica`) and Windows (`kovanica.exe`). The crate version
-is **0.2.0**, still before 1.0. Version 1.0.0 is reserved for mainnet launch.
+is **0.1.0**, still before 1.0. Version 1.0.0 is reserved for mainnet launch.
 
 The native coin is **KVNC** (9 decimals). 1 KVNC = 1_000_000_000 atoms.
 Addresses are parsed and printed by `kovanica_types::Address`. Pass a

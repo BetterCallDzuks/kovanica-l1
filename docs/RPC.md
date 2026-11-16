@@ -103,6 +103,44 @@ in-place upgrade records history from the first commit after the upgrade.
 
 Rows are not removed when DAG blocks are pruned.
 
-Leader headers are saved in a later write, and `leader_header()` currently
-stores timestamp `0`. Clients should treat `timestamp: null` as "no
-producer time", not as an error.
+Stored leader headers maintain `timestamp: 0` to preserve deterministic canonical
+bytes, hash, and seal verification for light clients. Read methods derive the
+canonical PoW timestamp on read from the leader block's statements, exposing
+`pow_timestamp` (and `powTimestamp`) alongside the stored header with its original hash.
+
+## `kovanica_getBlockByNumber`
+
+Fetch a block by committed height, round, or tag (`"latest"`, `"earliest"`). The call is read-only.
+Tags other than `"latest"` and `"earliest"` return an invalid parameters error. `"earliest"`
+resolves the genesis block (round 0). Heights above the committed tip return JSON `null`.
+Unknown or non-applicable fields are returned as JSON `null`, not omitted.
+
+### Parameters
+
+Array: `[number_or_tag, full_transactions?]`
+
+| Index | Field | Required | Meaning |
+| --- | --- | --- | --- |
+| 0 | `number` | yes | Committed-leader height (or DAG round) as a JSON number, `0x` hex quantity, or supported tag (`"latest"`, `"earliest"`). |
+| 1 | `full_transactions` | no | Boolean. When omitted or `true` (default), returns full transaction objects. When `false`, `transactions` contains an array of transaction hash strings (`"0x..."`). |
+
+### Result
+
+Block object with header fields, round, height, parents, parent_hashes, transactions, PoW fields (`timestamp`, `pow_timestamp`, `powTimestamp`, `target_bits`, `nonce`, `pow_hash`, `payout`, `state_root`, `tx_merkle_root`), or `null` if the block does not exist.
+
+## `kovanica_getBlockByHash`
+
+Fetch a block by block digest or leader header hash. The call is read-only. Unknown hashes return JSON `null` without scanning history.
+
+### Parameters
+
+Array: `[hash, full_transactions?]`
+
+| Index | Field | Required | Meaning |
+| --- | --- | --- | --- |
+| 0 | `hash` | yes | 32-byte block digest or leader header hash (`0x...`). |
+| 1 | `full_transactions` | no | Boolean. When omitted or `true` (default), returns full transaction objects. When `false`, `transactions` contains an array of transaction hash strings (`"0x..."`). |
+
+### Result
+
+Block object with header fields, round, height (if committed), parents, parent_hashes, transactions, PoW fields (`timestamp`, `pow_timestamp`, `powTimestamp`, `target_bits`, `nonce`, `pow_hash`, `payout`, `state_root`, `tx_merkle_root`), or `null` if the block is unknown.
