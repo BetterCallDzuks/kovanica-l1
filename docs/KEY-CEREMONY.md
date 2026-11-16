@@ -1,172 +1,264 @@
-# Kovanica Genesis Key Distribution Ceremony Protocol
+# Kovanica Mainnet Key Ceremony
 
-> **Network ID:** `1` (`MAINNET`)  
-> **Native Ticker:** **KVNC** (9 decimals: $1\text{ KVNC} = 10^9\text{ base units / atoms}$)  
-> **Consensus:** **Hybrid PoW + GHOSTDAG** (NO stake for consensus; target block 4 s, GHOSTDAG $K=5$; PoW Hash: KovanicaHash)  
-> **Status:** DRAFT, not normative, being rewritten for PoW + GHOSTDAG no-stake  
+> **Network:** kovanica-mainnet (chain ID `1`)
+> **Ticker:** KVNC (9 decimals; `1 KVNC = 10^9` atoms)
+> **Consensus:** Hybrid PoW + GHOSTDAG. Stake is not used for consensus.
+> **Status:** Operational draft. Frozen parameters below are locked. Ceremony addresses are **OPEN**. This file is not a record of a completed ceremony.
+> **Tooling:** [`ops/genesis/ceremony.sh`](../ops/genesis/ceremony.sh), procedure detail in [`GENESIS-CEREMONY.md`](GENESIS-CEREMONY.md). Launch steps are in [`MAINNET-RUNBOOK.md`](MAINNET-RUNBOOK.md).
 
----
-
-## 1. Objectives and Architecture
-
-Under Kovanica's **Hybrid PoW + GHOSTDAG** consensus architecture, block production is driven by Proof-of-Work (miners solving KovanicaHash targets) and block ordering is driven by GHOSTDAG ($K=5$). **Consensus has strictly NO stake in the consensus path.**
-
-Consequently:
-1. **No BFT Committee Quorum:** The legacy Proof-of-Stake requirement of 15–20 active voting validators is retired. The network does not rely on validator vote signatures or rounds to reach consensus.
-2. **No VRF Keys:** PRO-7 (VRF leader election) is **FROZEN**; Ristretto255 VRF keys (`--with-vrf`) are not used or required.
-3. **Open Mining:** Any node may mine blocks immediately upon chain launch by configuring a standard PRO-21 address (`KOVANICA_MINING_AUTHOR`). Miners do NOT register keys or participate in the ceremony.
-4. **Ceremony Focus:** The Genesis Key Ceremony is strictly focused on securing:
-   - **The Treasury Multisig:** 8,000,000 KVNC linear 8-year vesting allocation partitioned via a 3-of-5 threshold scheme.
-   - **The Founder Premine:** 200,000 KVNC cold storage allocation.
-   - **Bootstrap Seed Nodes:** 3–5 initial public seed node identities to bootstrap initial P2P mesh discovery.
+The ceremony collects **public** identities and writes the genesis file set. It does not start the chain, deploy a node, or change tokenomics.
 
 ---
 
-## 2. Participants and Roles
+## 1. What this ceremony is
 
-| Role | Count | Responsibilities |
+Block production is Proof-of-Work (KovanicaHash). Block order is GHOSTDAG (`GHOSTDAG_K = 5`). Any later miner joins with a normal PRO-21 payout address. Miners do not register in this ceremony.
+
+The ceremony fixes three public inputs:
+
+1. **Founder premine address** — receives 200 000 KVNC, minted at first start from `founder_premine.hex`.
+2. **Treasury address** — binds the 8 000 000 KVNC allocation (1 000 000 KVNC per year for 8 years, linear). The allocation starts at `vested = 0`. It is not an 8 000 000 KVNC genesis balance.
+3. **Bootstrap seed identities** — 1 to 20 entries. Each entry is a PRO-21 address plus a 32-byte Ed25519 public key. Allocation is 0 KVNC. The `[[validator]]` table name is the file format. The entry is a bootstrap seed, and the file has no `stake` field.
+
+`[[validator]]` on chain ID 1 carries no vote key, no VRF key, and no stake. PRO-7 (VRF leader election) stays frozen. Legacy Mysticeti constants remain in the tree and stay non-consensus.
+
+The committed file `mainnet/genesis.json` is an unusable template. It still contains `PLACEHOLDER_MAINNET_*` tokens. This ceremony replaces that template only after Toni supplies real addresses and a later change commits the output. This document does not edit `mainnet/genesis.json`.
+
+---
+
+## 2. Frozen values
+
+These match [`AGENT-RULES.md`](AGENT-RULES.md). The ceremony script does not accept them as flags. Do not edit them in the output to “correct” a file.
+
+| Item | Frozen value |
+|---|---|
+| Ticker / decimals | KVNC / 9 |
+| Consensus | Hybrid PoW + GHOSTDAG, no stake |
+| Target block time | `TARGET_BLOCK_MS = 4000` |
+| GHOSTDAG k | `GHOSTDAG_K = 5` |
+| PoW hash | KovanicaHash (BLAKE3 + 2 MiB mix) |
+| Total supply | 90 200 000 KVNC |
+| Founder premine | 200 000 KVNC |
+| Treasury | 8 000 000 KVNC (1 000 000 / year × 8) |
+| Genesis seed allocation | 0 KVNC |
+| Mining budget | 82 000 000 KVNC (`no-stake-82m`) |
+| Initial block reward | 2.5 KVNC |
+| Subsidy era | 8 200 000 rewarded blocks, then × 3/4 |
+| Fee split (chain ID 1) | 3/4 burn, 1/4 miner |
+| Address | `kvnc` + 57 bech32 chars + `dag` (64 characters) |
+| Chain ID | `1` |
+| Mainnet easiest target / `MAX_TARGET_BITS` | `0x1f00ffff` |
+| Mainnet hardest target (`MIN_TARGET_BITS`) | `0x01010000` |
+| Genesis time | `0` (not a ceremony input) |
+| Bootnode | `mainnet.kovanica.online:8000` |
+| BIP44 coin type | `3007` |
+| Public launch | 1.1.2027 |
+
+The testnet network tag `2-acfdf6a6c80fd28a` belongs to chain ID 2. Mainnet does not reuse it. The mainnet tag is computed after this ceremony (section 8) and is **OPEN** until then.
+
+---
+
+## 3. OPEN address register
+
+`OPEN` in this document means Toni has not published the value. `ceremony.sh` rejects the literal string `OPEN`. Replace every marker with a real value before running the script. Do not write `OPEN` or `PLACEHOLDER_` into a file the node will load. The node halts when a genesis file still contains `PLACEHOLDER_`.
+
+| Role | Address | Public key (64 hex chars) | Custody |
+|---|---|---|---|
+| Founder premine (200 000 KVNC) | **OPEN** | **OPEN** (stays offline; the ceremony file stores the address) | **OPEN** — generated by Toni on an air-gapped machine |
+| Treasury (8 000 000 KVNC vesting) | **OPEN** | **OPEN** (stays offline) | **OPEN** — holder list and any threshold split are unpublished |
+| Bootstrap seed 1 | **OPEN** | **OPEN** | **OPEN** |
+| Bootstrap seeds 2..=N | **OPEN** | **OPEN** | **OPEN** |
+
+`N` is chosen by Toni. Chain ID 1 accepts **1..=20** bootstrap seeds. A public mesh of **3–5** seeds is the recommended size. Names, hosts, and count inside that bound are **OPEN**.
+
+Extra facts that are **OPEN**:
+
+- Which BIP44 account and index map to the founder key, the treasury key, and each seed key.
+- Custodian names, locations, and whether a threshold split is used. `kovanica` and `ceremony.sh` do not split secrets. There is no `sss-split` command in this repository.
+- The libp2p peer id of `mainnet.kovanica.online`. The ceremony writes the DNS name and port only.
+- The exact UTC clock on launch day 1.1.2027.
+
+---
+
+## 4. Roles
+
+| Role | Who | Does |
 |---|---|---|
-| **Master of Ceremonies (MC)** | 1 | Coordinates timing, distributes challenge strings, compiles public artifacts, executes `ops/genesis/ceremony.sh`. |
-| **Treasury Custodians** | 5 | Participate in the Shamir's Secret Sharing (3-of-5) ceremony for Treasury vaults; accept physical metal custody plates. |
-| **Founder** | 1 | Generates the 200,000 KVNC cold storage key on an air-gapped machine. |
-| **Bootstrap Seed Node Operators** | **3–5** | Generate Ed25519 node identities and PRO-21 addresses for initial P2P seed nodes (`seed1`, `seed3.kovanica.online`). |
-| **Independent Witnesses** | 2–3 | Verify air-gap physical integrity, oversee entropy mixing, co-sign public ceremony audit report. |
+| Ceremony owner | Toni | Supplies the founder address, the treasury address, and the seed list. Runs `ceremony.sh` on a machine that sees public material only. |
+| Founder key holder | Toni, offline | Generates the premine keystore. Exports the address. The keystore never goes to the networked machine. |
+| Treasury key holder | **OPEN** | Same rule as the founder key: address leaves the air gap, keystore stays. |
+| Seed operators | **OPEN** (1 to 20) | Each generates an account keystore offline and sends the address and the 32-byte public key. |
+| Witnesses | **OPEN** (optional) | Watch the public-file checksum step. They do not receive keystores. |
+
+Miners are not a ceremony role. A miner sets `KOVANICA_MINING_ADDRESS` to any PRO-21 address after launch. See [`MINING.md`](MINING.md) for the hash and the solo-miner CLI. Mainnet mining parameters in that guide follow the same frozen table as section 2.
 
 ---
 
-## 3. Hardware & Environmental Air-Gap Requirements
+## 5. Air gap
 
-All critical key generation steps must occur in an electromagnetically and physically isolated air-gapped environment.
+Generate every long-term key on a machine with no network path. Remove or unplug Wi-Fi and Bluetooth before boot. Use a live system whose image was checked on a different machine. Keep the keystore on that machine’s encrypted disk.
 
-### 3.1 Workstation Specification
-- **Hardware:** Commercial laptop/PC with physical Wi-Fi/Bluetooth hardware physically disconnected or removed.
-- **Power:** Battery power or filtered uninterruptible power supply (UPS) with no external network telemetry.
-- **Peripherals:** Wired USB keyboard and mouse only; no wireless transmitters.
-- **Operating System:** Ephemeral Linux Live OS (Debian Live or Tails OS) booted from a write-protected, read-only USB flash drive.
-- **Verification:** Detached GPG signature of the Live ISO verified on an independent workstation prior to flashing.
+Rules for the media that leaves the room:
 
-### 3.2 Storage & Transfer Media
-- **Air-Gap USB Drives:** Single-use USB flash drives used strictly for unidirectional export of public keys and signatures.
-- **Strict Prohibition:** Private keys, seed phrases, or unencrypted keystores may never be written to an external USB drive.
-- **Security Envelopes:** Tamper-evident bags for transporting physical key shares and public export drives.
+- Allowed on the export drive: PRO-21 address, 32-byte hex public key, later `SHA256SUMS` of the public genesis files.
+- Forbidden on the export drive: keystore, passphrase, BIP-39 words, raw seed, `p2p_node.key`.
+
+After the public material is copied, shut the air-gapped machine down. Wipe any disposable USB that held a secret (`shred -v -n 3 -z` on that device, then remove it from service).
 
 ---
 
-## 4. Cryptographic Key Generation Procedures
+## 6. Key generation
 
-### 4.1 Ambient Entropy Collection & Mixing
+The CLI binary is `kovanica` (package `kovanica-cli`). `kovanica key generate` is not a command. `generate-validators` is a devnet example: it writes stake, writes a faucet file, and prints seeds. Do not run it for mainnet.
 
-Operators collect multiple independent sources of physical entropy to guard against compromised hardware PRNGs:
-1. **Hardware RNG:** Kernel entropy pool (`/dev/random`).
-2. **Physical Dice Rolls:** 100 rolls of precision casino dice recorded as decimal values.
-3. **Keyboard & Pointer Latency:** High-resolution timing jitter.
+### 6.1 Fresh keystore (OS CSPRNG)
 
-Mixed via BLAKE3 to seed the cryptographic keystore generator:
+`kovanica keygen` draws a new Ed25519 key and writes Keystore v2 (Argon2id + XChaCha20-Poly1305). It does not take dice entropy, a `--kdf-memory` flag, or `--with-vrf`.
+
 ```bash
-(
-  head -c 64 /dev/urandom
-  echo -n "Manual-Entropy-Dice-String: "
-  read -s MANUAL_ENTROPY
-  echo -n "$MANUAL_ENTROPY"
-  date +%s%N
-) | b3sum | cut -d ' ' -f 1 > /tmp/ceremony_seed.hex
+kovanica keygen --out founder.keystore
 ```
 
-### 4.2 Bootstrap Seed Node Keystore Generation
+The command prints `Address` and `Public key`. The address is 64 characters, `kvnc` + 57 bech32 characters + `dag`. The public key is 64 hex characters (32 bytes). Repeat with a distinct `--out` path for the treasury key and for each seed.
 
-Each bootstrap seed node operator generates an encrypted Keystore v2:
+Confirm a keystore already on disk:
+
 ```bash
-# Generate encrypted keystore (Argon2id + XChaCha20-Poly1305)
-kovanica key generate \
-  --output seed_node.keystore \
-  --kdf-memory 65536 \
-  --kdf-iterations 4
-
-# Extract canonical PRO-21 address
-kovanica key inspect --keystore seed_node.keystore > public_credentials.txt
+kovanica import --keystore founder.keystore
 ```
 
-### 4.3 Address Format Verification (PRO-21)
+That prints the address and the public key. It does not print the seed.
 
-Verify that all derived addresses strictly adhere to canonical **PRO-21 base32** formatting:
-- Prefix: `kvnc`
-- Suffix: `dag`
-- Total length: exactly **64 characters**
-- Character set: lowercase bech32 (`qpzry9x8gf2tvdw0s3jn54khce6mua7l`)
-- Checksum: 29-bit BLAKE3 checksum appended to the 32-byte Ed25519 public key.
-- Legacy hex addresses are strictly rejected on Mainnet (`chain_id = 1`).
+### 6.2 HD key (optional, BIP44 coin type 3007)
 
----
+The frozen coin type is **3007**. The path is:
 
-## 5. Shamir's Secret Sharing (SSS) for Treasury Custody
-
-The 8,000,000 KVNC Treasury allocation (governed by linear 8-year vesting) is secured via a 3-of-5 threshold scheme.
-
-### 5.1 Scheme Architecture: 3-of-5 Threshold
-- A master 256-bit entropy seed is split into $N=5$ Shamir shares with a recovery threshold of $M=3$.
-- **Any 3 shares** reconstruct the master recovery seed.
-- **Any 2 shares** reveal zero information about the secret.
-- Field: Galois Field $\text{GF}(2^8)$ / Shamir polynomial interpolation.
-
-### 5.2 Splitting & Metal Engraving Procedure
-1. **Air-Gap Generation:**
-   ```bash
-   kovanica-cli key sss-split \
-     --secret /tmp/treasury_master.seed \
-     --threshold 3 \
-     --shares 5 \
-     --output-dir /tmp/shares/
-   ```
-2. **Physical Medium:** Each share is stamped onto a fireproof, corrosion-resistant stainless steel or titanium plate using mechanical alphanumeric letter punches. Paper notes are prohibited.
-3. **Geographic Custody Distribution:**
-   - **Share 1:** European Institutional Custody Vault (Switzerland).
-   - **Share 2:** North American Institutional Custody Vault (USA).
-   - **Share 3:** Asia-Pacific Institutional Custody Vault (Singapore).
-   - **Share 4:** Kovanica Foundation Lead Legal Trustee.
-   - **Share 5:** Core Developer Protocol Escrow Safe.
-
----
-
-## 6. TODO: rewrite for PoW + GHOSTDAG
-
----
-
-## 7. Verification & Genesis Compilation
-
-### 7.1 Automated Ingestion
-
-TODO: rewrite for PoW + GHOSTDAG
-
-### 7.2 Cryptographic Hashes & Attestation
-```bash
-sha256sum genesis-artifacts/genesis.json \
-          genesis-artifacts/bootnodes.toml > SHA256SUMS
-
-b3sum genesis-artifacts/genesis.json \
-      genesis-artifacts/bootnodes.toml > B3SUMS
+```text
+m/44'/3007'/<account>'/<change>'/<index>'
 ```
 
-All participants sign `SHA256SUMS` with their detached GPG keys for publication in `docs/ceremony/mainnet-attestations/`.
+`<change>` is `0` in the CLI helper. To store an existing 24-word phrase as a keystore at account `0`, index `0`:
+
+```bash
+kovanica import-key --format mnemonic --hd --account 0 --index 0 --out founder.keystore
+```
+
+The prompt is hidden. On success the tool prints the address and `Derivation path: m/44'/3007'/0'/0'/0'`. It does not print the public key. Run `kovanica import --keystore founder.keystore` to print the 64-hex public key. Record the path next to the keystore, offline. Publish the address and, for a seed, the public key.
+
+`--hd` is opt-in. A mnemonic import without `--hd` uses the phrase as raw entropy and does **not** apply coin type 3007. Use `--hd` when the intent is the BIP44 path.
+
+Account numbers for founder, treasury, and seeds are **OPEN**. Use a different account or a different keystore for each role so one passphrase backup is not the only copy of every key, unless Toni decides otherwise.
+
+### 6.3 Seed list file
+
+Build `validators.json` from the public material only:
+
+```json
+[
+  {
+    "address": "OPEN",
+    "public_key": "OPEN"
+  }
+]
+```
+
+Replace both `OPEN` strings before the ceremony runs. `address` must already be PRO-21. `public_key` must already be 64 hex characters. Chain ID 1 refuses legacy hex addresses. The script does not convert them and does not invent keys.
+
+Omit `stake`. One object per seed. The array length must be between 1 and 20.
 
 ---
 
-## 8. Post-Ceremony Sanitization
+## 7. Run the ceremony
 
-1. **Memory Discharge:** Air-gapped workstations powered off completely for ≥5 minutes to discharge volatile DRAM capacitors.
-2. **Staging Media Wipe:** Ephemeral USB drives wiped per DoD 5220.22-M:
-   ```bash
-   shred -v -n 3 -z /dev/sdX
-   ```
-3. **Physical Inspection:** Metal punches and residual materials verified and secured.
+Run this on a machine that has the public `validators.json` and the two addresses, and does not have the keystores. Output must be a new directory. The script refuses `--output` inside `mainnet/`, `testnet/`, or other committed genesis directories.
+
+`--generate-keys` is refused on chain ID 1. Mainnet private keys come from section 6.
+
+```bash
+./ops/genesis/ceremony.sh \
+    --network mainnet \
+    --founder-address "<OPEN: founder PRO-21 address>" \
+    --treasury-address "<OPEN: treasury PRO-21 address>" \
+    --validators ./validators.json \
+    --output ./mainnet-genesis-out
+```
+
+What the script does:
+
+1. Checks every address. A bad address leaves no output behind.
+2. Writes `genesis_validators.toml` with `chain_id = 1`, `emission_policy = "no-stake-82m"`, `treasury_address`, and one `[[validator]]` per seed. No `stake` field.
+3. Writes `founder_premine.hex` as a single line: the founder address.
+4. Runs `kovanica-node genesis` with `--emission-policy no-stake-82m`. `genesis.json` is a preview of allocations. A running node does not load balances from it. State comes from `genesis_validators.toml`, `founder_premine.hex`, and `KOVANICA_TREASURY_ADDRESS`.
+5. Writes `bootnodes.toml` with `mainnet.kovanica.online:8000`.
+6. Writes `SHA256SUMS` over `genesis_validators.toml`, `founder_premine.hex`, `genesis.json`, and `bootnodes.toml`.
+
+The script does not write `funded_accounts.toml`. That file is forbidden on chain ID 1.
+
+Check the preview before anyone copies it:
+
+- `founder_premine_kovanica` is `200000`.
+- Treasury total stays 8 000 000 KVNC at 1 000 000 per year, with `vested = 0` at genesis.
+- `genesis_validator_allocation_kovanica` is `0`.
+- `mining_subsidy_budget_kovanica` is `82000000`.
+- `emission_policy` is `no-stake-82m`.
+- No `PLACEHOLDER_` string remains.
+- Bootnode list is `mainnet.kovanica.online:8000` and contains no IP address.
+
+`--chain-id 1` is implied by `--network mainnet`. Genesis time is not a flag. The genesis timestamp stays `0`.
 
 ---
 
-## 9. Operator Sign-Off Checklist
+## 8. Checksums and the network tag
 
-- [ ] Node identity keys generated on an air-gapped live boot.
-- [ ] Keystore secured with high-entropy passphrase (minimum 16 characters).
-- [ ] Address matches canonical PRO-21 format (`kvnc`...`dag`, 64 characters).
-- [ ] Treasury 3-of-5 Shamir shares engraved onto metal plates and distributed.
-- [ ] Genesis bundle checksums match published `SHA256SUMS` and `B3SUMS`.
-- [ ] `funded_accounts.toml` is absent from data directory (strictly prohibited on Mainnet).
-- [ ] Pre-flight config check succeeds: `kovanica-node --check-config`.
+Everyone who will run a mainnet node computes the same sums from the same directory:
+
+```bash
+cd ./mainnet-genesis-out
+sha256sum -c SHA256SUMS
+```
+
+Publish `SHA256SUMS` and detached signatures from the ceremony owner. Witness signatures are **OPEN** until witnesses are named. Do not publish keystores.
+
+The network tag is:
+
+```text
+1-<16 hex chars of the genesis config digest>
+```
+
+It depends on chain ID `1`, the genesis file bytes, and the treasury address. Compute it only after the OPEN addresses are real:
+
+```bash
+kovanica-node network-tag --config /etc/kovanica/config.toml
+```
+
+Every mainnet node must print the same line. Record that line in the launch notes. It is **OPEN** in this draft. It will not equal `2-acfdf6a6c80fd28a`.
+
+A publishable archive, when Toni asks for one, is cut by the node and not by hand:
+
+```bash
+kovanica-node genesis-bundle \
+    --chain-id 1 \
+    --source ./mainnet-genesis-out \
+    --out kovanica-mainnet-genesis.tar.gz
+```
+
+The bundle refuses keys, keystores, and `config.toml`. `expected-tag` inside the archive must match `network-tag`. Attaching that archive to a release is a later ops step. It is not part of this draft.
+
+---
+
+## 9. Sign-off
+
+- [ ] Founder address is a real PRO-21 address (replaces **OPEN**).
+- [ ] Treasury address is a real PRO-21 address (replaces **OPEN**).
+- [ ] Bootstrap list length is between 1 and 20, each with a PRO-21 address and a 64-hex public key (replaces **OPEN**).
+- [ ] Keystores and passphrases stayed on the air-gapped machine.
+- [ ] `ceremony.sh` was run without `--generate-keys`.
+- [ ] Output directory is not `mainnet/` and was not committed from this draft.
+- [ ] `SHA256SUMS` verifies.
+- [ ] Preview amounts match section 2 (200 000 / 8 000 000 / 0 / 82 000 000).
+- [ ] `bootnodes.toml` is `mainnet.kovanica.online:8000`.
+- [ ] `funded_accounts.toml` is absent.
+- [ ] `kovanica-node network-tag` is identical on every node and starts with `1-`.
+- [ ] No `PLACEHOLDER_` token remains in the output.
+
+Until the first three boxes are checked, mainnet genesis is not ready. Public launch stays 1.1.2027.

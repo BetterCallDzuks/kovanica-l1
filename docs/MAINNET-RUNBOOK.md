@@ -1,315 +1,306 @@
-# Kovanica Mainnet Launch & Operations Runbook
+# Kovanica Mainnet Launch Runbook
 
-> **Network ID:** `1` (`MAINNET`)  
-> **Native Ticker:** **KVNC** (9 decimals: $1\text{ KVNC} = 10^9\text{ atoms}$)  
-> **Canonical Address Format:** PRO-21 base32 (`kvnc<57 base32>dag`, exactly 64 characters)  
-> **Status:** DRAFT, not normative, being rewritten for PoW + GHOSTDAG no-stake  
-> **Consensus Impact:** Client and Operational only; strictly conforms to frozen consensus and tokenomics specifications.
+> **Network:** kovanica-mainnet (chain ID `1`)
+> **Ticker:** KVNC (9 decimals; `1 KVNC = 10^9` atoms)
+> **Consensus:** Hybrid PoW + GHOSTDAG. Stake is not used for consensus.
+> **Status:** Operational draft. Frozen parameters are locked. Ceremony addresses are **OPEN**. Launch date is 1.1.2027. The clock time that day is **OPEN**.
+> **Consensus impact:** None. This runbook tells operators how to start clients. It does not change consensus bytes, genesis files, or a live deploy.
 
----
-
-## 1. Overview and Architecture Principles
-
-This runbook defines the end-to-end operational protocol for launching, validating, monitoring, and maintaining the **Kovanica Mainnet** (Chain ID `1`). 
-
-### Core Architectural Targets
-- **Consensus Engine:** Hybrid PoW + GHOSTDAG (target block duration 4 s (`TARGET_BLOCK_MS = 4000`), GHOSTDAG parameter $K=5$, PoW Hash: KovanicaHash; NO stake in consensus path; legacy Mysticeti-C wave length `WAVE_LENGTH = 3` and 12 s leader commitment remain preserved in codebase).
-- **Block Timing:** Target block time `4,000 ms` (4 s), with GHOSTDAG $K=5$ topological transaction ordering.
-- **Resource Footprint:** Standard commodity hardware and VPS instances: 2–4 GB RAM, 2 vCPU cores, 50 GB NVMe SSD.
-- **P2P Networking:** Plaintext TCP on port **8000** over `libp2p` with Noise encryption and Yamux multiplexing.
-- **RPC & Metrics:** JSON-RPC / WebSocket on ports **8545** / **8546**, Prometheus metrics on port **9100**.
+Read [`AGENT-RULES.md`](AGENT-RULES.md) before acting on this document. Key generation and the genesis file set are in [`KEY-CEREMONY.md`](KEY-CEREMONY.md) and [`GENESIS-CEREMONY.md`](GENESIS-CEREMONY.md). Mining mechanics are in [`MINING.md`](MINING.md).
 
 ---
 
-## 2. Phase 0: Pre-Launch Verification & Invariants
+## 1. Launch shape
 
-Prior to deploying any genesis artifacts or coordinating node startups, the operations team and bootstrap seed operators must independently verify all frozen protocol parameters.
+Three kinds of process participate. None of them is a voting validator.
 
-### 2.1 Protocol & Tokenomics Parameter Matrix
-
-Verify that the binary under execution enforces the frozen parameters defined in `crates/kovanica-params` and `crates/kovanica-staking`:
-
-| Parameter | Mainnet Invariant | Code Source / Check |
+| Process | Job | Consensus role |
 |---|---|---|
-| **Chain ID** | `1` (`MAINNET`) | `crates/kovanica-params/src/lib.rs` |
-| **Total Supply Ceiling** | `90,200,000 KVNC` | `TOTAL_SUPPLY = 90_200_000 * 10^9` |
-| **Decimals** | `9` (1 atom = $10^{-9}$ KVNC) | `ONE_KVNC = 1_000_000_000` |
-| **Founder Premine** | `200,000 KVNC` | `FOUNDER_PREMINE = 200_000 * 10^9` |
-| **Treasury Allocation** | `8,000,000 KVNC` | Linear 8-year vesting (1M KVNC/year) |
-| **Mining Subsidy Budget** | `82,000,000 KVNC` | $90.2\text{M} - 0.2\text{M} - 8\text{M}$ |
-| **Initial Block Reward** | `2.5 KVNC` | $2.5 \times 10^9$ atoms per committed block |
-| **Subsidy Era Length** | `8,200,000 blocks` | Rewarded blocks per era; multiplied by $3/4$ decay each era |
-| **Genesis Bootstrap Seeds** | `1` to `20` nodes | `3–5` seeds recommended for public launch |
-| **Epoch Duration** | `7,200` rounds (~8 hours) | `EPOCH_ROUNDS = 7_200` (legacy, non-consensus) |
-| **Unbonding Cooldown** | `100,000` leader blocks | ~13.9 days at 12 s/leader (legacy, non-consensus) |
+| Bootstrap seed | Holds the genesis files, listens on TCP `8000`, publishes the bootnode name | Relay and initial discovery |
+| Miner | Searches KovanicaHash and publishes blocks | Produces blocks. Payout is the block author reward |
+| RPC / full node | Serves `127.0.0.1:8545` (or an operator bind) and syncs the DAG | Follows GHOSTDAG order |
 
-### 2.2 Mainnet Pre-Flight Configuration Guards
+`GHOSTDAG_K = 5` orders blocks. `TARGET_BLOCK_MS = 4000` is the difficulty target. A committee quorum, a VRF leader, and a stake threshold are not part of liveness. Legacy constants (`WAVE_LENGTH`, `EPOCH_ROUNDS`, `MIN_VALIDATOR_STAKE`, `JAIL_ROUNDS`, and the rest) stay in the tree and stay off the consensus path.
 
-Mainnet nodes strictly enforce security configurations at startup. The node binary **fails immediately** if any of the following constraints are violated:
-
-1. **`funded_accounts.toml` is Forbidden:**
-   On Chain ID `1`, `funded_accounts.toml` must **NOT** exist in `KOVANICA_DATA_DIR`. All genesis funds must originate strictly from the founder premine or treasury vesting.
-2. **Address Format Enforcement:**
-   Only canonical PRO-21 base32 addresses (`kvnc` + 57 base32 chars + `dag`) are permitted. Hexadecimal or legacy addresses trigger parse rejection.
-3. **No Reset Switch / No Public Faucet:**
-   ```bash
-   KOVANICA_ALLOW_RESET=0
-   KOVANICA_FAUCET=0
-   KOVANICA_MINE=0
-   KOVANICA_OPERATOR=0
-   ```
-4. **Configuration Check Command:**
-   Each operator must execute pre-flight validation:
-   ```bash
-   kovanica-node --check-config --config /etc/kovanica/config.toml
-   ```
+Resource budget for a seed, miner, or RPC node: 2–4 GB RAM, 2 vCPU, about 50 GB SSD. The systemd unit caps the node at `MemoryMax=3G` ([`ops/systemd/kovanica-node.service`](../ops/systemd/kovanica-node.service)).
 
 ---
 
-## 3. Phase 1: Seed Infrastructure & DNS Configuration
+## 2. Frozen parameters to verify before start
 
-A resilient P2P mesh requires at least 3 geographically independent DNS seed nodes acting as initial entry points.
+Confirm the binary matches this table. Operators do not override these in config.
 
-### 3.1 DNS Architecture (Cloudflare DNS-Only / Grey-Cloud)
+| Parameter | Mainnet value |
+|---|---|
+| Chain ID | `1` |
+| Total supply | 90 200 000 KVNC |
+| Decimals | 9 (`ONE_KVNC = 10^9`) |
+| Founder premine | 200 000 KVNC |
+| Treasury | 8 000 000 KVNC, linear, 1 000 000 KVNC/year × 8, `vested = 0` at genesis |
+| Seed allocation | 0 KVNC |
+| Mining budget | 82 000 000 KVNC |
+| Initial block reward | 2.5 KVNC to the committed block author |
+| Subsidy era | 8 200 000 rewarded blocks, then × 3/4 |
+| Fee split | 3/4 burned, 1/4 miner |
+| Target block time | 4000 ms |
+| GHOSTDAG k | 5 |
+| PoW | KovanicaHash |
+| Easiest target / `MAX_TARGET_BITS` | `0x1f00ffff` |
+| Hardest target / `MIN_TARGET_BITS` | `0x01010000` |
+| Genesis time | `0` |
+| Bootnode | `mainnet.kovanica.online:8000` |
+| BIP44 coin type | `3007` (`m/44'/3007'/<account>'/<change>'/<index>'`) |
+| Public launch | 1.1.2027 |
+| Address | PRO-21: `kvnc` + 57 bech32 chars + `dag` |
 
-P2P communication runs over plaintext TCP on port `8000`. **Cloudflare HTTP proxy (orange-cloud) must be disabled** for all seed records. External peers bootstrap via DNS names only.
+The DAA aims at 4 seconds and clamps to those two bit values. Operators do not write a target into the config. The testnet tag `2-acfdf6a6c80fd28a` and the testnet bounds `0x1f7fffff` / `0x1e00ffff` are chain ID 2. A mainnet node that prints that tag is on the wrong genesis.
 
-| DNS Record | Type | Host Target | Cloudflare Status | Purpose |
-|---|---|---|---|---|
-| `mainnet.kovanica.online` | A | seed1 host | **DNS-only (grey-cloud)** | Primary mainnet seed |
-| `seed1.kovanica.online` | A | seed1 host (EU Central) | **DNS-only (grey-cloud)** | Independent Seed 1 |
-| `rpc.kovanica.online` | A | RPC gateway | **DNS-only (grey-cloud)** | Public JSON-RPC (port 8545) |
+---
 
-*(Note: seed3 is no longer a host).*
+## 3. OPEN items that block launch
 
-### 3.2 Verifying Seed Reachability
+Launch waits on [`KEY-CEREMONY.md`](KEY-CEREMONY.md). Until these are real, keep the committed `mainnet/genesis.json` template untouched. It still contains `PLACEHOLDER_MAINNET_*` and the node refuses to run it.
 
-Run network diagnostics across seed targets:
+| Item | State |
+|---|---|
+| Founder PRO-21 address | **OPEN** |
+| Treasury PRO-21 address | **OPEN** |
+| Bootstrap seeds (address + 32-byte public key, count 1..=20, recommend 3–5) | **OPEN** |
+| Mainnet network tag `1-<16 hex chars>` | **OPEN** until the ceremony files and the treasury address are fixed |
+| DNS A/AAAA for `mainnet.kovanica.online` | **OPEN** (name and port are frozen; the host record is not published here) |
+| Extra seed DNS names | **OPEN** |
+| Public RPC hostname | **OPEN** |
+| Exact UTC start on 1.1.2027 | **OPEN** |
+| Treasury custodians | **OPEN** |
+
+`OPEN` is a marker in this document. Do not put the word `OPEN` into a config or a genesis file.
+
+---
+
+## 4. Config that must be true on every mainnet node
+
+`funded_accounts.toml` must be absent from the data directory. Chain ID 1 aborts at startup when that file is present. Every KVNC on mainnet comes from the premine, the treasury vest, or the mining subsidy.
+
+Pre-flight, with the ceremony files already in the data directory and `treasury_address` set to the ceremony treasury:
 
 ```bash
-# Verify DNS resolution
-dig +short seed1.kovanica.online
-dig +short mainnet.kovanica.online
-
-# Verify TCP 8000 ingress
-nc -zvw3 seed1.kovanica.online 8000
+kovanica-node --check-config --config /etc/kovanica/config.toml
+kovanica-node network-tag --config /etc/kovanica/config.toml
 ```
 
-### 3.3 Bootstrap Peer Multiaddr Formatting
+`--check-config` prints `config OK` and the chain id. On chain ID 1 it also checks that a present ceremony file declares between 1 and 20 seeds. `network-tag` prints `1-` plus 16 hex characters. Every node prints the same tag. A mismatch means the genesis files or `KOVANICA_TREASURY_ADDRESS` differ, and the libp2p handshake will reject the peer.
 
-The seed node generates a persistent libp2p identity key (`p2p.key`). The resulting Multiaddr populates `KOVANICA_BOOTNODES`:
+Example config keys (values that are still **OPEN** stay as words here, not in the real file):
+
+```toml
+# /etc/kovanica/config.toml
+chain_id = 1
+data_dir = "/var/lib/kovanica"
+listen_addr = "0.0.0.0:8000"
+rpc_addr = "127.0.0.1"
+rpc_port = 8545
+bootnodes = ["mainnet.kovanica.online:8000"]
+treasury_address = "<OPEN: treasury PRO-21 address>"
+round_duration_ms = 4000
+max_peers = 50
+
+# Legacy Mysticeti signing path. Hybrid blocks come from [mining].
+run_validator = false
+
+[mining]
+enabled = false
+```
+
+`run_validator = true` is the code default and then the node requires `validator_key`. Mainnet seeds, miners, and RPC nodes set `run_validator = false` (or `KOVANICA_RUN_VALIDATOR=false`). Leave `KOVANICA_VRF_LEADER` unset.
+
+`KOVANICA_MINE`, `KOVANICA_FAUCET`, `KOVANICA_OPERATOR`, and `KOVANICA_ALLOW_RESET` are not read by `kovanica-node`. Mining is `KOVANICA_MINING_ENABLED` / `[mining]`. The faucet is a separate binary and refuses chain ID 1 unless `--allow-mainnet` or `KOVANICA_FAUCET_ALLOW_MAINNET=1` is set. Do not set that override. Mainnet has no public faucet.
+
+RPC writes require bearer auth. Do not publish a config that turns `KOVANICA_RPC_AUTH` off. Read methods used below (`kovanica_blockNumber`, `kovanica_syncStatus`, `GET /health`, `GET /metrics`) stay available for local checks.
+
+Bind RPC to loopback unless the host is the public RPC and the auth and the rate limit are in place. JSON-RPC is `POST /rpc`. WebSocket is `GET /ws`. Health is `GET /health`. Prometheus text is `GET /metrics`. All four share the RPC port (default `8545`). There is no separate metrics port in the node.
+
+P2P is TCP `8000` with libp2p Noise and Yamux. The frozen bootnode string is the DNS name and the port:
 
 ```text
-/dns4/seed1.kovanica.online/tcp/8000/p2p/12D3KooW...
+mainnet.kovanica.online:8000
 ```
+
+The DNS record for that name is grey-cloud (DNS only). An HTTP proxy in front of port `8000` breaks the handshake. The ceremony writes this name into `bootnodes.toml` and does not write an IP. Peer ids are created on the seed when `p2p_node.key` appears in the data directory. That key stays on the seed. It is not a ceremony input and it is not committed.
 
 ---
 
-## 4. Phase 2: Genesis Bootstrap Coordination
+## 5. Genesis files on the node
 
-Mainnet genesis coordinates PoW bootstrap **seeds** via `ops/genesis/ceremony.sh` and [`docs/KEY-CEREMONY.md`](KEY-CEREMONY.md). There is no validator committee and no VRF key material on chains 1 and 2; `[[validator]]` entries in `genesis_validators.toml` are bootstrap identities.
+Copy only the public ceremony output into the data directory:
 
-### 4.1 Committee Size & Allocation
+- `genesis_validators.toml`
+- `founder_premine.hex`
+- `bootnodes.toml` (or set the same bootnode in config)
 
-TODO: rewrite for PoW + GHOSTDAG
+Set `treasury_address` in config, or `KOVANICA_TREASURY_ADDRESS`, to the same treasury string recorded in `genesis_validators.toml`. The digest binds that string. A node with a different treasury builds a different tag and cannot join.
 
-### 4.2 Genesis Generation Procedure
+`genesis.json` may sit beside those files for human review. The node derives genesis state from the toml, the founder file, and the configured treasury address.
 
-The ceremony coordinator collects verified `validators.json` and executes:
+`genesis_validators.toml` on chain ID 1 looks like this once the OPEN markers are replaced:
 
-```bash
-./ops/genesis/ceremony.sh \
-    --network mainnet \
-    --validators validators.json \
-    --treasury-address kvnc1...dag \
-    --founder-address kvnc1...dag \
-    --output ./mainnet-genesis
+```toml
+chain_id = 1
+emission_policy = "no-stake-82m"
+treasury_address = "<OPEN: treasury PRO-21 address>"
+
+[[validator]]
+address = "<OPEN: seed PRO-21 address>"
+public_key = "<OPEN: 64 hex chars>"
 ```
 
-The resulting bundle produces:
-- `genesis.json`: Core state containing the founder balance and the treasury vesting vault (the 8M treasury is an allocation with `vested = 0`, not a genesis balance).
-- `genesis_validators.toml`: Bootstrap seed identities (Ed25519 addresses and public keys). The `[[validator]]` table name is leftover format; there are no VRF keys under hybrid.
-- `bootnodes.toml`: Canonical seed bootstrap entries.
-
-### 4.3 Genesis Bundle Checksum & Network Tag Verification
-
-Every validator operator must independently compute and compare the SHA-256 checksums:
-
-```bash
-cd /var/lib/kovanica
-sha256sum genesis.json genesis_validators.toml bootnodes.toml > SHA256SUMS.local
-sha256sum -c SHA256SUMS
-```
-
-All nodes derive a **Network Tag**:
-$$\text{Network Tag} = \text{chain\_id} - \text{digest}_{16}(\text{genesis\_config})$$
-For Mainnet, the tag is formatted as `1-<16 hex chars>`. Nodes with mismatched network tags are rejected by the libp2p handshake.
-
-### 4.4 Synchronized Launch ($T_0$)
-
-1. **Target Time:** Agree on a precise UTC timestamp $T_0$ (e.g. `2026-11-25 12:00:00 UTC`).
-2. **Seed Startup ($T_0 - 15\text{m}$):** Boot seeds 1, 2, and 3 with clean data directories.
-3. **Node & Miner Startup ($T_0$):** Bootstrap seed nodes and mining nodes start `kovanica-node` simultaneously via systemd:
-   ```bash
-   systemctl start kovanica-node
-   journalctl -u kovanica-node -f
-   ```
+No `stake` key. `emission_policy` must be `no-stake-82m`.
 
 ---
 
-## 5. Phase 3: Launch Verification & Health Checks
+## 6. Process layout
 
-Immediately upon launch, run the automated verification suite.
+### 6.1 Seed
 
-### 5.1 CLI Node Operations Inspection
+`[mining].enabled = false`. `run_validator = false`. Listen on `0.0.0.0:8000`. Use the genesis files from section 5. The first seed is the host that `mainnet.kovanica.online` will resolve to. Further seeds, if Toni names them, use the same genesis bytes and the same treasury, and they add each other as bootnodes. Their DNS names are **OPEN**.
 
-Using `crates/kovanica-cli`:
-
-```bash
-# Check sync state and peer convergence
-kovanica node sync --rpc http://127.0.0.1:8545
-
-# Inspect connected P2P peers
-kovanica node peers --rpc http://127.0.0.1:8545
-
-# JSON formatted checks for automation scripts
-kovanica node sync --json --rpc http://127.0.0.1:8545
-kovanica node peers --json --rpc http://127.0.0.1:8545
-```
-
-Expected Sync Output:
-```text
-+-------------------+--------------------------------------+
-| Field             | Value                                |
-+-------------------+--------------------------------------+
-| Sync State        | in sync                              |
-| Current Height    | 42                                   |
-| Round             | 126                                  |
-| Target Height     | 42                                   |
-| Blocks Behind     | 0                                    |
-| Connected Peers   | 18                                   |
-+-------------------+--------------------------------------+
-```
-
-### 5.2 JSON-RPC Cluster Health Probe
-
-Run `ops/monitoring/check-cluster.sh` or query directly:
+Start:
 
 ```bash
-# Node health endpoint
-curl -fsS http://127.0.0.1:8545/health | jq .
+systemctl start kovanica-node
+journalctl -u kovanica-node -f
+```
 
-# Check current block height
-curl -fsS -X POST http://127.0.0.1:8545 \
+Confirm the log shows chain ID 1 and a network tag that starts with `1-`.
+
+### 6.2 Miner
+
+A miner is any node with a PRO-21 payout address. It does not appear in `validators.json`.
+
+```bash
+# environment, or the matching [mining] keys
+KOVANICA_MINING_ENABLED=true
+KOVANICA_MINING_ADDRESS=<PRO-21 payout address>
+KOVANICA_MINING_THREADS=2
+KOVANICA_RUN_VALIDATOR=false
+```
+
+`KOVANICA_MINING_ADDRESS` is the reward address. `KOVANICA_MINING_AUTHOR` is an optional bootstrap-seed index and is unnecessary when the address is set. The payout address can be a BIP44 account at coin type 3007; the node only sees the PRO-21 string.
+
+KovanicaHash uses a 2 MiB mix per hash. Size the thread count so the process stays inside the 2–4 GB budget together with the node.
+
+### 6.3 RPC node
+
+Same genesis and the same tag as the seeds. `run_validator = false`. Mining stays off unless this host is also a miner. Keep the RPC bind on localhost until a reviewed reverse proxy and bearer auth are in front of it.
+
+---
+
+## 7. Launch window
+
+Public launch is **1.1.2027**. The UTC minute is **OPEN**. Agree it in writing before the day, then:
+
+1. At least 15 minutes before that minute, start seeds with empty data directories that contain only the ceremony files and a fresh `p2p_node.key` created by the process. Do not copy a chain ID 2 data directory.
+2. At the agreed minute, start miners and RPC nodes.
+3. Watch height. With a miner running, committed height should advance on a 4 second target. The first blocks can be slower while the DAG has few parents. A multi-minute stall with miners connected is an incident (section 9), not a reason to edit difficulty.
+
+Do not reset a data directory to “line everyone up” after the first block exists. GHOSTDAG commits a total order once blocks have propagated.
+
+---
+
+## 8. Health checks
+
+CLI (`kovanica`, from `kovanica-cli`):
+
+```bash
+kovanica node sync --rpc-url http://127.0.0.1:8545
+kovanica node peers --rpc-url http://127.0.0.1:8545
+```
+
+`sync` rows are `RPC`, `Signing chain id`, `Height`, `Round`, `Epoch`, `Sync`, `Peers`, and `Committee size (legacy)`. Expect:
+
+- Signing chain id `1 (matches the node)`.
+- `Sync` of `in sync` once the node has the peer tip.
+- `Height` increasing.
+- `Peers` greater than 0 after the mesh exists.
+- `Committee size (legacy)` is a leftover counter. It is not a quorum and it does not gate commits.
+
+Direct HTTP on the node:
+
+```bash
+curl -fsS http://127.0.0.1:8545/health
+
+curl -fsS -X POST http://127.0.0.1:8545/rpc \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"kovanica_blockNumber","params":[],"id":1}' | jq .
+  -d '{"jsonrpc":"2.0","method":"kovanica_blockNumber","params":[],"id":1}'
 
-# Verify consensus sync status
-curl -fsS -X POST http://127.0.0.1:8545 \
+curl -fsS -X POST http://127.0.0.1:8545/rpc \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"kovanica_syncStatus","params":[],"id":1}' | jq .
+  -d '{"jsonrpc":"2.0","method":"kovanica_syncStatus","params":[],"id":1}'
 ```
 
-Verify that:
-1. `peer_count` $\ge 14$ (for the 15–20 node bootstrap seed set; not a committee quorum).
-2. `seconds_since_last_commit` stays below a few target block intervals (nominal 4 s).
-3. `blockNumber` advances monotonically.
+`kovanica_syncStatus` includes `networkTag`. It must equal the `network-tag` line from section 4.
+
+There is no required peer count for consensus. The alert rules in [`ops/prometheus/alerts.yml`](../ops/prometheus/alerts.yml) still fire when `peer_count < 3` for 2 minutes and when `peer_count == 0` for 1 minute. On the first hour, with fewer than three peers, `KovanicaPeerCountDrop` will page. Treat it as “the mesh is smaller than the alert expects”, then compare with the number of seeds Toni actually started. A later quiet hour with `peer_count == 0` on a public seed is a real partition.
+
+`ops/monitoring/check-cluster.sh` is the chain ID 2 monitor (it queries `seed1` and `seed3`). It is not the mainnet check. Use the commands in this section against mainnet binds.
 
 ---
 
-## 6. Phase 4: Prometheus & Grafana Monitoring & Alert Runbook
+## 9. Alerts
 
-Nodes expose Prometheus metrics on port `9100` (or configured metrics port). Observability rules are defined in `ops/prometheus/alerts.yml`.
+Scrape `GET /metrics` on the RPC port. Rule names below are the ones in `ops/prometheus/alerts.yml`. The annotation text on `KovanicaPeerCountDrop` still says “4-node quorum”. Read the condition (`peer_count < 3`). Consensus does not have that quorum.
 
-### 6.1 Critical Alerts & Remediation Procedures
+| Alert | Condition | What to do |
+|---|---|---|
+| `KovanicaPeerCountCritical` | `peer_count == 0` for 1 minute | Check `ss -tulpn` for port `8000`, the grey-cloud DNS record, and `bootnodes`. Read the log for handshake errors and a wrong network tag. |
+| `KovanicaPeerCountDrop` | `peer_count < 3` for 2 minutes | Compare with the planned seed count. If the count is below the plan, fix reachability on port `8000`. |
+| `KovanicaBlockHeightStalled` | no `block_height` increase for 5 minutes | See section 9.1. |
+| `KovanicaBlockHeightDrift` | max height − min height > 10 for 2 minutes | The lagging node is syncing or its disk is saturated (`iostat -xz 1`). Give it peers. Do not delete its store because it is behind. |
+| `KovanicaCommitLatencyHigh` | `commit_latency > 5000` ms for 3 minutes | Target is 4000 ms. Check CPU (the 2 MiB hash mix), disk, and RTT between miners and seeds. |
+| `KovanicaMempoolBacklog` | `mempool_size > 1000` for 5 minutes | Block production is slower than transaction intake. Check that a miner is actually hashing. Fees still follow the 3/4 burn, 1/4 miner split. |
+| `KovanicaMemoryHigh` / `KovanicaMemoryCritical` | `rss_proxy` above 3000 MB / 3500 MB | Stay inside the 2–4 GB budget. A graceful restart releases RSS. Raise `MemoryMax` only with an explicit capacity decision. |
+| `KVCNNodeDown` | Prometheus `up{job="kovanica"} == 0` for 1 minute | `systemctl status kovanica-node`, then disk space on `/var/lib/kovanica`. The alert name is `KVCN`, which is the string in the rules file. |
+| `KovanicaMysticGhostMergesetLarge` / `KovanicaMysticGhostColouringFallback` | mergeset or colouring fallback | The node is slow to colour the DAG. Check CPU and disk. Leave `GHOSTDAG_K` at 5. |
 
-#### Alert: `KovanicaPeerCountDrop` / `KovanicaPeerCountCritical`
-- **Condition:** `peer_count < 3` for 2 minutes (Drop) or `peer_count == 0` for 1 minute (Critical).
-- **Severity:** Critical.
-- **Triage Steps:**
-  1. Check firewall and external connectivity: `curl -I https://cloudflare.com`.
-  2. Verify TCP port 8000 is open and listening: `ss -tulpn | grep 8000`.
-  3. Inspect node log for connection drops or protocol mismatches: `journalctl -u kovanica-node | grep -E "disconnect|swarm|identify"`.
-  4. Ensure `KOVANICA_BOOTNODES` are reachable and responsive.
+### 9.1 Height stalled
 
-#### Alert: `KovanicaBlockHeightStalled`
-- **Condition:** `increase(block_height[5m]) == 0` for 5 minutes.
-- **Severity:** Critical (Consensus stall).
-- **Triage Steps:**
-  1. Determine if stall is local or global across seed nodes:
-     ```bash
-     curl -s https://seed1.kovanica.online/health | jq .block_height
-     ```
-  2. If local: restart the local node (`systemctl restart kovanica-node`). Check storage errors in `consensus.redb`.
-  3. If global: TODO: rewrite for PoW + GHOSTDAG
+1. Query `kovanica_blockNumber` on each seed. If one node is quiet and the others advance, the quiet node has a local fault (process down, disk, or no peers). Restart that process. Keep its `consensus.redb` and `state.redb`.
+2. If every node is quiet, check that at least one miner has `KOVANICA_MINING_ENABLED=true`, a valid PRO-21 `KOVANICA_MINING_ADDRESS`, and peers on port `8000`.
+3. Confirm every node still prints the same `1-…` tag. A tag split means the genesis bytes or the treasury address diverged. Stop the divergent node and restore the ceremony files. Do not edit bits, `k`, or the reward to force a block.
+4. Do not wipe data directories as the first response. A wipe after height > 0 forks that operator off the chain they already accepted.
 
-#### Alert: `KovanicaBlockHeightDrift`
-- **Condition:** `max(block_height) - min(block_height) > 10` across cluster for 2 minutes.
-- **Severity:** Warning.
-- **Triage Steps:**
-  1. Identify lagging nodes via `kovanica node sync`.
-  2. Verify whether lagging node is rate-limited on P2P gossip or experiencing high disk I/O wait (`iostat -xz 1`).
-  3. Trigger catch-up sync or adjust `KOVANICA_MAX_PEERS`.
+### 9.2 Two blocks from one miner
 
-#### Alert: `KovanicaCommitLatencyHigh`
-- **Condition:** `commit_latency > 5000` ms for 3 minutes.
-- **Severity:** Warning.
-- **Triage Steps:**
-  1. High DAG propagation delay. Check network ping latencies between validators.
-  2. Check CPU utilization: ensure Wasmi contract execution or cryptographic verification is not throttled.
+GHOSTDAG orders competing blocks into blue and red. There is no equivocation slash and no jail. Leave both blocks in the DAG. The committed order is the one every node with the same history will compute. Restarting a miner is appropriate when it is crashing. Deleting peer stores is not.
 
-#### Alert: `KovanicaMemoryHigh` / `KovanicaMemoryCritical`
-- **Condition:** RSS proxy $> 3000\text{ MB}$ (Warning) or $> 3500\text{ MB}$ (Critical, OOM danger).
-- **Severity:** Critical.
-- **Triage Steps:**
-  1. Check memory consumer: `ps aux --sort=-%mem | head -n 5`.
-  2. Inspect state cache and mempool size (`mempool_size`).
-  3. If mempool is flooded with spam, ensure fee priority ordering is working and adjust transaction eviction thresholds.
-  4. If required, perform a rolling graceful restart to release RSS.
+### 9.3 Partition
 
-#### Alert: `KVCNNodeDown`
-- **Condition:** `up{job="kovanica"} == 0` for 1 minute.
-- **Severity:** Critical.
-- **Triage Steps:**
-  1. Check systemd service status: `systemctl status kovanica-node`.
-  2. Inspect exit code or panic backtrace in `/var/log/kovanica/node.log`.
-  3. Verify disk space: `df -h /var/lib/kovanica`. If disk is full, expand volume immediately.
+Restore the path on TCP `8000`. Nodes that kept their stores will exchange the blocks they missed and commit one order. Do not reset one side to genesis. Do not copy `consensus.redb` or `state.redb` from one operator to another.
+
+### 9.4 Corrupt local store
+
+When a single node’s store is unreadable and the rest of the mesh is healthy:
+
+```bash
+systemctl stop kovanica-node
+rm -f /var/lib/kovanica/consensus.redb /var/lib/kovanica/state.redb
+```
+
+Leave `genesis_validators.toml`, `founder_premine.hex`, `bootnodes.toml`, the config, and `p2p_node.key` in place. Start the node. It catches up through `/kovanica/<tag>/block-sync/1.1.0`. If the tag in the log differs from the mesh, stop and fix the treasury or the genesis files before deleting anything else.
 
 ---
 
-## 7. Phase 5: Incident Response & Emergency Procedures
+## 10. Launch checklist
 
-### 7.1 Equivocation Triage
+- [ ] Ceremony sign-off in [`KEY-CEREMONY.md`](KEY-CEREMONY.md) is complete (no remaining **OPEN** address).
+- [ ] `sha256sum -c SHA256SUMS` matches on every operator’s copy.
+- [ ] `network-tag` is the same `1-` value on every node.
+- [ ] `mainnet.kovanica.online` resolves grey-cloud and accepts TCP `8000`.
+- [ ] `funded_accounts.toml` is absent. Faucet override is unset.
+- [ ] `run_validator = false` on seeds, miners, and RPC nodes.
+- [ ] At least one miner has a PRO-21 payout address and `KOVANICA_MINING_ENABLED=true`.
+- [ ] `kovanica node sync` shows height advancing and `Sync` = `in sync`.
+- [ ] `ops/prometheus/alerts.yml` is loaded, and `KVCNNodeDown` is clear.
+- [ ] RPC write methods require the bearer token.
+- [ ] Launch calendar day is 1.1.2027, and the UTC minute was agreed (replaces **OPEN**).
 
-TODO: rewrite for PoW + GHOSTDAG
-
-### 7.2 Network Partition Recovery
-
-If a network split occurs:
-1. **Never reset or wipe single nodes** — this risks unrecoverable fork splits.
-2. Verify all validators have intact `consensus.redb` and `state.redb` storage.
-3. Restore inter-partition network connectivity (BGP routing / cloud provider interconnect).
-4. TODO: rewrite for PoW + GHOSTDAG
-
-### 7.3 Disaster Recovery / State Restoration
-
-In the event of catastrophic data corruption on a single validator:
-1. Stop the node: `systemctl stop kovanica-node`.
-2. Delete the corrupted database:
-   ```bash
-   rm -rf /var/lib/kovanica/data/*.redb
-   ```
-3. Verify `genesis.json`, `genesis_validators.toml`, and keystore are untouched.
-4. Restart the node. The node will perform full state catch-up sync from peer nodes via `kovanica_syncStatus` and block sync protocol `/kovanica/<tag>/block-sync/1.1.0`.
-
----
-
-## 8. Post-Launch Operational Checklist
-
-- [ ] Bootstrap seed nodes online and discovery mesh established.
-- [ ] Block height steadily increasing with 4 s target block interval (Hybrid PoW + GHOSTDAG).
-- [ ] Network tag matching across all nodes (`1-<16 hex chars>`).
-- [ ] Zero unhandled errors in Prometheus alerts (`ops/prometheus/alerts.yml`).
-- [ ] JSON-RPC rate limits active and CORS headers restricted on public endpoints.
-- [ ] Explorer (`explorer.kovanica.online`) indexing blocks and transactions.
-- [ ] Off-site daily snapshot backups enabled for validator and seed data directories.
+This runbook does not authorize a deploy, a tag move, or a genesis commit. Those stay with Toni.
