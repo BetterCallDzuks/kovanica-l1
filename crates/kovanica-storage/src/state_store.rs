@@ -974,11 +974,9 @@ impl StateStore {
         txn: &ReadTransaction,
     ) -> Result<Option<kovanica_types::LeaderHeader>, StateStoreError> {
         let table = txn.open_table(crate::tables::LEADER_HEADERS)?;
-        match table.last()? {
-            Some((_height, value)) => {
-                let bytes = value.value().to_vec();
-                Ok(Some(bincode::deserialize(&bytes)?))
-            }
+        let bytes = table.last()?.map(|(_height, value)| value.value().to_vec());
+        match bytes {
+            Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
             None => Ok(None),
         }
     }
