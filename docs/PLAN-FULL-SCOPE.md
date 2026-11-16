@@ -60,6 +60,8 @@ Out of this plan: `kovanica-vault` (separate private tool).
 | P3-2 | Genesis bundle on a node release for `install.sh` | l1 | After ceremony addresses exist |
 | P3-3 | Faucet stays sequential under load | l1 | Already passed basic checks |
 | P3-4 | Safe nginx Authorization check (from #257) | ops | Docs already merged |
+| P3-5 | Fund the rotated chain-2 faucet after re-genesis | l1/ops | **Blocked**: faucet is `0x0`, below the 100 KVNC floor; no signable funded key on the host. Procedure and unblock options: `docs/FAUCET-FUNDING.md` |
+| P3-6 | Untrack `ops/docker/chain2/{faucet.keystore,faucet_passphrase,node1_p2p.key}` and fix the `.gitleaks.toml` "test fixture" allowlist | l1 | Committed live-key material; needs Toni OK (CI gate + ops state) |
 
 ## P4 — Mainnet preparation (frozen params unchanged)
 
