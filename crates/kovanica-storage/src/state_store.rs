@@ -211,6 +211,7 @@ impl StateStore {
             let _ = write_txn.open_table(crate::tables::STAKING_STATE)?;
             let _ = write_txn.open_table(crate::tables::STATE_ROOT)?;
             let _ = write_txn.open_table(crate::tables::LEADER_HEADERS)?;
+            let _ = write_txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)?;
             let _ = write_txn.open_table(crate::tables::COMMIT_SEALS)?;
             let _ = write_txn.open_table(crate::tables::EXECUTED_TX_HASHES)?;
             let _ = write_txn.open_table(crate::tables::LIGHT_SET)?;
@@ -883,7 +884,20 @@ impl StateStore {
         }
         let mut table = txn.open_table(crate::tables::LEADER_HEADERS)?;
         table.insert(height, bytes)?;
+        let mut digest_table = txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)?;
+        digest_table.insert(header.leader_digest.0, height)?;
+        digest_table.insert(new_hash.0, height)?;
         Ok(())
+    }
+
+    /// Lookup committed leader height by leader block digest or header hash.
+    pub fn get_leader_height_by_digest(
+        &self,
+        txn: &ReadTransaction,
+        digest: &kovanica_types::Hash,
+    ) -> Result<Option<u64>, StateStoreError> {
+        let table = txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)?;
+        Ok(table.get(digest.0)?.map(|guard| guard.value()))
     }
 
     /// Leader header stored for `height`, if this node has executed it.
@@ -2269,6 +2283,27 @@ mod leader_header_tests {
             .get_leader_header(&txn, 9)
             .unwrap()
             .is_none());
+        assert_eq!(
+            storage
+                .state()
+                .get_leader_height_by_digest(&txn, &second.leader_digest)
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            storage
+                .state()
+                .get_leader_height_by_digest(&txn, &second.hash())
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            storage
+                .state()
+                .get_leader_height_by_digest(&txn, &Hash([0xee; 32]))
+                .unwrap(),
+            None
+        );
     }
 }
 

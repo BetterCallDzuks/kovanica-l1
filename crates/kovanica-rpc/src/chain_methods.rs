@@ -263,29 +263,32 @@ pub(crate) fn transaction_to_json(tx: &Transaction) -> Value {
     })
 }
 
-/// Canonical read-side resolution for leader header timestamps: if the header
-/// was persisted with timestamp `0` (historical commits or missing PoW extraction),
-/// resolve the real producer/PoW header timestamp from canonical block storage.
-pub(crate) fn resolve_leader_header_timestamp(state: &RpcState, header: &mut LeaderHeader) {
-    if header.timestamp == 0 {
-        if let Ok(block) = state.consensus_store.get_block(&header.leader_digest) {
-            if let Some((ts, ..)) = kovanica_types::decode_pow_statement(&block.statements) {
-                header.timestamp = ts;
-                return;
-            }
+/// Derive PoW timestamp for a leader header by inspecting canonical block statements.
+///
+/// Leader headers in storage carry timestamp 0 to preserve deterministic canonical
+/// bytes, hash, and seal verification for light clients; the actual PoW mining timestamp
+/// is recorded in the leader block.
+fn derive_pow_timestamp(state: &RpcState, header: &LeaderHeader) -> Option<u64> {
+    if header.timestamp != 0 {
+        return Some(header.timestamp);
+    }
+    if let Ok(block) = state.consensus_store.get_block(&header.leader_digest) {
+        if let Some((ts, ..)) = kovanica_types::decode_pow_statement(&block.statements) {
+            return Some(ts);
         }
-        if let Ok(txn) = state.storage.begin_read() {
-            if let Ok(block) = state
-                .storage
-                .blocks()
-                .get_block(&txn, &header.leader_digest)
-            {
-                if let Some((ts, ..)) = kovanica_types::decode_pow_statement(&block.statements) {
-                    header.timestamp = ts;
-                }
+    }
+    if let Ok(txn) = state.storage.begin_read() {
+        if let Ok(block) = state
+            .storage
+            .blocks()
+            .get_block(&txn, &header.leader_digest)
+        {
+            if let Some((ts, ..)) = kovanica_types::decode_pow_statement(&block.statements) {
+                return Some(ts);
             }
         }
     }
+    None
 }
 
 /// Helper to get the latest committed height across DAG and state stores.
@@ -332,25 +335,6 @@ pub(crate) fn block_to_json_ext(
 
     let display_number = committed_height.unwrap_or(block.round);
 
-    let mut val = json!({
-        "hash": to_hex(&block.digest.0),
-        "digest": to_hex(&block.digest.0),
-        "author": block.author,
-        "number": quantity(display_number),
-        "round": quantity(block.round),
-        "parents": parents_hex.clone(),
-        "parent_hashes": parents_hex,
-        "transactions": txs_val,
-        "statements": to_hex(&block.statements),
-        "signature": to_hex(&block.signature.0),
-    });
-
-    if let Some(h) = committed_height {
-        if let Some(map) = val.as_object_mut() {
-            map.insert("height".to_string(), json!(quantity(h)));
-        }
-    }
-
     let mut timestamp_opt = None;
     let mut target_bits_opt = None;
     let mut nonce_opt = None;
@@ -371,37 +355,60 @@ pub(crate) fn block_to_json_ext(
         }
     }
 
-    if let Some(map) = val.as_object_mut() {
-        if let Some(ts) = timestamp_opt {
-            map.insert("timestamp".to_string(), json!(ts));
-        }
-        if let Some(tb) = target_bits_opt {
-            map.insert("target_bits".to_string(), json!(quantity(tb as u64)));
-        }
-        if let Some(n) = nonce_opt {
-            map.insert("nonce".to_string(), json!(n));
-        }
-        if let Some(h) = pow_hash_opt {
-            map.insert("pow_hash".to_string(), json!(to_hex(&h.0)));
-        }
-        if let Some(p) = payout_opt {
-            map.insert("payout".to_string(), json!(p.to_string()));
-        }
-        if let Some(lh) = leader_header {
-            map.insert("state_root".to_string(), json!(to_hex(&lh.state_root.0)));
-            map.insert(
-                "tx_merkle_root".to_string(),
-                json!(to_hex(&lh.tx_merkle_root.0)),
-            );
-        }
-    }
-
-    val
+    json!({
+        "hash": to_hex(&block.digest.0),
+        "digest": to_hex(&block.digest.0),
+        "author": block.author,
+        "number": quantity(display_number),
+        "height": committed_height.map(quantity).unwrap_or(Value::Null),
+        "round": quantity(block.round),
+        "parents": parents_hex.clone(),
+        "parent_hashes": parents_hex,
+        "transactions": txs_val,
+        "statements": to_hex(&block.statements),
+        "signature": to_hex(&block.signature.0),
+        "timestamp": timestamp_opt.map(|ts| json!(ts)).unwrap_or(Value::Null),
+        "pow_timestamp": timestamp_opt.map(|ts| json!(ts)).unwrap_or(Value::Null),
+        "powTimestamp": timestamp_opt.map(|ts| json!(quantity(ts))).unwrap_or(Value::Null),
+        "target_bits": target_bits_opt.map(|tb| json!(quantity(tb as u64))).unwrap_or(Value::Null),
+        "nonce": nonce_opt.map(|n| json!(n)).unwrap_or(Value::Null),
+        "pow_hash": pow_hash_opt.map(|h| json!(to_hex(&h.0))).unwrap_or(Value::Null),
+        "payout": payout_opt.map(|p| json!(p.to_string())).unwrap_or(Value::Null),
+        "state_root": leader_header.map(|lh| json!(to_hex(&lh.state_root.0))).unwrap_or(Value::Null),
+        "tx_merkle_root": leader_header.map(|lh| json!(to_hex(&lh.tx_merkle_root.0))).unwrap_or(Value::Null),
+    })
 }
 
 /// Serialise a block into JSON.
 pub(crate) fn block_to_json(block: &StatementBlock) -> Value {
     block_to_json_ext(block, true, None, None)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockTarget {
+    Latest,
+    Earliest,
+    Height(u64),
+}
+
+fn parse_block_target(value: &Value, what: &str) -> Result<BlockTarget, RpcError> {
+    if let Some(tag) = value.as_str() {
+        match tag {
+            "latest" => return Ok(BlockTarget::Latest),
+            "earliest" => return Ok(BlockTarget::Earliest),
+            s if s.starts_with("0x") || s.starts_with("0X") => {
+                let n = parse_u64(value, what)?;
+                return Ok(BlockTarget::Height(n));
+            }
+            _ => {
+                return Err(RpcError::InvalidParams(format!(
+                    "{what}: unsupported block tag '{tag}' (supported: 'latest', 'earliest', or a hex quantity/integer)"
+                )));
+            }
+        }
+    }
+    let n = parse_u64(value, what)?;
+    Ok(BlockTarget::Height(n))
 }
 
 // ============================================================================
@@ -417,14 +424,17 @@ pub async fn handle_block_number(_params: Value, state: RpcState) -> Result<Valu
 pub async fn handle_get_block_by_hash(params: Value, state: RpcState) -> Result<Value, RpcError> {
     let args = params_vec(&params);
     let hash = parse_hash(required(&args, 0, "block hash")?, "block hash")?;
-    let full_transactions = args.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
+    let full_transactions = args.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
+
+    if hash == Hash::zero() {
+        return Ok(Value::Null);
+    }
 
     // 1. Try consensus DAG store by block digest
     if let Ok(block) = state.consensus_store.get_block(&hash) {
         let (committed_height, leader_hdr) = match find_leader_header_by_hash(&state.storage, &hash)
         {
-            Ok(Some(mut hdr)) => {
-                resolve_leader_header_timestamp(&state, &mut hdr);
+            Ok(Some(hdr)) => {
                 let h = hdr.committed_height;
                 (Some(h), Some(hdr))
             }
@@ -439,8 +449,7 @@ pub async fn handle_get_block_by_hash(params: Value, state: RpcState) -> Result<
     }
 
     // 2. Target might be a leader header hash rather than block digest
-    if let Ok(Some(mut hdr)) = find_leader_header_by_hash(&state.storage, &hash) {
-        resolve_leader_header_timestamp(&state, &mut hdr);
+    if let Ok(Some(hdr)) = find_leader_header_by_hash(&state.storage, &hash) {
         if let Ok(block) = state.consensus_store.get_block(&hdr.leader_digest) {
             let h = hdr.committed_height;
             return Ok(block_to_json_ext(
@@ -469,8 +478,7 @@ pub async fn handle_get_block_by_hash(params: Value, state: RpcState) -> Result<
         Ok(block) => {
             let (committed_height, leader_hdr) =
                 match find_leader_header_by_hash(&state.storage, &hash) {
-                    Ok(Some(mut hdr)) => {
-                        resolve_leader_header_timestamp(&state, &mut hdr);
+                    Ok(Some(hdr)) => {
                         let h = hdr.committed_height;
                         (Some(h), Some(hdr))
                     }
@@ -492,73 +500,144 @@ pub async fn handle_get_block_by_hash(params: Value, state: RpcState) -> Result<
 pub async fn handle_get_block_by_number(params: Value, state: RpcState) -> Result<Value, RpcError> {
     let args = params_vec(&params);
     let raw_target = required(&args, 0, "block number")?;
-    let full_transactions = args.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
+    let full_transactions = args.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
 
+    let target = parse_block_target(raw_target, "block number")?;
     let latest = latest_committed_height(&state);
-    let number = parse_block_ref(raw_target, latest, "block number")?;
 
     let txn = state.storage.begin_read().map_err(internal)?;
 
-    // 1. Check committed leader header at this height
-    if let Ok(Some(mut header)) = state.storage.state().get_leader_header(&txn, number) {
-        resolve_leader_header_timestamp(&state, &mut header);
-        if let Ok(block) = state.consensus_store.get_block(&header.leader_digest) {
-            return Ok(block_to_json_ext(
-                &block,
-                full_transactions,
-                Some(number),
-                Some(&header),
-            ));
-        }
-        if let Ok(block) = state
-            .storage
-            .blocks()
-            .get_block(&txn, &header.leader_digest)
-        {
-            return Ok(block_to_json_ext(
-                &block,
-                full_transactions,
-                Some(number),
-                Some(&header),
-            ));
-        }
-    }
-
-    // 2. Check blocks by round in consensus DAG store (e.g. genesis round 0)
-    if let Ok(blocks) = state.consensus_store.get_blocks_by_round(number) {
-        if let Some(block) = blocks.into_iter().next() {
-            let (committed_height, leader_hdr) =
-                match find_leader_header_by_hash(&state.storage, &block.digest) {
-                    Ok(Some(mut hdr)) => {
-                        resolve_leader_header_timestamp(&state, &mut hdr);
-                        let h = hdr.committed_height;
-                        (Some(h), Some(hdr))
+    match target {
+        BlockTarget::Latest => {
+            if let Ok(Some(header)) = state.storage.state().get_leader_header(&txn, latest) {
+                if let Ok(block) = state.consensus_store.get_block(&header.leader_digest) {
+                    return Ok(block_to_json_ext(
+                        &block,
+                        full_transactions,
+                        Some(latest),
+                        Some(&header),
+                    ));
+                }
+                if let Ok(block) = state
+                    .storage
+                    .blocks()
+                    .get_block(&txn, &header.leader_digest)
+                {
+                    return Ok(block_to_json_ext(
+                        &block,
+                        full_transactions,
+                        Some(latest),
+                        Some(&header),
+                    ));
+                }
+            }
+            if latest == 0 {
+                if let Ok(mut blocks) = state.consensus_store.get_blocks_by_round(0) {
+                    blocks.sort_by(|a, b| a.digest.0.cmp(&b.digest.0));
+                    if let Some(block) = blocks.into_iter().next() {
+                        return Ok(block_to_json_ext(&block, full_transactions, Some(0), None));
                     }
-                    _ => (None, None),
-                };
-            return Ok(block_to_json_ext(
-                &block,
-                full_transactions,
-                committed_height,
-                leader_hdr.as_ref(),
-            ));
+                }
+                if let Some(block) = state
+                    .storage
+                    .blocks()
+                    .get_block_by_height(&txn, 0)
+                    .map_err(internal)?
+                {
+                    return Ok(block_to_json_ext(&block, full_transactions, Some(0), None));
+                }
+            }
+            Ok(Value::Null)
         }
-    }
+        BlockTarget::Earliest => {
+            if let Ok(mut blocks) = state.consensus_store.get_blocks_by_round(0) {
+                blocks.sort_by(|a, b| a.digest.0.cmp(&b.digest.0));
+                if let Some(block) = blocks.into_iter().next() {
+                    let leader_hdr =
+                        find_leader_header_by_hash(&state.storage, &block.digest).unwrap_or(None);
+                    let committed_height =
+                        leader_hdr.as_ref().map(|h| h.committed_height).or(Some(0));
+                    return Ok(block_to_json_ext(
+                        &block,
+                        full_transactions,
+                        committed_height,
+                        leader_hdr.as_ref(),
+                    ));
+                }
+            }
+            if let Some(block) = state
+                .storage
+                .blocks()
+                .get_block_by_height(&txn, 0)
+                .map_err(internal)?
+            {
+                let leader_hdr =
+                    find_leader_header_by_hash(&state.storage, &block.digest).unwrap_or(None);
+                let committed_height = leader_hdr.as_ref().map(|h| h.committed_height).or(Some(0));
+                return Ok(block_to_json_ext(
+                    &block,
+                    full_transactions,
+                    committed_height,
+                    leader_hdr.as_ref(),
+                ));
+            }
+            Ok(Value::Null)
+        }
+        BlockTarget::Height(number) => {
+            if number > latest {
+                return Ok(Value::Null);
+            }
 
-    // 3. Fallback to legacy block store by height
-    match state
-        .storage
-        .blocks()
-        .get_block_by_height(&txn, number)
-        .map_err(internal)?
-    {
-        Some(block) => Ok(block_to_json_ext(
-            &block,
-            full_transactions,
-            Some(number),
-            None,
-        )),
-        None => Ok(Value::Null),
+            // 1. Check committed leader header at this height
+            if let Ok(Some(header)) = state.storage.state().get_leader_header(&txn, number) {
+                if let Ok(block) = state.consensus_store.get_block(&header.leader_digest) {
+                    return Ok(block_to_json_ext(
+                        &block,
+                        full_transactions,
+                        Some(number),
+                        Some(&header),
+                    ));
+                }
+                if let Ok(block) = state
+                    .storage
+                    .blocks()
+                    .get_block(&txn, &header.leader_digest)
+                {
+                    return Ok(block_to_json_ext(
+                        &block,
+                        full_transactions,
+                        Some(number),
+                        Some(&header),
+                    ));
+                }
+            }
+
+            // 2. Round-based fallback allowed ONLY for number == 0 (genesis), deterministically
+            if number == 0 {
+                if let Ok(mut blocks) = state.consensus_store.get_blocks_by_round(0) {
+                    blocks.sort_by(|a, b| a.digest.0.cmp(&b.digest.0));
+                    if let Some(block) = blocks.into_iter().next() {
+                        return Ok(block_to_json_ext(&block, full_transactions, Some(0), None));
+                    }
+                }
+            }
+
+            // 3. Fallback to legacy block store by height
+            match state
+                .storage
+                .blocks()
+                .get_block_by_height(&txn, number)
+                .map_err(internal)?
+            {
+                Some(block) => Ok(block_to_json_ext(
+                    &block,
+                    full_transactions,
+                    Some(number),
+                    None,
+                )),
+                None => Ok(Value::Null),
+            }
+        }
     }
 }
 
@@ -571,59 +650,142 @@ pub async fn handle_get_block_header_by_number(
     let raw_target = required(&args, 0, "block number")?;
     let chain_id = state.mempool.signing_context().chain_id;
 
+    let target = parse_block_target(raw_target, "block number")?;
     let latest = latest_committed_height(&state);
-    let number = parse_block_ref(raw_target, latest, "block number")?;
 
     let txn = state.storage.begin_read().map_err(internal)?;
 
-    // 1. Check committed leader header at this height
-    if let Ok(Some(header)) = state.storage.state().get_leader_header(&txn, number) {
-        if let Ok(block) = state.consensus_store.get_block(&header.leader_digest) {
-            let header = match block.extract_pow_header(chain_id) {
-                Ok(h) => h,
-                Err(_) => block.pow_header(chain_id),
-            };
-            return serde_json::to_value(&header).map_err(internal);
+    match target {
+        BlockTarget::Latest => {
+            if let Ok(Some(header)) = state.storage.state().get_leader_header(&txn, latest) {
+                if let Ok(block) = state.consensus_store.get_block(&header.leader_digest) {
+                    let header = match block.extract_pow_header(chain_id) {
+                        Ok(h) => h,
+                        Err(_) => block.pow_header(chain_id),
+                    };
+                    return serde_json::to_value(&header).map_err(internal);
+                }
+                if let Ok(block) = state
+                    .storage
+                    .blocks()
+                    .get_block(&txn, &header.leader_digest)
+                {
+                    let header = match block.extract_pow_header(chain_id) {
+                        Ok(h) => h,
+                        Err(_) => block.pow_header(chain_id),
+                    };
+                    return serde_json::to_value(&header).map_err(internal);
+                }
+            }
+            if latest == 0 {
+                if let Ok(mut blocks) = state.consensus_store.get_blocks_by_round(0) {
+                    blocks.sort_by(|a, b| a.digest.0.cmp(&b.digest.0));
+                    if let Some(block) = blocks.into_iter().next() {
+                        let header = match block.extract_pow_header(chain_id) {
+                            Ok(h) => h,
+                            Err(_) => block.pow_header(chain_id),
+                        };
+                        return serde_json::to_value(&header).map_err(internal);
+                    }
+                }
+                if let Some(block) = state
+                    .storage
+                    .blocks()
+                    .get_block_by_height(&txn, 0)
+                    .map_err(internal)?
+                {
+                    let header = match block.extract_pow_header(chain_id) {
+                        Ok(h) => h,
+                        Err(_) => block.pow_header(chain_id),
+                    };
+                    return serde_json::to_value(&header).map_err(internal);
+                }
+            }
+            Ok(Value::Null)
         }
-        if let Ok(block) = state
-            .storage
-            .blocks()
-            .get_block(&txn, &header.leader_digest)
-        {
-            let header = match block.extract_pow_header(chain_id) {
-                Ok(h) => h,
-                Err(_) => block.pow_header(chain_id),
-            };
-            return serde_json::to_value(&header).map_err(internal);
+        BlockTarget::Earliest => {
+            if let Ok(mut blocks) = state.consensus_store.get_blocks_by_round(0) {
+                blocks.sort_by(|a, b| a.digest.0.cmp(&b.digest.0));
+                if let Some(block) = blocks.into_iter().next() {
+                    let header = match block.extract_pow_header(chain_id) {
+                        Ok(h) => h,
+                        Err(_) => block.pow_header(chain_id),
+                    };
+                    return serde_json::to_value(&header).map_err(internal);
+                }
+            }
+            if let Some(block) = state
+                .storage
+                .blocks()
+                .get_block_by_height(&txn, 0)
+                .map_err(internal)?
+            {
+                let header = match block.extract_pow_header(chain_id) {
+                    Ok(h) => h,
+                    Err(_) => block.pow_header(chain_id),
+                };
+                return serde_json::to_value(&header).map_err(internal);
+            }
+            Ok(Value::Null)
         }
-    }
+        BlockTarget::Height(number) => {
+            if number > latest {
+                return Ok(Value::Null);
+            }
 
-    // 2. Check blocks by round in consensus DAG store (e.g. genesis round 0)
-    if let Ok(blocks) = state.consensus_store.get_blocks_by_round(number) {
-        if let Some(block) = blocks.into_iter().next() {
-            let header = match block.extract_pow_header(chain_id) {
-                Ok(h) => h,
-                Err(_) => block.pow_header(chain_id),
-            };
-            return serde_json::to_value(&header).map_err(internal);
-        }
-    }
+            // 1. Check committed leader header at this height
+            if let Ok(Some(header)) = state.storage.state().get_leader_header(&txn, number) {
+                if let Ok(block) = state.consensus_store.get_block(&header.leader_digest) {
+                    let header = match block.extract_pow_header(chain_id) {
+                        Ok(h) => h,
+                        Err(_) => block.pow_header(chain_id),
+                    };
+                    return serde_json::to_value(&header).map_err(internal);
+                }
+                if let Ok(block) = state
+                    .storage
+                    .blocks()
+                    .get_block(&txn, &header.leader_digest)
+                {
+                    let header = match block.extract_pow_header(chain_id) {
+                        Ok(h) => h,
+                        Err(_) => block.pow_header(chain_id),
+                    };
+                    return serde_json::to_value(&header).map_err(internal);
+                }
+            }
 
-    // 3. Fallback to legacy block store
-    match state
-        .storage
-        .blocks()
-        .get_block_by_height(&txn, number)
-        .map_err(internal)?
-    {
-        Some(block) => {
-            let header = match block.extract_pow_header(chain_id) {
-                Ok(h) => h,
-                Err(_) => block.pow_header(chain_id),
-            };
-            serde_json::to_value(&header).map_err(internal)
+            // 2. Round-based fallback allowed ONLY for number == 0 (genesis), deterministically
+            if number == 0 {
+                if let Ok(mut blocks) = state.consensus_store.get_blocks_by_round(0) {
+                    blocks.sort_by(|a, b| a.digest.0.cmp(&b.digest.0));
+                    if let Some(block) = blocks.into_iter().next() {
+                        let header = match block.extract_pow_header(chain_id) {
+                            Ok(h) => h,
+                            Err(_) => block.pow_header(chain_id),
+                        };
+                        return serde_json::to_value(&header).map_err(internal);
+                    }
+                }
+            }
+
+            // 3. Fallback to legacy block store
+            match state
+                .storage
+                .blocks()
+                .get_block_by_height(&txn, number)
+                .map_err(internal)?
+            {
+                Some(block) => {
+                    let header = match block.extract_pow_header(chain_id) {
+                        Ok(h) => h,
+                        Err(_) => block.pow_header(chain_id),
+                    };
+                    serde_json::to_value(&header).map_err(internal)
+                }
+                None => Ok(Value::Null),
+            }
         }
-        None => Ok(Value::Null),
     }
 }
 
@@ -879,10 +1041,10 @@ pub async fn handle_get_transaction_history(
                 .get_leader_header(&txn, entry.height)
                 .map_err(internal)?
             {
-                Some(mut header) => {
-                    resolve_leader_header_timestamp(&state, &mut header);
-                    if header.timestamp != 0 {
-                        quantity(header.timestamp)
+                Some(header) => {
+                    let ts = derive_pow_timestamp(&state, &header).unwrap_or(header.timestamp);
+                    if ts != 0 {
+                        quantity(ts)
                     } else {
                         Value::Null
                     }
@@ -1602,12 +1764,12 @@ pub async fn handle_get_leader_schedule(params: Value, state: RpcState) -> Resul
 /// JSON for a sealed leader header and the seals stored at its height.
 pub fn sealed_header_json(header: &LeaderHeader, seals: &[CommitSeal]) -> Value {
     json!({
-        "header": leader_header_json(header),
+        "header": leader_header_json(header, None),
         "seals": seals.iter().map(seal_json).collect::<Vec<_>>(),
     })
 }
 
-fn leader_header_json(header: &LeaderHeader) -> Value {
+fn leader_header_json(header: &LeaderHeader, pow_timestamp: Option<u64>) -> Value {
     json!({
         "committedHeight": quantity(header.committed_height),
         "leaderRound": quantity(header.leader_round),
@@ -1624,6 +1786,8 @@ fn leader_header_json(header: &LeaderHeader) -> Value {
         "committeeHash": to_hex(header.committee_hash.as_ref()),
         "timestamp": quantity(header.timestamp),
         "hash": to_hex(header.hash().as_ref()),
+        "pow_timestamp": pow_timestamp.map(|t| json!(t)).unwrap_or(Value::Null),
+        "powTimestamp": pow_timestamp.map(|t| json!(quantity(t))).unwrap_or(Value::Null),
     })
 }
 
@@ -1654,12 +1818,13 @@ fn step_json(step: &MerkleStep) -> Value {
 
 /// `kovanica_getLeaderHeader(height?)` — sealed header at `height`, or the latest.
 ///
-/// Missing headers are JSON `null`. Historical headers have their timestamp
-/// resolved from canonical block storage if stored with placeholder `0`.
+/// Missing headers are JSON `null`. Returns the stored leader header with its
+/// canonical hash and timestamp `0x0`, with the derived canonical PoW timestamp
+/// returned in `pow_timestamp` (and `powTimestamp`).
 pub async fn handle_get_leader_header(params: Value, state: RpcState) -> Result<Value, RpcError> {
     let args = params_vec(&params);
     let txn = state.storage.begin_read().map_err(internal)?;
-    let mut header = if let Some(value) = args.first() {
+    let header = if let Some(value) = args.first() {
         let height = parse_u64(value, "height")?;
         state
             .storage
@@ -1673,11 +1838,11 @@ pub async fn handle_get_leader_header(params: Value, state: RpcState) -> Result<
             .get_latest_leader_header(&txn)
             .map_err(internal)?
     };
-    if let Some(ref mut h) = header {
-        resolve_leader_header_timestamp(&state, h);
-    }
     Ok(header
-        .map(|header| leader_header_json(&header))
+        .map(|h| {
+            let pow_ts = derive_pow_timestamp(&state, &h);
+            leader_header_json(&h, pow_ts)
+        })
         .unwrap_or(Value::Null))
 }
 
@@ -1737,7 +1902,7 @@ pub async fn handle_get_tx_proof(params: Value, state: RpcState) -> Result<Value
         .and_then(|index| merkle::proof(&hashes, index).map(|proof| proof_json(index, &proof)));
     let leader = leader_tx_proof(&state, &header, &tx_hash);
     Ok(json!({
-        "header": leader_header_json(&header),
+        "header": leader_header_json(&header, derive_pow_timestamp(&state, &header)),
         "executed": executed,
         "leader": leader,
     }))
@@ -2047,8 +2212,14 @@ fn find_leader_header_by_hash(
     if latest.leader_digest == *target || latest.hash() == *target {
         return Ok(Some(latest));
     }
-    for h in (0..latest.committed_height).rev() {
-        if let Some(hdr) = state_store.get_leader_header(&txn, h).map_err(internal)? {
+    if let Some(height) = state_store
+        .get_leader_height_by_digest(&txn, target)
+        .map_err(internal)?
+    {
+        if let Some(hdr) = state_store
+            .get_leader_header(&txn, height)
+            .map_err(internal)?
+        {
             if hdr.leader_digest == *target || hdr.hash() == *target {
                 return Ok(Some(hdr));
             }
@@ -3281,6 +3452,27 @@ mod tests {
         assert_eq!(parse_block_ref(&json!("earliest"), 7, "b").unwrap(), 0);
         assert_eq!(parse_block_ref(&json!("0x2a"), 0, "b").unwrap(), 42);
         assert!(parse_block_ref(&json!("nope"), 0, "b").is_err());
+
+        // Block target for getBlockByNumber: only latest, earliest, or quantity/integer
+        assert_eq!(
+            parse_block_target(&json!("latest"), "b").unwrap(),
+            BlockTarget::Latest
+        );
+        assert_eq!(
+            parse_block_target(&json!("earliest"), "b").unwrap(),
+            BlockTarget::Earliest
+        );
+        assert_eq!(
+            parse_block_target(&json!("0x2a"), "b").unwrap(),
+            BlockTarget::Height(42)
+        );
+        assert_eq!(
+            parse_block_target(&json!(42), "b").unwrap(),
+            BlockTarget::Height(42)
+        );
+        assert!(parse_block_target(&json!("pending"), "b").is_err());
+        assert!(parse_block_target(&json!("finalized"), "b").is_err());
+        assert!(parse_block_target(&json!("nope"), "b").is_err());
 
         // Address filter: single, list, absent, invalid.
         assert!(parse_address_filter(None, DEVNET).unwrap().is_none());
@@ -5228,12 +5420,32 @@ mod tests {
         let (_dir, storage) = open_storage();
         let state = test_state(storage.clone());
 
-        // Create two consecutive PoW leader blocks with non-decreasing timestamps
+        // Create genesis block at round 0 and two consecutive PoW leader blocks
+        let ts0 = 1_700_000_096_000u64;
         let ts1 = 1_700_000_100_000u64;
         let ts2 = 1_700_000_104_000u64; // +4s later
 
+        let pow_hash0 = Hash([0x10; 32]);
         let pow_hash1 = Hash([0x11; 32]);
         let pow_hash2 = Hash([0x12; 32]);
+
+        let stmts0 = kovanica_types::encode_pow_statement(
+            ts0,
+            0x1f7f_ffff,
+            100,
+            Some(pow_hash0),
+            Some(Address([0x00; 32])),
+        );
+        let block0 = StatementBlock {
+            author: 0,
+            round: 0,
+            parents: vec![],
+            transactions: vec![],
+            statements: stmts0,
+            signature: kovanica_types::Signature([0u8; 64]),
+            digest: Hash([0x20; 32]),
+            merkle_root: Hash::zero(),
+        };
 
         let stmts1 = kovanica_types::encode_pow_statement(
             ts1,
@@ -5245,7 +5457,11 @@ mod tests {
         let block1 = StatementBlock {
             author: 0,
             round: 1,
-            parents: vec![],
+            parents: vec![kovanica_types::BlockReference {
+                author: 0,
+                round: 0,
+                digest: block0.digest,
+            }],
             transactions: vec![],
             statements: stmts1,
             signature: kovanica_types::Signature([1u8; 64]),
@@ -5276,17 +5492,18 @@ mod tests {
         };
 
         // Put blocks in consensus_store
+        state.consensus_store.put_block(&block0).unwrap();
         state.consensus_store.put_block(&block1).unwrap();
         state.consensus_store.put_block(&block2).unwrap();
 
-        // Save leader headers at committed height 1 and 2, initially with timestamp 0
-        // (simulating historical stored headers)
+        // Save leader headers at committed height 1 and 2, with timestamp 0
+        // (canonical stored headers keep timestamp 0 for light verifier compatibility)
         let header1 = LeaderHeader {
             committed_height: 1,
             leader_round: 1,
             leader_digest: block1.digest,
             leader_author: 0,
-            parent_leader_digest: Hash::zero(),
+            parent_leader_digest: block0.digest,
             tx_merkle_root: Hash::zero(),
             executed_tx_root: Hash::zero(),
             non_blue_root: Hash::zero(),
@@ -5295,7 +5512,7 @@ mod tests {
             state_root: Hash([0x31; 32]),
             epoch: 0,
             committee_hash: Hash::zero(),
-            timestamp: 0, // historical placeholder
+            timestamp: 0,
         };
         let header2 = LeaderHeader {
             committed_height: 2,
@@ -5311,7 +5528,7 @@ mod tests {
             state_root: Hash([0x32; 32]),
             epoch: 0,
             committee_hash: Hash::zero(),
-            timestamp: 0, // historical placeholder
+            timestamp: 0,
         };
 
         {
@@ -5342,7 +5559,6 @@ mod tests {
             res_num1["pow_hash"],
             json!(format!("0x{}", hex::encode(pow_hash1.0)))
         );
-        assert_eq!(res_num1["parent_hashes"], json!([]));
         assert_eq!(res_num1["transactions"], json!([]));
 
         // Test 2: getBlockByHash returns non-null matching block
@@ -5355,23 +5571,23 @@ mod tests {
         assert_eq!(res_hash1["number"], res_num1["number"]);
         assert_eq!(res_hash1["timestamp"], res_num1["timestamp"]);
 
-        // Test 3: getBlockByNumber with integer number
-        let res_num2 = handle_get_block_by_number(json!([2, true]), state.clone())
+        // Test 3: getBlockByNumber with integer number and full_transactions default
+        let res_num2 = handle_get_block_by_number(json!([2]), state.clone())
             .await
             .expect("getBlockByNumber(2) should succeed");
         assert!(!res_num2.is_null());
         assert_eq!(res_num2["number"], json!("0x2"));
         assert_eq!(res_num2["timestamp"], json!(ts2));
-        assert_eq!(
-            res_num2["parents"],
-            json!([format!("0x{}", hex::encode(block1.digest.0))])
-        );
-        assert_eq!(
-            res_num2["parent_hashes"],
-            json!([format!("0x{}", hex::encode(block1.digest.0))])
-        );
+        assert!(res_num2["transactions"].is_array());
 
-        // Test 4: getBlockByNumber("latest")
+        // Test 4: getBlockByHash with full_transactions default
+        let res_hash_def = handle_get_block_by_hash(json!([block1_hash_hex]), state.clone())
+            .await
+            .expect("getBlockByHash(default) should succeed");
+        assert!(!res_hash_def.is_null());
+        assert!(res_hash_def["transactions"].is_array());
+
+        // Test 5: "latest" and "earliest" tags
         let res_latest = handle_get_block_by_number(json!(["latest"]), state.clone())
             .await
             .expect("getBlockByNumber(latest) should succeed");
@@ -5381,12 +5597,42 @@ mod tests {
             json!(format!("0x{}", hex::encode(block2.digest.0)))
         );
 
-        // Test 5: Unknown height returns null
+        let res_earliest = handle_get_block_by_number(json!(["earliest"]), state.clone())
+            .await
+            .expect("getBlockByNumber(earliest) should succeed");
+        assert_eq!(res_earliest["round"], json!("0x0"));
+        assert_eq!(
+            res_earliest["hash"],
+            json!(format!("0x{}", hex::encode(block0.digest.0)))
+        );
+        // Missing header fields on round 0 are JSON null, not omitted
+        assert!(res_earliest.as_object().unwrap().contains_key("state_root"));
+        assert_eq!(res_earliest["state_root"], Value::Null);
+        assert_eq!(res_earliest["tx_merkle_root"], Value::Null);
+
+        // Test 6: getBlockHeaderByNumber for latest and earliest
+        let hdr_latest = handle_get_block_header_by_number(json!(["latest"]), state.clone())
+            .await
+            .expect("getBlockHeaderByNumber(latest) should succeed");
+        assert!(!hdr_latest.is_null());
+
+        let hdr_earliest = handle_get_block_header_by_number(json!(["earliest"]), state.clone())
+            .await
+            .expect("getBlockHeaderByNumber(earliest) should succeed");
+        assert!(!hdr_earliest.is_null());
+
+        // Test 7: Height above tip returns null
+        let res_above_tip = handle_get_block_by_number(json!(["0x3"]), state.clone())
+            .await
+            .expect("getBlockByNumber(3) above tip should succeed");
+        assert!(res_above_tip.is_null());
+
         let res_unknown = handle_get_block_by_number(json!(["0x999"]), state.clone())
             .await
             .expect("getBlockByNumber(999) should succeed");
         assert!(res_unknown.is_null());
 
+        // Test 8: Unknown hash returns null (bounded, no scan)
         let res_unknown_hash = handle_get_block_by_hash(
             json!([format!("0x{}", hex::encode([0xff; 32]))]),
             state.clone(),
@@ -5395,40 +5641,34 @@ mod tests {
         .expect("getBlockByHash(unknown) should succeed");
         assert!(res_unknown_hash.is_null());
 
-        // Test 6: getLeaderHeader derives non-zero timestamp from PoW block
+        // Test 9: Unsupported tags return InvalidParams
+        let res_pending = handle_get_block_by_number(json!(["pending"]), state.clone()).await;
+        assert!(res_pending.is_err());
+        let res_finalized = handle_get_block_by_number(json!(["finalized"]), state.clone()).await;
+        assert!(res_finalized.is_err());
+
+        // Test 10: getLeaderHeader hash == stored header hash (timestamp 0), pow_timestamp > 0 and non-decreasing
         let lh1 = handle_get_leader_header(json!(["0x1"]), state.clone())
             .await
             .expect("getLeaderHeader(1) should succeed");
         assert!(!lh1.is_null());
-        let lh1_ts = u64::from_str_radix(
-            lh1["timestamp"]
-                .as_str()
-                .unwrap()
-                .strip_prefix("0x")
-                .unwrap(),
-            16,
-        )
-        .unwrap();
-        assert_eq!(lh1_ts, ts1);
-        assert_ne!(lh1_ts, 0);
+        assert_eq!(lh1["hash"], json!(to_hex(header1.hash().as_ref())));
+        assert_eq!(lh1["timestamp"], json!("0x0"));
+        let lh1_pow_ts = lh1["pow_timestamp"].as_u64().expect("pow_timestamp number");
+        assert_eq!(lh1_pow_ts, ts1);
+        assert!(lh1_pow_ts > 0);
 
         let lh2 = handle_get_leader_header(json!(["0x2"]), state.clone())
             .await
             .expect("getLeaderHeader(2) should succeed");
         assert!(!lh2.is_null());
-        let lh2_ts = u64::from_str_radix(
-            lh2["timestamp"]
-                .as_str()
-                .unwrap()
-                .strip_prefix("0x")
-                .unwrap(),
-            16,
-        )
-        .unwrap();
-        assert_eq!(lh2_ts, ts2);
-        assert_ne!(lh2_ts, 0);
+        assert_eq!(lh2["hash"], json!(to_hex(header2.hash().as_ref())));
+        assert_eq!(lh2["timestamp"], json!("0x0"));
+        let lh2_pow_ts = lh2["pow_timestamp"].as_u64().expect("pow_timestamp number");
+        assert_eq!(lh2_pow_ts, ts2);
+        assert!(lh2_pow_ts > 0);
 
         // Timestamps are non-decreasing along the chain
-        assert!(lh2_ts >= lh1_ts);
+        assert!(lh2_pow_ts >= lh1_pow_ts);
     }
 }

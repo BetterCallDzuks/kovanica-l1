@@ -202,7 +202,7 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             "digest": { "$ref": "#/components/schemas/Hash" },
             "author": { "type": "integer" },
             "number": { "$ref": "#/components/schemas/Quantity" },
-            "height": { "$ref": "#/components/schemas/Quantity" },
+            "height": { "oneOf": [{ "$ref": "#/components/schemas/Quantity" }, { "type": "null" }] },
             "round": { "$ref": "#/components/schemas/Quantity" },
             "parents": { "type": "array", "items": { "$ref": "#/components/schemas/Hash" } },
             "parent_hashes": { "type": "array", "items": { "$ref": "#/components/schemas/Hash" } },
@@ -217,13 +217,15 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             },
             "statements": { "type": "string" },
             "signature": { "type": "string" },
-            "timestamp": { "type": "integer" },
-            "target_bits": { "$ref": "#/components/schemas/Quantity" },
-            "nonce": { "type": "integer" },
-            "pow_hash": { "$ref": "#/components/schemas/Hash" },
-            "payout": { "type": "string" },
-            "state_root": { "$ref": "#/components/schemas/Hash" },
-            "tx_merkle_root": { "$ref": "#/components/schemas/Hash" }
+            "timestamp": { "type": ["integer", "null"] },
+            "pow_timestamp": { "type": ["integer", "null"] },
+            "powTimestamp": { "oneOf": [{ "$ref": "#/components/schemas/Quantity" }, { "type": "null" }] },
+            "target_bits": { "oneOf": [{ "$ref": "#/components/schemas/Quantity" }, { "type": "null" }] },
+            "nonce": { "type": ["integer", "null"] },
+            "pow_hash": { "oneOf": [{ "$ref": "#/components/schemas/Hash" }, { "type": "null" }] },
+            "payout": { "type": ["string", "null"] },
+            "state_root": { "oneOf": [{ "$ref": "#/components/schemas/Hash" }, { "type": "null" }] },
+            "tx_merkle_root": { "oneOf": [{ "$ref": "#/components/schemas/Hash" }, { "type": "null" }] }
         }
     }));
 
@@ -379,7 +381,12 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             json!({
                 "type": "array",
                 "items": [
-                    { "$ref": "#/components/schemas/Quantity" },
+                    {
+                        "oneOf": [
+                            { "$ref": "#/components/schemas/Quantity" },
+                            { "type": "string", "enum": ["latest", "earliest"] }
+                        ]
+                    },
                     { "type": "boolean" }
                 ],
                 "minItems": 1,
@@ -733,11 +740,21 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             "Chain",
             json!({
                 "type": "array",
-                "items": [{ "$ref": "#/components/schemas/Quantity" }],
+                "items": [{
+                    "oneOf": [
+                        { "$ref": "#/components/schemas/Quantity" },
+                        { "type": "string", "enum": ["latest", "earliest"] }
+                    ]
+                }],
                 "minItems": 1,
                 "maxItems": 1
             }),
-            json!({ "type": "object" }),
+            json!({
+                "oneOf": [
+                    { "type": "object" },
+                    { "type": "null" }
+                ]
+            }),
         ),
         (
             "kovanica_estimateGas",
