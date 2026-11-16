@@ -50,13 +50,13 @@ Every Markdown file in the repository was examined. The table below lists each f
 | 17 | `docs/AUDITOR-INVITATION.md` | HR | Docs | **Updated** (M2) | Updated review material paths to point to `docs/archive/B-TREASURY-PROPOSAL.md` and `docs/GAS_SCHEDULE.md`. Preserved Croatian language. |
 | 18 | `docs/archive/B-TREASURY-PROPOSAL.md` | EN | Archive | **Archived** (M2) | Relocated from `docs/` to `docs/archive/`. Preliminary 38-line skeleton superseded and fully expanded by `docs/GOVERNANCE.md`. |
 | 19 | `docs/CHAOS.md` | EN | Docs | **Updated** (M3) | Clarified that chaos tests run manually or in scheduled test harnesses using `ops/chaos/docker-compose.chaos.yml` (since removal of `.github/workflows/`). |
-| 20 | `docs/CLOUDFLARE-PAGES-DEPLOY.md` | EN | Docs | **Removed in #247** | Deployment guide for Cloudflare Pages (`packages/web` and `packages/console`); verified accurate. |
+| 20 | `docs/CLOUDFLARE-PAGES-DEPLOY.md` | EN | Docs | **Removed in #247** | Deployment guide for Cloudflare Pages (`packages/web` and `packages/console`); removed in #247 as part of repo-hygiene / apps separation. |
 | 21 | `docs/COMMITTEE-EPOCH-VERIFICATION.md` | EN | Docs | **Unchanged** | Detailed technical analysis of `LightError::Committee` and seal hashing; verified accurate. |
-| 22 | `docs/COMMS-ANDROID-INTERFACES.md` | EN | Docs | **Removed in #247** | Frozen normative UniFFI / Kotlin interfaces for Android comms client; verified accurate. |
-| 23 | `docs/COMMS-APP-PLAN.md` | EN | Docs | **Removed in #247** | Comms application architecture roadmap; verified accurate. |
-| 24 | `docs/COMMS-M1-INTERFACES.md` | EN | Docs | **Removed in #247** | Frozen normative interface for Milestone 1 1:1 messaging; verified accurate. |
-| 25 | `docs/COMMS-M2-INTERFACES.md` | EN | Docs | **Removed in #247** | Frozen normative interface for Milestone 2 payments and anti-spam; verified accurate. |
-| 26 | `docs/COMMS-THREAT-MODEL.md` | EN | Docs | **Removed in #247** | Security threat model for comms envelopes and relay nodes; verified accurate. |
+| 22 | `docs/COMMS-ANDROID-INTERFACES.md` | EN | Docs | **Removed in #247** | Frozen normative UniFFI / Kotlin interfaces for Android comms client; removed in #247 as part of comms documentation cleanup. |
+| 23 | `docs/COMMS-APP-PLAN.md` | EN | Docs | **Removed in #247** | Comms application architecture roadmap; removed in #247 as part of comms documentation cleanup. |
+| 24 | `docs/COMMS-M1-INTERFACES.md` | EN | Docs | **Removed in #247** | Frozen normative interface for Milestone 1 1:1 messaging; removed in #247 as part of comms documentation cleanup. |
+| 25 | `docs/COMMS-M2-INTERFACES.md` | EN | Docs | **Removed in #247** | Frozen normative interface for Milestone 2 payments and anti-spam; removed in #247 as part of comms documentation cleanup. |
+| 26 | `docs/COMMS-THREAT-MODEL.md` | EN | Docs | **Removed in #247** | Security threat model for comms envelopes and relay nodes; removed in #247 as part of comms documentation cleanup. |
 | 27 | `docs/CONTRACTS.md` | EN | Docs | **Updated** (M3) | Updated title to "Kovanica Contract Layer (Lane 3b)"; updated contract crate list to include `kovanica-name-registry`. |
 | 28 | `docs/archive/DEV-STATUS-AND-TASKS.md` | EN | Archive | **Archived** (M2) | Relocated from `docs/` to `docs/archive/`. Point-in-time developer snapshot from 2026-10-13 (`98d88cc`); superseded by codebase expansion and `TASKLIST.md`. |
 | 29 | `docs/EXAMPLES.md` | EN | Docs | **Updated** (M3) | Updated title to "Kovanica Contract Examples"; updated CLI status note reflecting that contract subcommands are implemented in `crates/kovanica-cli/src/contracts.rs`; noted canonical PRO-21 address format. |
@@ -88,7 +88,7 @@ Every Markdown file in the repository was examined. The table below lists each f
 | 55 | `ops/bench/SOAK.md` | EN | Ops | **Updated** (M3) | Corrected path from `ops/docker-compose.yml` to root `docker-compose.yml`. |
 | 56 | `ops/docker/README.md` | EN | Ops | **Updated** (M4) | Rewritten to document `seed` + `val1..val3` topology, port mappings, and required `./ops/docker/validators/generate.sh` step before compose up. |
 | 57 | `ops/soak/README.md` | EN | Ops | **Updated** (M3) | Clarified that soak tests run via local scripts since decommissioning of GitHub Actions workflows. |
-| 58 | `packages/comms/README.md` | EN | Packages | **Removed in #247** | Client SDK for decentralized communications; verified accurate. |
+| 58 | `packages/comms/README.md` | EN | Packages | **Removed in #247** | Client SDK for decentralized communications; removed in #247 as part of apps/comms package separation. |
 | 59 | `docs/archive/README.md` | EN | Archive | **Created** (M2) | Comprehensive index cataloging all 6 archived documents, original phases, and specific archive rationales. |
 | 60 | `docs/AUDIT_REPORT_2026.md` | EN | Docs | **Created** (M6) | This master audit report detailing all reviews, outcomes, and verification matrices. |
 
