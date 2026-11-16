@@ -199,11 +199,33 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
         "type": "object",
         "properties": {
             "hash": { "$ref": "#/components/schemas/Hash" },
-            "author": { "$ref": "#/components/schemas/Address" },
+            "digest": { "$ref": "#/components/schemas/Hash" },
+            "author": { "type": "integer" },
+            "number": { "$ref": "#/components/schemas/Quantity" },
+            "height": { "oneOf": [{ "$ref": "#/components/schemas/Quantity" }, { "type": "null" }] },
             "round": { "$ref": "#/components/schemas/Quantity" },
             "parents": { "type": "array", "items": { "$ref": "#/components/schemas/Hash" } },
-            "transactions": { "type": "array", "items": { "$ref": "#/components/schemas/Hash" } },
-            "timestamp": { "$ref": "#/components/schemas/Quantity" }
+            "parent_hashes": { "type": "array", "items": { "$ref": "#/components/schemas/Hash" } },
+            "transactions": {
+                "type": "array",
+                "items": {
+                    "oneOf": [
+                        { "$ref": "#/components/schemas/Hash" },
+                        { "$ref": "#/components/schemas/Transaction" }
+                    ]
+                }
+            },
+            "statements": { "type": "string" },
+            "signature": { "type": "string" },
+            "timestamp": { "type": ["integer", "null"] },
+            "pow_timestamp": { "type": ["integer", "null"] },
+            "powTimestamp": { "oneOf": [{ "$ref": "#/components/schemas/Quantity" }, { "type": "null" }] },
+            "target_bits": { "oneOf": [{ "$ref": "#/components/schemas/Quantity" }, { "type": "null" }] },
+            "nonce": { "type": ["integer", "null"] },
+            "pow_hash": { "oneOf": [{ "$ref": "#/components/schemas/Hash" }, { "type": "null" }] },
+            "payout": { "type": ["string", "null"] },
+            "state_root": { "oneOf": [{ "$ref": "#/components/schemas/Hash" }, { "type": "null" }] },
+            "tx_merkle_root": { "oneOf": [{ "$ref": "#/components/schemas/Hash" }, { "type": "null" }] }
         }
     }));
 
@@ -346,11 +368,10 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
                 "maxItems": 2
             }),
             json!({
-                "type": "object",
-                "properties": {
-                    "block": { "$ref": "#/components/schemas/Block" },
-                    "full_transactions": { "type": "boolean" }
-                }
+                "oneOf": [
+                    { "$ref": "#/components/schemas/Block" },
+                    { "type": "null" }
+                ]
             }),
         ),
         (
@@ -360,18 +381,22 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             json!({
                 "type": "array",
                 "items": [
-                    { "$ref": "#/components/schemas/Quantity" },
+                    {
+                        "oneOf": [
+                            { "$ref": "#/components/schemas/Quantity" },
+                            { "type": "string", "enum": ["latest", "earliest"] }
+                        ]
+                    },
                     { "type": "boolean" }
                 ],
                 "minItems": 1,
                 "maxItems": 2
             }),
             json!({
-                "type": "object",
-                "properties": {
-                    "block": { "$ref": "#/components/schemas/Block" },
-                    "full_transactions": { "type": "boolean" }
-                }
+                "oneOf": [
+                    { "$ref": "#/components/schemas/Block" },
+                    { "type": "null" }
+                ]
             }),
         ),
         (
@@ -715,11 +740,21 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             "Chain",
             json!({
                 "type": "array",
-                "items": [{ "$ref": "#/components/schemas/Quantity" }],
+                "items": [{
+                    "oneOf": [
+                        { "$ref": "#/components/schemas/Quantity" },
+                        { "type": "string", "enum": ["latest", "earliest"] }
+                    ]
+                }],
                 "minItems": 1,
                 "maxItems": 1
             }),
-            json!({ "type": "object" }),
+            json!({
+                "oneOf": [
+                    { "type": "object" },
+                    { "type": "null" }
+                ]
+            }),
         ),
         (
             "kovanica_estimateGas",

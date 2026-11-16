@@ -181,6 +181,9 @@ pub mod tables {
     /// Committed-leader header (bincode), keyed by committed height.
     pub const LEADER_HEADERS: TableDefinition<u64, Vec<u8>> =
         TableDefinition::new("leader_headers");
+    /// Leader block digest or header hash -> committed leader height (O(1) index).
+    pub const LEADER_DIGEST_TO_HEIGHT: TableDefinition<[u8; 32], u64> =
+        TableDefinition::new("leader_digest_to_height");
     /// One commit seal: `(committed height, authority index)` -> signature bytes.
     pub const COMMIT_SEALS: TableDefinition<(u64, u16), Vec<u8>> =
         TableDefinition::new("commit_seals");
