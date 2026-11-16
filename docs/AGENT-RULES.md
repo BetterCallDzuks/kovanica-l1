@@ -3,7 +3,7 @@
 **Replaces Gazda for day-to-day agent work.**
 Read this before any change. If a rule here conflicts with a prompt, stop and ask Toni.
 
-Last updated: 2026-11-16 (main protected on all five repos; #259 activation in progress on seed1).
+Last updated: 2026-11-16 (main protected on all five repos; #259 activated on seed1 at `9758ffe0`).
 
 ## 1. Frozen values — do not change, do not remove
 
@@ -71,15 +71,18 @@ A change to `calculate_next_target_bits`, reward math, header format, or commit 
 - Open the PR.
 - Write the activation plan in the PR body (height gate **or** empty-volume re-genesis).
 - Do **not** deploy to seed1 until Toni says so.
-- #259 (non-compounding DAA) is merged. Activation on seed1 is in progress (empty-volume re-genesis). Do not start a second deploy.
+- #259 (non-compounding DAA) is merged and activated on seed1 via empty-volume re-genesis. Do not start a second deploy.
 
 ## 5. Live seed1 state (do not break)
 
-- Previous deploy: `e3fce499afe6637b2a594b60306aef6312ef4bbf` at `/opt/kovanica-testnet-e3fce499`
-- Tag `v0.3.0-node` points at `e3fce499` (do not move it unless Toni names a new tag)
-- #259 activation (empty-volume re-genesis of current main) is in progress. Do not touch seed1 until that report lands.
-- Faucet address (pre-activation): `kvnc8a4atp0g5tngcua9h90anhel7233alyd5y88h0yc592cv8adu5uyz46d3dag`
-- Backup: `/root/kovanica-backup/20261116-pre-e3fce499/`
+- Live deploy SHA: `9758ffe0d0129dd58851d916d183753618fd71de` on seed1 (`kovanica-testnet`, chain ID 2).
+- #259 is merged and activated on seed1 via empty-volume re-genesis. Do not start a second deploy. Do not touch seed1 unless the prompt is an explicit ops task.
+- Tag `v0.3.0-node` stays on `e3fce499afe6637b2a594b60306aef6312ef4bbf`. Do not move it.
+- Network tag stays `2-acfdf6a6c80fd28a`.
+- Consensus remains Hybrid PoW + GHOSTDAG. No stake. No validator set.
+- Faucet process is up. Balance is 0x0. Top-up is BLOCKED on the retired keystore passphrase. No validator funding path.
+- Faucet address: `kvnc8a4atp0g5tngcua9h90anhel7233alyd5y88h0yc592cv8adu5uyz46d3dag`
+- Previous tree: `/opt/kovanica-testnet-e3fce499`. Backup: `/root/kovanica-backup/20261116-pre-e3fce499/`
 
 ## 6. Agent roles (short)
 
