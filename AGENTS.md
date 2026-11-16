@@ -61,7 +61,7 @@ codebase/binary/env prefiks = **kovanica** (`kovanica-*` crate-ovi, `kovanica-no
 | Decimals                  | 9                                              |
 | Founder premine           | 200 000 KVNC                                   |
 | Treasury                  | 8 000 000 KVNC (1 M/year × 8 years, linear)    |
-| Genesis validator alloc.  | **0 KVNC** (ukinuto — nema stakea u konsenzusu; **genesis bootstrap seeds 1..=20**, bez stakea i bez alokacije; bivši 1M vraćen u mining emission) |
+| Genesis seed alloc.       | **0 KVNC** (ukinuto — nema stakea u konsenzusu; **genesis bootstrap seeds 1..=20**, bez stakea i bez alokacije; bivši 1M vraćen u mining emission) |
 | Mining subsidy budget     | **82 000 000 KVNC** (= 90.2M − 0.2M − 8M) |
 | Initial block reward      | **2,5 KVNC** (paid to committed block author)  |
 | Subsidy era length        | **8 200 000** rewarded blocks (`SUBSIDY_ERA_BLOCKS_NO_STAKE_82M`, legacy 8.1M ostaje za `Legacy81M`) |
@@ -73,7 +73,7 @@ codebase/binary/env prefiks = **kovanica** (`kovanica-*` crate-ovi, `kovanica-no
 | Min delegation            | 50 000 KVNC (`MIN_DELEGATION`; legacy / non-consensus)      |
 | Jail duration             | 7 200 heights (`JAIL_ROUNDS`; legacy / non-consensus)       |
 
-Reward se mint-a na committed blokove, autoru bloka. Genesis bootstrap seeds (1..=20) ne drže stake i ne dobivaju alokaciju; `[[validator]]` u genesis datoteci je samo zapis bootstrap identiteta (zaostali naziv tablice).
+Reward se mint-a na committed blokove, autoru bloka. Genesis bootstrap seeds (1..=20) ne drže stake i ne dobivaju alokaciju; `genesis_validators.toml`, `funded_accounts.toml` i `[[validator]]` su samo legacy nazivi datoteka/tablica (zapisi su bootstrap seed identiteti / primatelji mining nagrada, a ne validatori).
 
 ## Workspace structure (poštuj postojeće)
 
