@@ -113,6 +113,10 @@ survive long enough to read the `tx_hash` and any error.
   An `--env-file` reference keeps the token out of the process list.
 - Set `--address-max-requests` to `1` for the top-up. A funded faucet with a
   high per-address cap is a drain target.
+- Fund **last**. If the live faucet's passphrase has ever been handled in a way
+  that could have echoed it (a pty wrapper, a shell with tracing, a pasted
+  command line), rotate the faucet keystore *before* the top-up lands, not after:
+  an empty faucet is the cheapest possible moment to rotate.
 
 ## Status on 2026-11-16: BLOCKED
 
