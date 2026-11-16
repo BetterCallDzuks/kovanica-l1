@@ -121,7 +121,7 @@ Array: `[number_or_tag, full_transactions?]`
 
 | Index | Field | Required | Meaning |
 | --- | --- | --- | --- |
-| 0 | `number` | yes | Committed-leader height (or DAG round) as a JSON number, `0x` hex quantity, or supported tag (`"latest"`, `"earliest"`). |
+| 0 | `number` | yes | Committed-leader height as a JSON number, `0x` hex quantity, or supported tag (`"latest"`, `"earliest"`). |
 | 1 | `full_transactions` | no | Boolean. When omitted or `true` (default), returns full transaction objects. When `false`, `transactions` contains an array of transaction hash strings (`"0x..."`). |
 
 ### Result
@@ -144,3 +144,40 @@ Array: `[hash, full_transactions?]`
 ### Result
 
 Block object with header fields, round, height (if committed), parents, parent_hashes, transactions, PoW fields (`timestamp`, `pow_timestamp`, `powTimestamp`, `target_bits`, `nonce`, `pow_hash`, `payout`, `state_root`, `tx_merkle_root`), or `null` if the block is unknown.
+
+## `kovanica_getLogs`
+
+Query transaction logs by block range, contract address, and event topics. Mirrors the Ethereum `eth_getLogs` filter shape. The call is read-only and bounded by maximum block range and scan limits.
+
+### Parameters
+
+Array: `[filter]`
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | `object` | yes | Log filter object specifying block range and criteria. |
+
+#### Filter Fields
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `fromBlock` | `string` \| `integer` | no | Start committed-leader height. Defaults to `"latest"`. Accepts hex quantity (`"0x..."`), non-negative integer, or block tags: `"latest"`, `"earliest"` (`0`), or Ethereum compatibility tags `"pending"`, `"safe"`, `"finalized"` (all resolving to the latest committed leader height). |
+| `toBlock` | `string` \| `integer` | no | End committed-leader height. Defaults to `"latest"`. Accepts hex quantity, integer, or tags (`"latest"`, `"earliest"`, `"pending"`, `"safe"`, `"finalized"`). |
+| `address` | `string` \| `array` | no | Contract address (`"0x..."` or bech32) or array of addresses to filter event emitters. |
+| `topics` | `array` | no | Array of topic filters (32-byte hex strings, plain topic names such as `"transfer"`, or null wildcards). |
+
+### Result
+
+Array of log objects:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `address` | `string` | Emitting contract address. |
+| `topics` | `array` | Array of 32-byte hex topic strings (`"0x..."`). |
+| `data` | `string` | ABI-encoded event payload bytes (`"0x..."`). |
+| `blockNumber` | `string` | Hex quantity of the committed leader block height. |
+| `blockHash` | `string` | Hex string of the committed leader block digest. |
+| `transactionHash` | `string` | Hex string of the transaction hash. |
+| `transactionIndex` | `string` | Hex quantity of transaction index within the block. |
+| `logIndex` | `string` | Hex quantity of log index within the block. |
+| `removed` | `boolean` | `false` (logs from committed blocks are never re-orged or removed). |

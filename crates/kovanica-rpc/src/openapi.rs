@@ -156,9 +156,19 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
     spec.components.schemas.insert(
         "Quantity".to_string(),
         json!({
-            "type": "string",
-            "pattern": "^0x[a-f0-9]+$",
-            "description": "Ethereum-style quantity (minimal hex)"
+            "oneOf": [
+                {
+                    "type": "string",
+                    "pattern": "^0x[a-f0-9]+$",
+                    "description": "Ethereum-style quantity (minimal hex string, e.g. 0x1a)"
+                },
+                {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Non-negative integer quantity"
+                }
+            ],
+            "description": "Quantity accepted as either a minimal hex string (0x...) or a non-negative integer."
         }),
     );
 
@@ -264,14 +274,14 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             "properties": {
                 "fromBlock": {
                     "oneOf": [
-                        { "type": "string", "enum": ["latest", "earliest", "pending"] },
+                        { "type": "string", "enum": ["latest", "earliest", "pending", "safe", "finalized"] },
                         { "$ref": "#/components/schemas/Quantity" }
                     ],
                     "description": "Start committed-leader height (default: latest)"
                 },
                 "toBlock": {
                     "oneOf": [
-                        { "type": "string", "enum": ["latest", "earliest", "pending"] },
+                        { "type": "string", "enum": ["latest", "earliest", "pending", "safe", "finalized"] },
                         { "$ref": "#/components/schemas/Quantity" }
                     ],
                     "description": "End committed-leader height (default: latest)"

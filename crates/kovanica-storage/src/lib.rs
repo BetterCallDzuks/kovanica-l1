@@ -38,7 +38,7 @@ pub use consensus_store::{ConsensusStore, ConsensusStoreError};
 pub use state_store::{StateStore, StateStoreError};
 pub use tables::{
     ACCOUNTS, CONTRACT_CODE, CONTRACT_STORAGE, EMISSION_POLICY, FEE_ACCOUNTING_STATE,
-    GENESIS_DIGEST, MINING_REWARD_STATE, STAKING_STATE, STATE_ROOT,
+    GENESIS_DIGEST, META, MINING_REWARD_STATE, STAKING_STATE, STATE_ROOT,
 };
 
 /// Main storage handle combining all stores.
@@ -216,6 +216,8 @@ pub mod tables {
     /// Persisted deterministic fee accounting counters for PRO-53 fee split and burn.
     pub const FEE_ACCOUNTING_STATE: TableDefinition<&'static str, Vec<u8>> =
         TableDefinition::new("fee_accounting_state");
+    /// Metadata table for schema versions, migrations, and index backfill status flags.
+    pub const META: TableDefinition<&'static str, Vec<u8>> = TableDefinition::new("meta");
 
     // Consensus store tables
     pub const DAG_BLOCKS: TableDefinition<[u8; 32], Vec<u8>> = TableDefinition::new("dag_blocks"); // StatementBlock serialized
@@ -460,6 +462,190 @@ mod tests {
                     .is_some());
                 assert!(storage.consensus().get_dag_block(&read, &digest).is_ok());
             }
+        }
+    }
+
+    fn test_leader_header(height: u64, seed: u8) -> kovanica_types::LeaderHeader {
+        kovanica_types::LeaderHeader {
+            committed_height: height,
+            leader_round: height * 2,
+            leader_digest: kovanica_types::Hash::new([seed; 32]),
+            leader_author: 0,
+            parent_leader_digest: kovanica_types::Hash::zero(),
+            tx_merkle_root: kovanica_types::Hash::zero(),
+            executed_tx_root: kovanica_types::Hash::zero(),
+            non_blue_root: kovanica_types::Hash::zero(),
+            blue_root: kovanica_types::Hash::zero(),
+            mysticghost: false,
+            state_root: kovanica_types::Hash::zero(),
+            epoch: 0,
+            committee_hash: kovanica_types::Hash::zero(),
+            timestamp: 0,
+        }
+    }
+
+    #[test]
+    fn test_get_latest_leader_header_with_10k_rows() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::new(dir.path().join("headers_10k.db")).unwrap();
+        let txn = storage.begin_write().unwrap();
+        for h in 1..=10_000 {
+            let seed = (h % 250) as u8;
+            let hdr = test_leader_header(h, seed);
+            storage.state().save_leader_header(&txn, &hdr).unwrap();
+        }
+        txn.commit().unwrap();
+
+        let read = storage.begin_read().unwrap();
+        let latest = storage
+            .state()
+            .get_latest_leader_header(&read)
+            .unwrap()
+            .expect("must return latest header");
+        assert_eq!(latest.committed_height, 10_000);
+    }
+
+    #[test]
+    fn test_backfill_on_db_with_headers_and_empty_index_idempotent() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("backfill.db");
+        let header1 = test_leader_header(1, 11);
+        let header2 = test_leader_header(2, 22);
+
+        // Seed raw LEADER_HEADERS table without index or META
+        {
+            let db = Database::create(&db_path).unwrap();
+            let write_txn = db.begin_write().unwrap();
+            {
+                let mut tbl = write_txn.open_table(crate::tables::LEADER_HEADERS).unwrap();
+                tbl.insert(1u64, bincode::serialize(&header1).unwrap())
+                    .unwrap();
+                tbl.insert(2u64, bincode::serialize(&header2).unwrap())
+                    .unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+
+        // Open Storage: StateStore::with_pruning runs backfill automatically
+        let storage = Storage::new(&db_path).unwrap();
+        {
+            let read = storage.begin_read().unwrap();
+            assert_eq!(
+                storage
+                    .state()
+                    .get_leader_height_by_digest(&read, &header1.leader_digest)
+                    .unwrap(),
+                Some(1)
+            );
+            assert_eq!(
+                storage
+                    .state()
+                    .get_leader_height_by_digest(&read, &header1.hash())
+                    .unwrap(),
+                Some(1)
+            );
+            assert_eq!(
+                storage
+                    .state()
+                    .get_leader_height_by_digest(&read, &header2.leader_digest)
+                    .unwrap(),
+                Some(2)
+            );
+            assert_eq!(
+                storage
+                    .state()
+                    .get_leader_height_by_digest(&read, &header2.hash())
+                    .unwrap(),
+                Some(2)
+            );
+        }
+
+        // A second run (manual or reopen) is an idempotent no-op
+        {
+            let write_txn = storage.begin_write().unwrap();
+            let second_run = storage
+                .state()
+                .backfill_leader_digest_index(&write_txn)
+                .unwrap();
+            assert_eq!(second_run, None, "second backfill run must be a no-op");
+            write_txn.commit().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_header_replacement_deletes_old_hash_from_digest_index() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::new(dir.path().join("replace.db")).unwrap();
+        let hdr_a = test_leader_header(1, 101);
+        let hash_a = hdr_a.hash();
+        let digest_a = hdr_a.leader_digest;
+
+        // Save header A at height 1
+        {
+            let txn = storage.begin_write().unwrap();
+            storage.state().save_leader_header(&txn, &hdr_a).unwrap();
+            txn.commit().unwrap();
+        }
+
+        {
+            let read = storage.begin_read().unwrap();
+            assert_eq!(
+                storage
+                    .state()
+                    .get_leader_height_by_digest(&read, &hash_a)
+                    .unwrap(),
+                Some(1)
+            );
+            assert_eq!(
+                storage
+                    .state()
+                    .get_leader_height_by_digest(&read, &digest_a)
+                    .unwrap(),
+                Some(1)
+            );
+        }
+
+        // Save header B at height 1 (replacement)
+        let hdr_b = test_leader_header(1, 102);
+        let hash_b = hdr_b.hash();
+        let digest_b = hdr_b.leader_digest;
+        {
+            let txn = storage.begin_write().unwrap();
+            storage.state().save_leader_header(&txn, &hdr_b).unwrap();
+            txn.commit().unwrap();
+        }
+
+        {
+            let read = storage.begin_read().unwrap();
+            assert_eq!(
+                storage
+                    .state()
+                    .get_leader_height_by_digest(&read, &hash_b)
+                    .unwrap(),
+                Some(1)
+            );
+            assert_eq!(
+                storage
+                    .state()
+                    .get_leader_height_by_digest(&read, &digest_b)
+                    .unwrap(),
+                Some(1)
+            );
+            // Old keys are gone
+            assert_eq!(
+                storage
+                    .state()
+                    .get_leader_height_by_digest(&read, &hash_a)
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                storage
+                    .state()
+                    .get_leader_height_by_digest(&read, &digest_a)
+                    .unwrap(),
+                None
+            );
         }
     }
 }

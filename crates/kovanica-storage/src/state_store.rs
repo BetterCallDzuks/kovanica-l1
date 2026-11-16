@@ -219,9 +219,12 @@ impl StateStore {
             let _ = write_txn.open_table(crate::tables::EMISSION_POLICY)?;
             let _ = write_txn.open_table(crate::tables::MINING_REWARD_STATE)?;
             let _ = write_txn.open_table(crate::tables::FEE_ACCOUNTING_STATE)?;
+            let _ = write_txn.open_table(crate::tables::META)?;
         }
+        let store = Self { pruning };
+        store.backfill_leader_digest_index(&write_txn)?;
         write_txn.commit().map_err(StorageError::Commit)?;
-        Ok(Self { pruning })
+        Ok(store)
     }
 
     // ============================================================
@@ -868,26 +871,76 @@ impl StateStore {
         let bytes = bincode::serialize(header)?;
         let height = header.committed_height;
         let new_hash = header.hash();
-        let replaced = {
+        let old_header: Option<kovanica_types::LeaderHeader> = {
             let table = txn.open_table(crate::tables::LEADER_HEADERS)?;
             let existing = table.get(height)?.map(|guard| guard.value().to_vec());
             match existing {
                 Some(bytes) => {
                     let old: kovanica_types::LeaderHeader = bincode::deserialize(&bytes)?;
-                    old.hash() != new_hash
+                    if old.hash() != new_hash {
+                        Some(old)
+                    } else {
+                        None
+                    }
                 }
-                None => false,
+                None => None,
             }
         };
-        if replaced {
+
+        if let Some(old) = old_header {
             self.delete_seals_at(txn, height)?;
+            let mut digest_table = txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)?;
+            digest_table.remove(old.hash().0)?;
+            if old.leader_digest != header.leader_digest {
+                digest_table.remove(old.leader_digest.0)?;
+            }
         }
+
         let mut table = txn.open_table(crate::tables::LEADER_HEADERS)?;
         table.insert(height, bytes)?;
         let mut digest_table = txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)?;
         digest_table.insert(header.leader_digest.0, height)?;
         digest_table.insert(new_hash.0, height)?;
         Ok(())
+    }
+
+    /// Check and run the `leader_digest_to_height` backfill if `leader_digest_index_v1`
+    /// is not set in the meta table. Scans `LEADER_HEADERS` once in a single transaction,
+    /// populates `LEADER_DIGEST_TO_HEIGHT`, and sets the meta key.
+    ///
+    /// Idempotent. Returns `Ok(Some(count))` if backfill ran, or `Ok(None)` if already up to date.
+    pub fn backfill_leader_digest_index(
+        &self,
+        txn: &WriteTransaction,
+    ) -> Result<Option<usize>, StateStoreError> {
+        let mut meta_table = txn.open_table(crate::tables::META)?;
+        if meta_table.get("leader_digest_index_v1")?.is_some() {
+            return Ok(None);
+        }
+
+        let start = std::time::Instant::now();
+        let headers_table = txn.open_table(crate::tables::LEADER_HEADERS)?;
+        let mut digest_table = txn.open_table(crate::tables::LEADER_DIGEST_TO_HEIGHT)?;
+        let mut count = 0usize;
+
+        for entry in headers_table.iter()? {
+            let (height_guard, val_guard) = entry?;
+            let height = height_guard.value();
+            let bytes = val_guard.value();
+            let hdr: kovanica_types::LeaderHeader = bincode::deserialize(&bytes)?;
+            digest_table.insert(hdr.leader_digest.0, height)?;
+            digest_table.insert(hdr.hash().0, height)?;
+            count += 1;
+        }
+
+        meta_table.insert("leader_digest_index_v1", count.to_be_bytes().to_vec())?;
+        let duration = start.elapsed();
+        tracing::info!(
+            count,
+            duration_ms = duration.as_millis(),
+            "backfilled leader_digest_to_height index (v1)"
+        );
+        Ok(Some(count))
     }
 
     /// Lookup committed leader height by leader block digest or header hash.
@@ -921,13 +974,13 @@ impl StateStore {
         txn: &ReadTransaction,
     ) -> Result<Option<kovanica_types::LeaderHeader>, StateStoreError> {
         let table = txn.open_table(crate::tables::LEADER_HEADERS)?;
-        let mut latest = None;
-        for entry in table.iter()? {
-            let (_height, value) = entry?;
-            let bytes = value.value().to_vec();
-            latest = Some(bincode::deserialize(&bytes)?);
+        match table.last()? {
+            Some((_height, value)) => {
+                let bytes = value.value().to_vec();
+                Ok(Some(bincode::deserialize(&bytes)?))
+            }
+            None => Ok(None),
         }
-        Ok(latest)
     }
 
     /// Store one seal. A different signature already stored for the same

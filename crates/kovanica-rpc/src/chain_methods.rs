@@ -622,19 +622,14 @@ pub async fn handle_get_block_by_number(params: Value, state: RpcState) -> Resul
                 }
             }
 
-            // 3. Fallback to legacy block store by height
+            // 3. Fallback to legacy block store by round (round key in BLOCK_HEIGHT, committed_height=None)
             match state
                 .storage
                 .blocks()
                 .get_block_by_height(&txn, number)
                 .map_err(internal)?
             {
-                Some(block) => Ok(block_to_json_ext(
-                    &block,
-                    full_transactions,
-                    Some(number),
-                    None,
-                )),
+                Some(block) => Ok(block_to_json_ext(&block, full_transactions, None, None)),
                 None => Ok(Value::Null),
             }
         }
@@ -1087,9 +1082,9 @@ pub async fn handle_get_transaction_history(
 /// shape:
 ///
 /// - `fromBlock` / `toBlock`: `"latest"` (the default), `"earliest"`,
-///   `"pending"` or a hex quantity. These are **committed-leader heights** —
-///   the same counter `kovanica_blockNumber` returns and the value the
-///   per-height receipt list is keyed by.
+///   `"pending"`, `"safe"`, `"finalized"`, a hex quantity, or an integer. These are
+///   **committed-leader heights** — the same counter `kovanica_blockNumber` returns
+///   and the value the per-height receipt list is keyed by.
 /// - `address`: an address or an array of addresses. A log matches when the
 ///   event's emitting address is one of them.
 /// - `topics`: an array of positions, each `null` (wildcard), a topic string,
@@ -2194,6 +2189,9 @@ fn parse_light_client_checkpoint_params(
 }
 
 /// Find a committed [`LeaderHeader`] by leader block digest or header hash.
+///
+/// Looks up `LEADER_DIGEST_TO_HEIGHT` in O(1) time, loads and verifies the header,
+/// and returns null on a miss without scanning history.
 fn find_leader_header_by_hash(
     storage: &kovanica_storage::Storage,
     target: &Hash,
@@ -2203,15 +2201,6 @@ fn find_leader_header_by_hash(
     }
     let txn = storage.begin_read().map_err(internal)?;
     let state_store = storage.state();
-    let Some(latest) = state_store
-        .get_latest_leader_header(&txn)
-        .map_err(internal)?
-    else {
-        return Ok(None);
-    };
-    if latest.leader_digest == *target || latest.hash() == *target {
-        return Ok(Some(latest));
-    }
     if let Some(height) = state_store
         .get_leader_height_by_digest(&txn, target)
         .map_err(internal)?
@@ -5571,6 +5560,15 @@ mod tests {
         assert_eq!(res_hash1["number"], res_num1["number"]);
         assert_eq!(res_hash1["timestamp"], res_num1["timestamp"]);
 
+        // Query getBlockByHash by leader header hash
+        let header1_hash_hex = to_hex(header1.hash().as_ref());
+        let res_lh1 = handle_get_block_by_hash(json!([header1_hash_hex, false]), state.clone())
+            .await
+            .expect("getBlockByHash by leader header hash should succeed");
+        assert!(!res_lh1.is_null());
+        assert_eq!(res_lh1["hash"], res_num1["hash"]);
+        assert_eq!(res_lh1["number"], res_num1["number"]);
+
         // Test 3: getBlockByNumber with integer number and full_transactions default
         let res_num2 = handle_get_block_by_number(json!([2]), state.clone())
             .await
@@ -5670,5 +5668,196 @@ mod tests {
 
         // Timestamps are non-decreasing along the chain
         assert!(lh2_pow_ts >= lh1_pow_ts);
+    }
+
+    #[tokio::test]
+    async fn test_get_block_by_hash_header_replacement_old_hash_returns_null() {
+        let (_dir, storage) = open_storage();
+        let state = test_state(storage.clone());
+
+        let block_a = StatementBlock {
+            author: 0,
+            round: 1,
+            parents: vec![],
+            transactions: vec![],
+            statements: vec![],
+            signature: kovanica_types::Signature([1u8; 64]),
+            digest: Hash([0x41; 32]),
+            merkle_root: Hash::zero(),
+        };
+        let block_b = StatementBlock {
+            author: 1,
+            round: 1,
+            parents: vec![],
+            transactions: vec![],
+            statements: vec![],
+            signature: kovanica_types::Signature([2u8; 64]),
+            digest: Hash([0x42; 32]),
+            merkle_root: Hash::zero(),
+        };
+        state.consensus_store.put_block(&block_a).unwrap();
+        state.consensus_store.put_block(&block_b).unwrap();
+
+        let header_a = LeaderHeader {
+            committed_height: 1,
+            leader_round: 1,
+            leader_digest: block_a.digest,
+            leader_author: 0,
+            parent_leader_digest: Hash::zero(),
+            tx_merkle_root: Hash::zero(),
+            executed_tx_root: Hash::zero(),
+            non_blue_root: Hash::zero(),
+            blue_root: Hash::zero(),
+            mysticghost: false,
+            state_root: Hash([0x51; 32]),
+            epoch: 0,
+            committee_hash: Hash::zero(),
+            timestamp: 0,
+        };
+        let hash_a = to_hex(header_a.hash().as_ref());
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage.state().save_leader_header(&txn, &header_a).unwrap();
+            storage
+                .consensus()
+                .set_committed_leader_height(&txn, 1)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        // Querying with header A's hash returns block A
+        let res_a = handle_get_block_by_hash(json!([hash_a.clone()]), state.clone())
+            .await
+            .expect("query block A");
+        assert!(!res_a.is_null());
+        assert_eq!(
+            res_a["hash"],
+            json!(format!("0x{}", hex::encode(block_a.digest.0)))
+        );
+
+        // Replacement header B at height 1
+        let header_b = LeaderHeader {
+            committed_height: 1,
+            leader_round: 1,
+            leader_digest: block_b.digest,
+            leader_author: 1,
+            parent_leader_digest: Hash::zero(),
+            tx_merkle_root: Hash::zero(),
+            executed_tx_root: Hash::zero(),
+            non_blue_root: Hash::zero(),
+            blue_root: Hash::zero(),
+            mysticghost: false,
+            state_root: Hash([0x52; 32]),
+            epoch: 0,
+            committee_hash: Hash::zero(),
+            timestamp: 0,
+        };
+        let hash_b = to_hex(header_b.hash().as_ref());
+
+        {
+            let txn = storage.begin_write().unwrap();
+            storage.state().save_leader_header(&txn, &header_b).unwrap();
+            txn.commit().unwrap();
+        }
+
+        // Querying with header B's hash returns block B
+        let res_b = handle_get_block_by_hash(json!([hash_b]), state.clone())
+            .await
+            .expect("query block B");
+        assert!(!res_b.is_null());
+        assert_eq!(
+            res_b["hash"],
+            json!(format!("0x{}", hex::encode(block_b.digest.0)))
+        );
+
+        // Querying with replaced header A's hash returns null
+        let res_old = handle_get_block_by_hash(json!([hash_a]), state.clone())
+            .await
+            .expect("query old hash A");
+        assert!(res_old.is_null());
+    }
+
+    #[tokio::test]
+    async fn test_get_block_by_hash_cost_bounded() {
+        let (_dir, storage) = open_storage();
+        let state = test_state(storage.clone());
+
+        // Create 100 blocks along the chain
+        let n_blocks = 100u64;
+        let mut prev_digest = Hash::zero();
+        let mut hashes = Vec::new();
+        {
+            let txn = storage.begin_write().unwrap();
+            for h in 1..=n_blocks {
+                let digest = Hash::new([((h % 250) + 1) as u8; 32]);
+                let block = StatementBlock {
+                    author: 0,
+                    round: h,
+                    parents: vec![],
+                    transactions: vec![],
+                    statements: vec![],
+                    signature: kovanica_types::Signature([0u8; 64]),
+                    digest,
+                    merkle_root: Hash::zero(),
+                };
+                state.consensus_store.put_block(&block).unwrap();
+                let header = LeaderHeader {
+                    committed_height: h,
+                    leader_round: h,
+                    leader_digest: digest,
+                    leader_author: 0,
+                    parent_leader_digest: prev_digest,
+                    tx_merkle_root: Hash::zero(),
+                    executed_tx_root: Hash::zero(),
+                    non_blue_root: Hash::zero(),
+                    blue_root: Hash::zero(),
+                    mysticghost: false,
+                    state_root: Hash::zero(),
+                    epoch: 0,
+                    committee_hash: Hash::zero(),
+                    timestamp: 0,
+                };
+                storage.state().save_leader_header(&txn, &header).unwrap();
+                prev_digest = digest;
+                hashes.push((to_hex(digest.as_ref()), to_hex(header.hash().as_ref())));
+            }
+            storage
+                .consensus()
+                .set_committed_leader_height(&txn, n_blocks)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        // Direct point lookups by leader digest and header hash are O(1)
+        let (first_digest, first_header_hash) = &hashes[0];
+        let (last_digest, last_header_hash) = &hashes[hashes.len() - 1];
+
+        let res_first = handle_get_block_by_hash(json!([first_digest]), state.clone())
+            .await
+            .unwrap();
+        assert_eq!(res_first["number"], json!("0x1"));
+
+        let res_first_hdr = handle_get_block_by_hash(json!([first_header_hash]), state.clone())
+            .await
+            .unwrap();
+        assert_eq!(res_first_hdr["number"], json!("0x1"));
+
+        let res_last = handle_get_block_by_hash(json!([last_digest]), state.clone())
+            .await
+            .unwrap();
+        assert_eq!(res_last["number"], json!(format!("0x{:x}", n_blocks)));
+
+        let res_last_hdr = handle_get_block_by_hash(json!([last_header_hash]), state.clone())
+            .await
+            .unwrap();
+        assert_eq!(res_last_hdr["number"], json!(format!("0x{:x}", n_blocks)));
+
+        // Unknown hash returns null in bounded time without scanning history
+        let unknown = format!("0x{}", hex::encode([0xee; 32]));
+        let res_unknown = handle_get_block_by_hash(json!([unknown]), state.clone())
+            .await
+            .unwrap();
+        assert!(res_unknown.is_null());
     }
 }
