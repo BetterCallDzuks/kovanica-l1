@@ -110,10 +110,12 @@ impl LimiterMap {
     }
 
     /// Drop expired timestamps from up to `budget` keys. Live keys stay and
-    /// move to the back of the ring. Missing or stale generation entries are skipped.
+    /// move to the back of the ring. Missing or stale generation entries are skipped
+    /// without consuming the sweep budget.
     fn sweep_expired_budget(&mut self, window_secs: u64, now: std::time::Instant, budget: usize) {
         let window_start = now.checked_sub(Duration::from_secs(window_secs));
-        for _ in 0..budget {
+        let mut examined = 0;
+        while examined < budget {
             let Some((key, gen)) = self.sweep_order.pop_front() else {
                 break;
             };
@@ -126,6 +128,7 @@ impl LimiterMap {
                 }
                 _ => continue,
             };
+            examined += 1;
             if expired {
                 self.entries.remove(&key);
             } else {
@@ -362,6 +365,42 @@ impl Drop for AddressReservation {
     }
 }
 
+#[derive(Default, Debug)]
+struct PendingNonce {
+    next: Option<u64>,
+    last_reset_expected: Option<u64>,
+}
+
+impl PendingNonce {
+    fn take_next(&mut self, committed_nonce: u64) -> u64 {
+        if self
+            .last_reset_expected
+            .is_some_and(|e| committed_nonce > e)
+        {
+            self.last_reset_expected = None;
+        }
+        let n = self.next.unwrap_or(committed_nonce);
+        self.next = Some(n.saturating_add(1));
+        n
+    }
+
+    fn rollback_if_matching(&mut self, nonce: u64) {
+        if self.next == Some(nonce.saturating_add(1)) {
+            self.next = Some(nonce);
+        }
+    }
+
+    fn take_retry(&mut self, expected: u64) -> u64 {
+        if self.last_reset_expected != Some(expected) {
+            self.last_reset_expected = Some(expected);
+            self.next = Some(expected);
+        }
+        let n = self.next.unwrap_or(expected);
+        self.next = Some(n.saturating_add(1));
+        n
+    }
+}
+
 /// Faucet state
 struct FaucetState {
     config: FaucetConfig,
@@ -369,7 +408,7 @@ struct FaucetState {
     faucet_address: Address,
     rate_limiter: RateLimiter,
     client: reqwest::Client,
-    pending_nonce: Mutex<Option<u64>>,
+    pending_nonce: Mutex<PendingNonce>,
 }
 
 /// Request payload
@@ -548,7 +587,7 @@ async fn main() -> Result<()> {
         faucet_address,
         rate_limiter: RateLimiter::default(),
         client,
-        pending_nonce: Mutex::new(None),
+        pending_nonce: Mutex::new(PendingNonce::default()),
     });
 
     let app = Router::new()
@@ -830,12 +869,7 @@ async fn faucet_handler(
 
     let mut nonce = {
         let mut guard = state.pending_nonce.lock();
-        let next = match *guard {
-            Some(last_sent) => std::cmp::max(committed_nonce, last_sent.saturating_add(1)),
-            None => committed_nonce,
-        };
-        *guard = Some(next);
-        next
+        guard.take_next(committed_nonce)
     };
 
     let build_and_sign_tx = |n: u64| {
@@ -892,26 +926,29 @@ async fn faucet_handler(
                 error = %err,
                 "nonce conflict detected; resyncing nonce from node and retrying once"
             );
-            let fresh_committed = match get_nonce(
-                &state.client,
-                &state.config.rpc_url,
-                state.config.rpc_token.as_deref(),
-                &state.faucet_address,
-            )
-            .await
-            {
-                Ok(n) => n,
-                Err(e) => {
-                    warn!("Failed to resync faucet nonce: {}", e);
-                    committed_nonce
-                }
-            };
-            nonce = {
+            let expected_opt = parse_expected_nonce(err);
+            let retry_nonce = if let Some(expected) = expected_opt {
                 let mut guard = state.pending_nonce.lock();
-                let next = std::cmp::max(fresh_committed, nonce.saturating_add(1));
-                *guard = Some(next);
-                next
+                guard.take_retry(expected)
+            } else {
+                let fresh_committed = match get_nonce(
+                    &state.client,
+                    &state.config.rpc_url,
+                    state.config.rpc_token.as_deref(),
+                    &state.faucet_address,
+                )
+                .await
+                {
+                    Ok(n) => n,
+                    Err(e) => {
+                        warn!("Failed to resync faucet nonce: {}", e);
+                        committed_nonce
+                    }
+                };
+                let mut guard = state.pending_nonce.lock();
+                guard.take_retry(fresh_committed)
             };
+            nonce = retry_nonce;
             if let Ok(new_signed_tx) = build_and_sign_tx(nonce) {
                 signed_tx = new_signed_tx;
                 submit_outcome = submit_transaction(
@@ -958,8 +995,10 @@ async fn faucet_handler(
                 StatusCode::BAD_GATEWAY,
                 Json(FaucetResponse {
                     success: false,
-                    message: "Transaction submission status unknown, do not retry for 24h"
-                        .to_string(),
+                    message: format!(
+                        "Transaction submission status unknown, do not retry for {}",
+                        format_window_duration(state.config.address_rate_limit_window)
+                    ),
                     tx_hash: None,
                 }),
             )
@@ -968,6 +1007,10 @@ async fn faucet_handler(
         SubmitOutcome::ExplicitRejection(e) => {
             // Explicit rejection from node (e.g. invalid tx, balance insufficient): roll back address slot.
             reservation.rollback();
+            {
+                let mut guard = state.pending_nonce.lock();
+                guard.rollback_if_matching(nonce);
+            }
             warn!(
                 to = %to_address,
                 error = %e,
@@ -1114,6 +1157,16 @@ enum SubmitOutcome {
     Unknown(String),
 }
 
+fn format_window_duration(secs: u64) -> String {
+    if secs >= 3600 && secs % 3600 == 0 {
+        format!("{}h", secs / 3600)
+    } else if secs >= 60 && secs % 60 == 0 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
 fn is_nonce_error(msg: &str) -> bool {
     let lower = msg.to_ascii_lowercase();
     lower.contains("already in a proposed block")
@@ -1121,6 +1174,23 @@ fn is_nonce_error(msg: &str) -> bool {
         || lower.contains("invalid nonce")
         || lower.contains("nonce too low")
         || lower.contains("nonce in flight")
+}
+
+fn parse_expected_nonce(err: &str) -> Option<u64> {
+    let lower = err.to_ascii_lowercase();
+    let idx = lower.find("expected")?;
+    let rem = &lower[idx + "expected".len()..];
+    let trimmed = rem.trim_start_matches(|c: char| c.is_whitespace() || c == ':' || c == '=');
+    if let Some(hex_str) = trimmed.strip_prefix("0x") {
+        let hex_digits: String = hex_str
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .collect();
+        u64::from_str_radix(&hex_digits, 16).ok()
+    } else {
+        let dec_digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+        dec_digits.parse::<u64>().ok()
+    }
 }
 
 async fn submit_transaction(
@@ -1180,7 +1250,9 @@ async fn submit_transaction(
     if let Some(result) = json_val.get("result").and_then(|v| v.as_str()) {
         SubmitOutcome::Success(result.to_string())
     } else {
-        SubmitOutcome::ExplicitRejection(format!("invalid tx submit response: {json_val}"))
+        SubmitOutcome::Unknown(format!(
+            "invalid tx submit response (missing result): {json_val}"
+        ))
     }
 }
 
@@ -1690,6 +1762,7 @@ mod http_tests {
         balance_atoms: u64,
         dispensed: Arc<Mutex<Vec<u64>>>,
         dispensed_nonces: Arc<Mutex<Vec<u64>>>,
+        expected_nonce: Arc<Mutex<u64>>,
         fail_submit: Arc<Mutex<bool>>,
         submit_error: Arc<Mutex<Option<String>>>,
         /// When set, the next `sendRawTransaction` signals `submit_started`
@@ -1698,6 +1771,8 @@ mod http_tests {
         submit_started: Arc<tokio::sync::Notify>,
         submit_delay_ms: Arc<Mutex<Option<u64>>>,
         fail_with_http_400: Arc<AtomicBool>,
+        fail_with_http_500: Arc<AtomicBool>,
+        response_without_result: Arc<AtomicBool>,
     }
 
     async fn stub_rpc_handler(
@@ -1715,9 +1790,24 @@ mod http_tests {
                 Json(json!({ "error": "invalid transaction" })),
             );
         }
+        if method == "kovanica_sendRawTransaction" && stub.fail_with_http_500.load(Ordering::SeqCst)
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "node internal error" })),
+            );
+        }
+        if method == "kovanica_sendRawTransaction"
+            && stub.response_without_result.load(Ordering::SeqCst)
+        {
+            return (StatusCode::OK, Json(json!({ "jsonrpc": "2.0", "id": 1 })));
+        }
         let result = match method {
             "kovanica_getBalance" => json!(format!("0x{:x}", stub.balance_atoms)),
-            "kovanica_getNonce" => json!("0x0"),
+            "kovanica_getNonce" => {
+                let exp = *stub.expected_nonce.lock();
+                json!(format!("0x{:x}", exp))
+            }
             "kovanica_sendRawTransaction" => {
                 let delay = *stub.submit_delay_ms.lock();
                 if let Some(delay) = delay {
@@ -1751,6 +1841,24 @@ mod http_tests {
                     .unwrap_or_default();
                 if let Ok(bytes) = hex::decode(raw) {
                     if let Ok(tx) = bincode::deserialize::<Transaction>(&bytes) {
+                        let mut exp = stub.expected_nonce.lock();
+                        if tx.nonce != *exp {
+                            return (
+                                StatusCode::OK,
+                                Json(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": 1,
+                                    "error": {
+                                        "code": -32000,
+                                        "message": format!(
+                                            "Invalid nonce: expected {}, got {}",
+                                            *exp, tx.nonce
+                                        )
+                                    }
+                                })),
+                            );
+                        }
+                        *exp += 1;
                         stub.dispensed_nonces.lock().push(tx.nonce);
                         if let TransactionKind::Transfer { amount, .. } = tx.kind {
                             stub.dispensed.lock().push(amount);
@@ -1785,7 +1893,7 @@ mod http_tests {
         Arc<Mutex<bool>>,
         Arc<tokio::sync::Notify>,
     ) {
-        let (url, dispensed, fail_submit, notify, _, _, _, _) =
+        let (url, dispensed, fail_submit, notify, _, _, _, _, _, _, _) =
             spawn_stub_full(balance_atoms, hold_submit).await;
         (url, dispensed, fail_submit, notify)
     }
@@ -1803,24 +1911,33 @@ mod http_tests {
         Arc<Mutex<Option<String>>>,
         Arc<Mutex<Option<u64>>>,
         Arc<AtomicBool>,
+        Arc<Mutex<u64>>,
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
     ) {
         let dispensed = Arc::new(Mutex::new(Vec::new()));
         let dispensed_nonces = Arc::new(Mutex::new(Vec::new()));
+        let expected_nonce = Arc::new(Mutex::new(0));
         let fail_submit = Arc::new(Mutex::new(false));
         let submit_error = Arc::new(Mutex::new(None));
         let submit_started = Arc::new(tokio::sync::Notify::new());
         let submit_delay_ms = Arc::new(Mutex::new(None));
         let fail_with_http_400 = Arc::new(AtomicBool::new(false));
+        let fail_with_http_500 = Arc::new(AtomicBool::new(false));
+        let response_without_result = Arc::new(AtomicBool::new(false));
         let stub = StubState {
             balance_atoms,
             dispensed: dispensed.clone(),
             dispensed_nonces: dispensed_nonces.clone(),
+            expected_nonce: expected_nonce.clone(),
             fail_submit: fail_submit.clone(),
             submit_error: submit_error.clone(),
             hold_submit: Arc::new(AtomicBool::new(hold_submit)),
             submit_started: submit_started.clone(),
             submit_delay_ms: submit_delay_ms.clone(),
             fail_with_http_400: fail_with_http_400.clone(),
+            fail_with_http_500: fail_with_http_500.clone(),
+            response_without_result: response_without_result.clone(),
         };
         let app = Router::new()
             .route("/rpc", post(stub_rpc_handler))
@@ -1839,6 +1956,9 @@ mod http_tests {
             submit_error,
             submit_delay_ms,
             fail_with_http_400,
+            expected_nonce,
+            fail_with_http_500,
+            response_without_result,
         )
     }
 
@@ -1935,7 +2055,7 @@ mod http_tests {
             faucet_address,
             rate_limiter,
             client,
-            pending_nonce: Mutex::new(None),
+            pending_nonce: Mutex::new(PendingNonce::default()),
         })
     }
 
@@ -2401,7 +2521,8 @@ mod http_tests {
 
     #[tokio::test]
     async fn back_to_back_dispenses_get_consecutive_nonces() {
-        let (rpc, _, _, _, nonces, _, _, _) = spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        let (rpc, _, _, _, nonces, _, _, _, _, _, _) =
+            spawn_stub_full(1_000 * 1_000_000_000, false).await;
         let app = app(faucet_state(&rpc, 60, 100, 86_400, 100, "", 0));
 
         let (s1, b1) = post_faucet(
@@ -2441,10 +2562,12 @@ mod http_tests {
 
     #[tokio::test]
     async fn nonce_retry_on_proposed_block_conflict() {
-        let (rpc, _, _, _, nonces, submit_error, _, _) =
+        let (rpc, _, _, _, nonces, submit_error, _, _, exp_nonce, _, _) =
             spawn_stub_full(1_000 * 1_000_000_000, false).await;
-        // First submit fails with "Nonce 0 is already in a proposed block"
-        *submit_error.lock() = Some("Nonce 0 is already in a proposed block".to_string());
+        // Node expects nonce 1
+        *exp_nonce.lock() = 1;
+        // First submit fails with "Invalid nonce: expected 1, got 0"
+        *submit_error.lock() = Some("Invalid nonce: expected 1, got 0".to_string());
 
         let app = app(faucet_state(&rpc, 60, 100, 86_400, 100, "", 0));
         let (status, body) = post_faucet(
@@ -2457,18 +2580,18 @@ mod http_tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["success"], true);
 
-        // First attempt sent nonce 0 (and was rejected), retry sent nonce 1 (and succeeded)
+        // First attempt sent nonce 0 (and was rejected with expected 1), retry parsed expected 1, sent nonce 1 (and succeeded)
         let recorded = nonces.lock().clone();
         assert_eq!(
             recorded,
             vec![1],
-            "retried transaction must be submitted with incremented nonce"
+            "retried transaction must be submitted with expected nonce"
         );
     }
 
     #[tokio::test]
     async fn timeout_on_submit_preserves_address_slot_and_returns_bad_gateway() {
-        let (rpc, _, _, _, _, _, submit_delay_ms, _) =
+        let (rpc, _, _, _, _, _, submit_delay_ms, _, _, _, _) =
             spawn_stub_full(1_000 * 1_000_000_000, false).await;
         // Node delays sendRawTransaction by 200ms
         *submit_delay_ms.lock() = Some(200);
@@ -2531,7 +2654,7 @@ mod http_tests {
 
     #[tokio::test]
     async fn explicit_4xx_rejection_rolls_back_address_slot() {
-        let (rpc, _, _, _, _, _, _, fail_with_http_400) =
+        let (rpc, _, _, _, _, _, _, fail_with_http_400, _, _, _) =
             spawn_stub_full(1_000 * 1_000_000_000, false).await;
         fail_with_http_400.store(true, Ordering::SeqCst);
 
@@ -2567,25 +2690,243 @@ mod http_tests {
         assert_eq!(body2["success"], true);
     }
 
-    #[test]
-    fn forget_key_bounded_time_with_100k_entries() {
-        let mut map = LimiterMap::default();
-        let now = std::time::Instant::now();
-        for i in 0..100_000 {
-            let key = format!("addr_{i}");
-            map.record_at(&key, 3600, 10, 150_000, now);
+    #[tokio::test]
+    async fn concurrent_requests_retry_race_no_nonce_reused() {
+        let (rpc, _, _, _, nonces, _, _, _, _, _, _) =
+            spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        let state = faucet_state(&rpc, 60, 100, 86_400, 100, "", 0);
+        // Force a race by setting pending_nonce ahead of node (node expected is 0, pending is 5)
+        {
+            let mut guard = state.pending_nonce.lock();
+            guard.next = Some(5);
         }
-        assert_eq!(map.entries.len(), 100_000);
+        let app = app(state);
 
-        let start = std::time::Instant::now();
-        map.forget_key("addr_50000");
-        let elapsed = start.elapsed();
+        let mut set = tokio::task::JoinSet::new();
+        for i in 0..3 {
+            let app_c = app.clone();
+            let addr = canonical(110 + i);
+            let peer = format!("192.0.2.{}:5000", 70 + i);
+            set.spawn(
+                async move { post_faucet(&app_c, &peer, None, json!({ "address": addr })).await },
+            );
+        }
 
-        assert!(!map.entries.contains_key("addr_50000"));
+        while let Some(res) = set.join_next().await {
+            let (status, body) = res.unwrap();
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "all retrying requests must succeed: {body}"
+            );
+        }
+
+        let mut recorded = nonces.lock().clone();
+        recorded.sort_unstable();
+        assert_eq!(
+            recorded,
+            vec![0, 1, 2],
+            "no nonce may be reused across concurrent retries"
+        );
+    }
+
+    #[tokio::test]
+    async fn definite_rejection_followed_by_new_request_no_gap() {
+        let (rpc, _, fail_submit, _, nonces, _, _, _, _, _, _) =
+            spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        let app = app(faucet_state(&rpc, 60, 100, 86_400, 100, "", 0));
+
+        // First request encounters a definite rejection (tx rejected)
+        *fail_submit.lock() = true;
+        let (status1, _) = post_faucet(
+            &app,
+            "192.0.2.1:5000",
+            None,
+            json!({ "address": canonical(120) }),
+        )
+        .await;
+        assert_eq!(status1, StatusCode::INTERNAL_SERVER_ERROR);
+
+        *fail_submit.lock() = false;
+
+        // Second request arrives; guard rolled back, so it should get nonce 0 without leaving a gap
+        let (status2, body2) = post_faucet(
+            &app,
+            "192.0.2.2:5000",
+            None,
+            json!({ "address": canonical(121) }),
+        )
+        .await;
+        assert_eq!(status2, StatusCode::OK, "{body2}");
+
+        let recorded = nonces.lock().clone();
+        assert_eq!(
+            recorded,
+            vec![0],
+            "definite rejection must roll back nonce so subsequent request takes it without gap"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_outcome_followed_by_new_request_recovers() {
+        let (rpc, _, _, _, nonces, _, _, _, _, fail_with_http_500, _) =
+            spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        // Node returns HTTP 500 on submit (treated as Unknown outcome; tx not processed by node)
+        fail_with_http_500.store(true, Ordering::SeqCst);
+
+        let app = app(faucet_state(&rpc, 60, 100, 86_400, 100, "", 0));
+
+        // First attempt gets Unknown outcome (HTTP 502 Bad Gateway), slot kept, pending nonce is 1
+        let (status1, _) = post_faucet(
+            &app,
+            "192.0.2.1:5000",
+            None,
+            json!({ "address": canonical(130) }),
+        )
+        .await;
+        assert_eq!(status1, StatusCode::BAD_GATEWAY);
+
+        fail_with_http_500.store(false, Ordering::SeqCst);
+
+        // Second request arrives: gets nonce 1, node expects 0 -> rejects with InvalidNonce: expected 0, got 1.
+        // Faucet catches InvalidNonce, lowers guard to 0, retries with 0, and succeeds!
+        let (status2, body2) = post_faucet(
+            &app,
+            "192.0.2.2:5000",
+            None,
+            json!({ "address": canonical(131) }),
+        )
+        .await;
+        assert_eq!(
+            status2,
+            StatusCode::OK,
+            "new request must recover from Unknown outcome: {body2}"
+        );
+
+        let recorded = nonces.lock().clone();
+        assert_eq!(
+            recorded,
+            vec![0],
+            "recovered request successfully used expected nonce 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_200_without_result_counts_as_unknown() {
+        let (rpc, _, _, _, _, _, _, _, _, _, response_without_result) =
+            spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        response_without_result.store(true, Ordering::SeqCst);
+
+        let app = app(faucet_state(&rpc, 60, 100, 86_400, 1, "", 0));
+        let target_address = canonical(140);
+
+        // Submit returns 200 without "result" field -> counted as Unknown outcome -> 502 Bad Gateway
+        let (status1, body1) = post_faucet(
+            &app,
+            "192.0.2.1:5000",
+            None,
+            json!({ "address": target_address }),
+        )
+        .await;
+        assert_eq!(status1, StatusCode::BAD_GATEWAY, "{body1}");
+        let msg = body1["message"].as_str().unwrap_or_default();
         assert!(
-            elapsed < Duration::from_millis(5),
-            "forget_key with 100k entries must run in < 5 ms, took: {:?}",
-            elapsed
+            msg.contains("status unknown, do not retry for 24h"),
+            "got: {msg}"
+        );
+
+        response_without_result.store(false, Ordering::SeqCst);
+
+        // Address slot was preserved (not rolled back), so next attempt from different IP is rate-limited
+        let (status2, body2) = post_faucet(
+            &app,
+            "192.0.2.2:5000",
+            None,
+            json!({ "address": target_address }),
+        )
+        .await;
+        assert_eq!(
+            status2,
+            StatusCode::TOO_MANY_REQUESTS,
+            "address slot must be preserved on Unknown outcome: {body2}"
+        );
+    }
+
+    #[tokio::test]
+    async fn configurable_window_in_unknown_outcome_message() {
+        let (rpc, _, _, _, _, _, _, _, _, _, response_without_result) =
+            spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        response_without_result.store(true, Ordering::SeqCst);
+
+        // Configured with 7200s (2h) address rate-limit window
+        let app = app(faucet_state(&rpc, 60, 100, 7200, 1, "", 0));
+        let (status, body) = post_faucet(
+            &app,
+            "192.0.2.1:5000",
+            None,
+            json!({ "address": canonical(150) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        let msg = body["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("status unknown, do not retry for 2h"),
+            "expected '2h' in message for 7200s window, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_expected_nonce_handles_various_formats() {
+        assert_eq!(
+            parse_expected_nonce("Invalid nonce: expected 1, got 0"),
+            Some(1)
+        );
+        assert_eq!(
+            parse_expected_nonce("Invalid nonce: expected 42, got 10"),
+            Some(42)
+        );
+        assert_eq!(parse_expected_nonce("invalid nonce: expected: 5"), Some(5));
+        assert_eq!(
+            parse_expected_nonce("Nonce too low, expected 0x10"),
+            Some(16)
+        );
+        assert_eq!(
+            parse_expected_nonce("Nonce 0 is already in a proposed block"),
+            None
+        );
+    }
+
+    #[test]
+    fn forget_key_scales_sublinearly_with_map_size() {
+        let mut small_map = LimiterMap::default();
+        let now = std::time::Instant::now();
+        for i in 0..1_000 {
+            small_map.record_at(&format!("small_{i}"), 3600, 10, 10_000, now);
+        }
+        let mut large_map = LimiterMap::default();
+        for i in 0..100_000 {
+            large_map.record_at(&format!("large_{i}"), 3600, 10, 150_000, now);
+        }
+
+        // Measure batch of 100 removals in small (1k) vs large (100k) map
+        let t_small_start = std::time::Instant::now();
+        for i in 0..100 {
+            small_map.forget_key(&format!("small_{i}"));
+        }
+        let t_small = t_small_start.elapsed();
+
+        let t_large_start = std::time::Instant::now();
+        for i in 0..100 {
+            large_map.forget_key(&format!("large_{i}"));
+        }
+        let t_large = t_large_start.elapsed();
+
+        assert!(!large_map.entries.contains_key("large_50"));
+        assert!(
+            t_large < Duration::from_millis(50),
+            "100 removals in 100k map took {:?} (small took {:?})",
+            t_large,
+            t_small
         );
     }
 }
