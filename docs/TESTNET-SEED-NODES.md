@@ -1,28 +1,24 @@
 # Testnet seed nodes — kovanica L1
 
-**Network:** public/hybrid testnet: `chain_id 2` (devnet: `chain_id 3`, local dev only: `1337`)
-**Deployed:** 2026-10-13 (build c44f672, mempool requeue fix)
+**Network:** public/hybrid testnet: kovanica-testnet (chain ID 2) (kovanica-devnet (chain ID 3), local (chain ID 1337))
+**Network Tag:** `2-acfdf6a6c80fd28a`
+**Topology:** seed1-only host (seed2 and seed3 are retired as hosts; seed3 / seed-extra remain only as bootstrap identities in genesis)
 **P2P:** TCP 8000, libp2p swarm
 **RPC:** 8545 (loopback-only)
 
 ## Seed nodes
 
-| # | Hostname | Resolved IP | VPS Role | Key/Config | Composer peers |
-|---|---|---|---|---|---|
-| 0 | `testnet.kovanica.online` | `145.223.116.178` | VPS#1 (canonical bootstrap entry) | `kovanica.env` | 3 |
-| 1 | `seed1.kovanica.online` | `145.223.116.178` | VPS#1 (seed instance 1) | `val1.pem` | 3 |
-| 3 | `seed3.kovanica.online` | `187.7.27.139` | VPS#3 (seed instance 3) | `val3.pem` | 3 |
+| # | Hostname | Resolved IP | Role | Key/Config |
+|---|---|---|---|---|
+| 0 | `testnet.kovanica.online` | `<seed1-host>` | Canonical bootstrap entry | `kovanica.env` |
+| 1 | `seed1.kovanica.online` | `<seed1-host>` | Seed instance 1 (active host) | `seed1.env` |
+| 3 | `seed3.kovanica.online` | `<seed3-host>` | Retired host (genesis bootstrap identity only) | `seed3.env` |
 
 **All seed nodes run with `mine=0 faucet=0 operator=0 allow_reset=0`.**
 
-## Verified state (2026-10-13T18:40Z)
+## Topology Note
 
-```
-seed1: peer_count 2, height ~294, exec_subdags=24, healthy
-seed3: peer_count 2, height ~294, exec_subdags 14, healthy
-```
-
-Mesh fully connected (3 nodes, each sees 2 peers), all executing.
+Host topology is seed1-only. Live P2P seed services run exclusively on seed1 (`seed1.kovanica.online` / `testnet.kovanica.online`). Seed3 is no longer an active host.
 
 ## Automated Diagnostics & Reachability Probe
 
@@ -84,14 +80,13 @@ curl -s -X POST http://127.0.0.1:8545/rpc \
 ```
 
 ### DNS
-- `testnet.kovanica.online` → `145.223.116.178` (A record, grey cloud)
-- `seed1.kovanica.online` → `145.223.116.178` (A record, grey cloud)
-- `seed3.kovanica.online` → `187.7.27.139` (A record, grey cloud)
+- `testnet.kovanica.online` → `<seed1-host>` (A record, grey cloud)
+- `seed1.kovanica.online` → `<seed1-host>` (A record, grey cloud)
+- `seed3.kovanica.online` → `<seed3-host>` (retired host record)
 - For mainnet DNS seed requirements (3+ kovanica-native DNS-only seed records), see [docs/SEED-DNS-AUDIT.md](SEED-DNS-AUDIT.md).
 
 ### Binaries
-- VPS#1: `/usr/local/bin/kovanica-node`
-- VPS#2, VPS#3: `/usr/local/bin/kovanica-node` (synchronized from release build)
+- seed1 host: `/usr/local/bin/kovanica-node`
 
 ### Data dirs
 - `/var/lib/kovanica` (node daemon) or `/var/lib/kovanica-seed<N>` (seed instances), owned by `kovanica:kovanica` (0750).

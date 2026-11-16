@@ -5,7 +5,7 @@
 - **Primary References:**
   - Contract crate: [`crates/kovanica-name-registry/src/lib.rs`](file:///crates/kovanica-name-registry/src/lib.rs)
   - Common ABI: [`crates/kovanica-common/src/lib.rs`](file:///crates/kovanica-common/src/lib.rs)
-  - TypeScript bindings: `packages/comms/src/registry.ts`
+  - TypeScript bindings: comms packages reside in [`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps)
   - Related RFCs:
     - [`RFC-001-ARCHITECTURE-AND-SYSTEM-OVERVIEW.md`](file:///docs/rfcs/RFC-001-ARCHITECTURE-AND-SYSTEM-OVERVIEW.md)
     - [`RFC-004-EXECUTION-ENGINE-AND-WASMI-HOST-ENVIRONMENT.md`](file:///docs/rfcs/RFC-004-EXECUTION-ENGINE-AND-WASMI-HOST-ENVIRONMENT.md)

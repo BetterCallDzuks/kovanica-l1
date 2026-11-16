@@ -1,6 +1,6 @@
 # RFC-010 — Production Slashing: Verifiable Evidence and Unbonding Coverage
 
-- **Status:** Accepted & Implemented (2026-10-22, gated behind `SLASHING_ACTIVE_FROM_ROUND = u64::MAX`); legacy under ADR 0003 — not part of chains 1/2 consensus
+- **Status:** Accepted & Implemented (2026-10-22, gated behind `SLASHING_ACTIVE_FROM_ROUND = u64::MAX`); legacy under ADR 0003 — not part of kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) consensus
 - **Crate Scope:** `kovanica-staking`, `kovanica-types`, `kovanica-consensus`, `kovanica-execution`
 - **Tracks:** TASKLIST item 8, Linear PRO-12, PRO-19
 - **Primary References:**
@@ -230,8 +230,8 @@ only through an explicit stake transaction. The feature stays gated off
   with `slashing_active_from(round)` as the single predicate (same shape as
   `GAS_HARDENING_ACTIVE_FROM_ROUND`, `CONTRACT_HARDENING_ACTIVE_FROM_ROUND`,
   `SIZE_LIMITS_ACTIVE_FROM_ROUND`).
-- Set to `0` at the chain 4 genesis reset, together with the other three gates.
-- Chain 2 must not activate it: adding a `TransactionKind` variant changes the
+- Set to `0` at genesis reset, together with the other three gates.
+- kovanica-testnet (chain ID 2) must not activate it: adding a `TransactionKind` variant changes the
   wire enum, so an activated evidence tx would be undecodable by old nodes.
 
 ## 10. Test plan
@@ -262,8 +262,8 @@ rewards; slashing past a matured, withdrawn unbond.
 
 ## 11. Implementation (2026-10-22)
 
-Shipped behind `SLASHING_ACTIVE_FROM_ROUND = u64::MAX`, so chain 2 behaviour is
-bit-identical until the chain 4 reset.
+Shipped behind `SLASHING_ACTIVE_FROM_ROUND = u64::MAX`, so kovanica-testnet (chain ID 2) behaviour is
+bit-identical.
 
 | Layer | Change |
 |---|---|

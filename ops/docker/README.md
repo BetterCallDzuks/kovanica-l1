@@ -85,9 +85,9 @@ The compose healthchecks monitor `/health` and report when nodes are running and
 
 ---
 
-## Chain 2 Hybrid PoW Testnet Cluster (`docker-compose.chain2.yml`)
+## kovanica-testnet (chain ID 2) Hybrid PoW Testnet Cluster (`docker-compose.chain2.yml`)
 
-A standalone 1-command Docker Compose testnet cluster for **Chain 2** (`HYBRID_TESTNET`) featuring 3 peered hybrid testnet nodes with active KovanicaHash PoW mining, GHOSTDAG $k=5$ ordering, a dedicated faucet service, and pre-configured Prometheus + Grafana dashboards.
+A standalone 1-command Docker Compose testnet cluster for **kovanica-testnet (chain ID 2)** featuring 3 peered hybrid testnet nodes with active KovanicaHash PoW mining, GHOSTDAG $k=5$ ordering, a dedicated faucet service, and pre-configured Prometheus + Grafana dashboards.
 
 ### Topology
 
@@ -97,7 +97,7 @@ A standalone 1-command Docker Compose testnet cluster for **Chain 2** (`HYBRID_T
 | `node2` | Peered Node & Miner (author 1) | `8546` (RPC) | `127.0.0.1:8546` |
 | `node3` | Peered Node & Miner (author 2) | `8547` (RPC) | `127.0.0.1:8547` |
 | `observer` | Non-Mining Observer (Apps supervisor) | `8548` (RPC) | `127.0.0.1:8548` |
-| `faucet` | Chain 2 KVNC Dispenser | `3000` | `127.0.0.1:3000` |
+| `faucet` | kovanica-testnet (chain ID 2) KVNC Dispenser | `3000` | `127.0.0.1:3000` |
 | `prometheus` | Prometheus Metrics Scraper | `9090` | `127.0.0.1:9090` |
 | `grafana` | Grafana Dashboards | `3000` | `127.0.0.1:3001` (admin/admin) |
 
@@ -195,7 +195,7 @@ docker compose -f ops/docker/docker-compose.chain2.yml down -v
 ### Observability
 
 - **Prometheus**: Accessible at `http://localhost:9090`. Scrapes `/metrics` from all three nodes every 2s.
-- **Grafana**: Accessible at `http://localhost:3001` (credentials `admin` / `admin`). The `Kovanica Hybrid Testnet (Chain 2) Overview` dashboard visualizes:
+- **Grafana**: Accessible at `http://localhost:3001` (credentials `admin` / `admin`). The `Kovanica Hybrid kovanica-testnet (chain ID 2) Overview` dashboard visualizes:
   - Total PoW Blocks Mined (`pow_blocks_mined_total`) and mining rate
   - GHOSTDAG Blue vs Red blocks breakdown (`ghostdag_blue_blocks_total`, `ghostdag_red_blocks_total`, `ghostdag_tips_count`)
   - Estimated network hashrate (`pow_hashrate_estimate`) and target difficulty (`pow_target_bits`)

@@ -87,11 +87,11 @@ this repository and shipped twice:
   also carries an `expected-tag` file, which is what
   `node/scripts/install.sh` compares against.
 
-Chain 2 (the canonical hybrid public testnet) is the target network; chain 4
+kovanica-testnet (chain ID 2) (the canonical hybrid public testnet) is the target network; chain ID 4
 (`testnet/chain4/`) is retired and its bundle is no longer a valid install
-target. Until a chain-2 bundle is published for the `v<version>-node` release,
+target. Until a kovanica-testnet bundle is published for the `v<version>-node` release,
 the installer fails closed and names the missing asset — do not point it at the
-retired chain-4 bundle.
+retired chain ID 4 bundle.
 
 Do not invent another host for it, and do not re-generate the files.
 
@@ -111,7 +111,7 @@ keystore or `config.toml` in that directory is an error instead of a silent
 omission — a bundle is published, and nothing else from an operator directory
 may end up in it. It also refuses an unregistered chain id, a
 `genesis_validators.toml` whose `chain_id` disagrees with `--chain-id`, and
-`funded_accounts.toml` on mainnet (chain 1), where that file is forbidden and
+`funded_accounts.toml` on mainnet (chain 1) (kovanica-mainnet (chain ID 1)), where that file is forbidden and
 must not appear in the checksum list either.
 
 The output is `kovanica-chain<chain-id>-genesis.tar.gz` (`--out <file>` to

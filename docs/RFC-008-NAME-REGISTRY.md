@@ -9,10 +9,10 @@ Normative M1 specification of the on-chain comms name registry: a first-come, ow
 **Owner:** docs-writer lane · **Consumers:** `crates/kovanica-name-registry`, `packages/comms/src/registry.ts`
 
 This document specifies `crates/kovanica-name-registry` and is subordinate to the frozen M1 contracts in
-[`docs/COMMS-M1-INTERFACES.md`](COMMS-M1-INTERFACES.md) §6 and §8. Where this document and that one
-differ, **the interface doc wins**. Where [`docs/COMMS-APP-PLAN.md`](COMMS-APP-PLAN.md) and the
+the comms specification (migrated to [`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps)) §6 and §8. Where this document and that one
+differ, **the interface doc wins**. Where the comms application plan and the
 interface doc differ, the interface doc wins. This is the control-plane half of
-[`docs/COMMS-THREAT-MODEL.md`](COMMS-THREAT-MODEL.md); the registry is public-by-design, and that
+the comms threat model (migrated to [`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps)); the registry is public-by-design, and that
 threat model is the source of truth for what its visibility does and does not leak.
 
 ---
@@ -27,7 +27,7 @@ and no presence data.
 |---|---|
 | Contract crate | `crates/kovanica-name-registry` |
 | Layer | **ledger-safe** — new contract state, no consensus-rule change |
-| Model | first-come, owner-updatable (D4 of [`COMMS-M1-INTERFACES.md`](COMMS-M1-INTERFACES.md)) |
+| Model | first-come, owner-updatable (D4 of the comms specification in [`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps)) |
 | State | one entry per registered name, keyed by name |
 | Global name list | **none** (deliberate; see §7) |
 | Fee | none in M1 (see §9) |
@@ -35,7 +35,7 @@ and no presence data.
 
 Nothing in this contract is consensus-critical. It is a WASM contract executed by the existing
 Wasmi call path and has no bearing on DAG consensus, staking, rewards, supply, or the fee schedule.
-This mirrors the classification of the name registry in [`docs/COMMS-APP-PLAN.md`](COMMS-APP-PLAN.md) §3.
+This mirrors the classification of the name registry in the comms plan ([`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps)) §3.
 
 ---
 
@@ -122,7 +122,7 @@ export name equals the method name. ABI, argument/result encoding, and error pac
 - Otherwise set `owner = new_owner` and return `()`. `new_owner` is a fixed 32-byte value; the
   contract applies no further validation (see §9).
 - `transfer` is retained in M1 deliberately: it is cheap now and avoids a later ABI addition
-  ([`COMMS-M1-INTERFACES.md`](COMMS-M1-INTERFACES.md) §6).
+  (comms specification in [`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps) §6).
 
 ### 4.5 Events
 
@@ -173,7 +173,7 @@ Consequences (normative):
 
 - An observer of contract state cannot enumerate registered names; the state is not a registry
   listing. This is the on-chain-discovery mitigation for **R11** in
-  [`docs/COMMS-APP-PLAN.md`](COMMS-APP-PLAN.md) §6.
+  the comms roadmap ([`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps)) §6.
 - Enumeration resistance is **not** confidentiality. Names are guessable strings, so anyone can probe
   `resolve("alice")` and learn whether the name is taken and, if so, its `pubkey` and endpoints.
   Registration is intentionally public so peers can look each other up.
@@ -196,7 +196,7 @@ Consequences (normative):
   for this contract. The WASM call path (`TransactionKind::Call` → `execute_call` →
   `execute_wasm_call(entry: method)`) validates only that the export exists in the module. The name
   registry therefore ships with **zero** consensus-path edits
-  ([`COMMS-M1-INTERFACES.md`](COMMS-M1-INTERFACES.md) §8).
+  (comms specification in [`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps) §8).
 - **Return packing:** success is `((out_ptr as u32 as i64) << 32) | (out_len as u32 as i64)`; a
   `()` result packs as `0`. Errors pack as `-1 - code()` (always within `-12..=-1`), decoded by
   `kovanica-runtime` to `RuntimeError::Contract(code)`. `kovanica_alloc` / `kovanica_dealloc` are exported
@@ -231,7 +231,7 @@ Ordering rules (normative):
 
 - **No fee.** Registration, update, and transfer are free in M1 (D4). Consequence: name squatting is
   free and there is no economic reason to release a name. Fee/squatting policy is deferred; see
-  [`docs/COMMS-THREAT-MODEL.md`](COMMS-THREAT-MODEL.md) §9.
+  the comms threat model ([`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps)) §9.
 - **No expiry / reclaim.** Entries never expire and cannot be reclaimed by anyone but the owner.
 - **No reverse resolution.** `pubkey`/`address` → name is not supported, by design (§7).
 - **No hierarchy.** No sub-names, namespaces, or per-owner prefixes.
@@ -246,7 +246,7 @@ Ordering rules (normative):
 
 ## 11. Verification hooks (M1 evidence)
 
-Owned by the contract lane ([`COMMS-M1-INTERFACES.md`](COMMS-M1-INTERFACES.md) §7); this section only
+Owned by the contract lane (comms specification in [`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps) §7); this section only
 names what the spec requires to be demonstrated.
 
 - `MemHost` unit tests over `register` / `resolve` / `update_endpoints` / `transfer`, asserting each
@@ -261,8 +261,6 @@ names what the spec requires to be demonstrated.
 
 ## 12. Cross-references
 
-- [`docs/COMMS-M1-INTERFACES.md`](COMMS-M1-INTERFACES.md) §6 — registry semantics (normative parent); §8 — ABI and the "no `kovanica-execution` change" finding.
-- [`docs/COMMS-APP-PLAN.md`](COMMS-APP-PLAN.md) §3 — layer classification; §M1 — milestone; §6 — R11 (discovery enumeration), R1 (spam).
-- [`docs/COMMS-THREAT-MODEL.md`](COMMS-THREAT-MODEL.md) — what registry visibility leaks, and squatting.
+- Comms specifications and application plans have been migrated to the dedicated repository [`KovanicaDAG/kovanica-apps`](https://github.com/KovanicaDAG/kovanica-apps).
 - [`docs/CONTRACTS.md`](CONTRACTS.md) §1 (`ContractError`), §5 (storage/`ContractHost`), §6 (wasm ABI), §7 (building a contract wasm), §9 (event topics).
-- [`crates/kovanica-token`](../crates/kovanica-token/src/lib.rs) — ABI reference; `packages/comms/src/registry.ts` — TypeScript binding.
+- [`crates/kovanica-token`](../crates/kovanica-token/src/lib.rs) — ABI reference; TypeScript comms bindings reside in `KovanicaDAG/kovanica-apps`.

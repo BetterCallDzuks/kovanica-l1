@@ -228,7 +228,7 @@ Nodes expose Prometheus metrics on port `9100` (or configured metrics port). Obs
 - **Condition:** `peer_count < 3` for 2 minutes (Drop) or `peer_count == 0` for 1 minute (Critical).
 - **Severity:** Critical.
 - **Triage Steps:**
-  1. Check firewall and external connectivity: `curl -I https://1.1.1.1`.
+  1. Check firewall and external connectivity: `curl -I https://cloudflare.com`.
   2. Verify TCP port 8000 is open and listening: `ss -tulpn | grep 8000`.
   3. Inspect node log for connection drops or protocol mismatches: `journalctl -u kovanica-node | grep -E "disconnect|swarm|identify"`.
   4. Ensure `KOVANICA_BOOTNODES` are reachable and responsive.
@@ -237,11 +237,9 @@ Nodes expose Prometheus metrics on port `9100` (or configured metrics port). Obs
 - **Condition:** `increase(block_height[5m]) == 0` for 5 minutes.
 - **Severity:** Critical (Consensus stall).
 - **Triage Steps:**
-  1. Determine if stall is local or global across all validators:
+  1. Determine if stall is local or global across seed nodes:
      ```bash
-     for s in seed1 seed3; do
-       curl -s https://$s.kovanica.online/health | jq .block_height
-     done
+     curl -s https://seed1.kovanica.online/health | jq .block_height
      ```
   2. If local: restart the local node (`systemctl restart kovanica-node`). Check storage errors in `consensus.redb`.
   3. If global: TODO: rewrite for PoW + GHOSTDAG
