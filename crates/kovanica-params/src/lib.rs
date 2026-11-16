@@ -66,7 +66,8 @@ pub const DAA_WINDOW_BLOCKS: u64 = 60;
 /// Maximum future timestamp drift in milliseconds (30 seconds).
 pub const MAX_FUTURE_TIMESTAMP_DRIFT_MS: u64 = 30_000;
 
-// Legacy Mysticeti timing constants (still in tree until hybrid flag):
+// NON-CONSENSUS under Hybrid PoW + GHOSTDAG (chains 1 and 2):
+// Legacy Mysticeti timing constants (still imported by dev/legacy paths).
 pub const WAVE_LENGTH: u64 = 3;
 pub const EPOCH_ROUNDS: u64 = 7_200;
 pub const EPOCH_LEADER_HEIGHTS: u64 = EPOCH_ROUNDS / WAVE_LENGTH;
@@ -101,7 +102,8 @@ pub const MINING_SUBSIDY_BUDGET_NO_STAKE_82M: u64 =
 pub const SUBSIDY_ERA_BLOCKS_NO_STAKE_82M: u64 = 8_200_000;
 
 // ============================================================
-// Staking
+// Staking — NON-CONSENSUS under Hybrid PoW + GHOSTDAG (chains 1 and 2)
+// Retained for legacy/dev chains and historical storage compatibility.
 // ============================================================
 pub const MIN_VALIDATOR_STAKE: u64 = 50_000 * ONE_KUNA;
 pub const MIN_DELEGATION: u64 = 50_000 * ONE_KUNA;

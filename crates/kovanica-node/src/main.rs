@@ -1290,7 +1290,7 @@ where
         ConsensusConfig {
             round_duration_ms: config.round_duration_ms,
             use_mysticghost: config.use_mysticghost,
-            use_vrf_leader: config.use_vrf_leader,
+            use_vrf_leader: !is_hybrid && config.use_vrf_leader,
             // Timeouts are bound to this chain's genesis (PRO-40 (b)), the
             // same digest the network tag and the data-dir guard use.
             genesis_hash: genesis_config_digest(&config)?,
@@ -1304,7 +1304,7 @@ where
             inner: block_manager.clone(),
         })),
         signing_key.clone(),
-        if config.run_validator {
+        if config.run_validator && !is_hybrid {
             Some(mempool.clone())
         } else {
             None
@@ -1332,7 +1332,9 @@ where
             let _ = vote_broadcast_tx.send(NetworkCommand::BroadcastVote(vote.clone()));
         }
     }));
-    engine.set_timeout_broadcaster(Arc::new(TimeoutGossip(network_cmd_tx.clone())));
+    if !is_hybrid {
+        engine.set_timeout_broadcaster(Arc::new(TimeoutGossip(network_cmd_tx.clone())));
+    }
 
     // ------------------------------------------------------------------
     // 7. Shutdown plumbing + task spawning
