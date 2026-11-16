@@ -110,10 +110,12 @@ canonical PoW timestamp on read from the leader block's statements, exposing
 
 ## `kovanica_getBlockByNumber`
 
-Fetch a block by committed height, round, or tag (`"latest"`, `"earliest"`). The call is read-only.
+Fetch a block by committed height or tag (`"latest"`, `"earliest"`). The call is read-only.
 Tags other than `"latest"` and `"earliest"` return an invalid parameters error. `"earliest"`
 resolves the genesis block (round 0). Heights above the committed tip return JSON `null`.
 Unknown or non-applicable fields are returned as JSON `null`, not omitted.
+A legacy block-store row is keyed by DAG round. When the method falls back to that row,
+`height` is JSON `null`, so the round is not reported as a committed height.
 
 ### Parameters
 
@@ -121,7 +123,7 @@ Array: `[number_or_tag, full_transactions?]`
 
 | Index | Field | Required | Meaning |
 | --- | --- | --- | --- |
-| 0 | `number` | yes | Committed-leader height (or DAG round) as a JSON number, `0x` hex quantity, or supported tag (`"latest"`, `"earliest"`). |
+| 0 | `number` | yes | Committed-leader height as a JSON number, `0x` hex quantity, or supported tag (`"latest"`, `"earliest"`). |
 | 1 | `full_transactions` | no | Boolean. When omitted or `true` (default), returns full transaction objects. When `false`, `transactions` contains an array of transaction hash strings (`"0x..."`). |
 
 ### Result
@@ -130,7 +132,7 @@ Block object with header fields, round, height, parents, parent_hashes, transact
 
 ## `kovanica_getBlockByHash`
 
-Fetch a block by block digest or leader header hash. The call is read-only. Unknown hashes return JSON `null` without scanning history.
+Fetch a block by block digest or leader header hash. The call is read-only. The node resolves either hash through the `leader_digest_to_height` index. Unknown hashes return JSON `null` without scanning history.
 
 ### Parameters
 
@@ -144,3 +146,7 @@ Array: `[hash, full_transactions?]`
 ### Result
 
 Block object with header fields, round, height (if committed), parents, parent_hashes, transactions, PoW fields (`timestamp`, `pow_timestamp`, `powTimestamp`, `target_bits`, `nonce`, `pow_hash`, `payout`, `state_root`, `tx_merkle_root`), or `null` if the block is unknown.
+
+## `kovanica_getLogs`
+
+`fromBlock` and `toBlock` are committed-leader heights: a JSON integer, a `0x` hex quantity, or a tag. `"latest"` is the default. `"earliest"` is height 0. `"pending"`, `"safe"`, and `"finalized"` alias the committed tip (`"latest"`). There is no separate uncommitted log range.

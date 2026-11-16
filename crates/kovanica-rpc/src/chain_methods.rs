@@ -496,7 +496,7 @@ pub async fn handle_get_block_by_hash(params: Value, state: RpcState) -> Result<
     }
 }
 
-/// `kovanica_getBlockByNumber(number, full_transactions)` — block by height/round.
+/// `kovanica_getBlockByNumber(number, full_transactions)` — block by committed height.
 pub async fn handle_get_block_by_number(params: Value, state: RpcState) -> Result<Value, RpcError> {
     let args = params_vec(&params);
     let raw_target = required(&args, 0, "block number")?;
@@ -622,19 +622,15 @@ pub async fn handle_get_block_by_number(params: Value, state: RpcState) -> Resul
                 }
             }
 
-            // 3. Fallback to legacy block store by height
+            // 3. Legacy block store. The key is a DAG round, not a committed
+            // height, so `height` stays null.
             match state
                 .storage
                 .blocks()
                 .get_block_by_height(&txn, number)
                 .map_err(internal)?
             {
-                Some(block) => Ok(block_to_json_ext(
-                    &block,
-                    full_transactions,
-                    Some(number),
-                    None,
-                )),
+                Some(block) => Ok(block_to_json_ext(&block, full_transactions, None, None)),
                 None => Ok(Value::Null),
             }
         }
@@ -1087,9 +1083,11 @@ pub async fn handle_get_transaction_history(
 /// shape:
 ///
 /// - `fromBlock` / `toBlock`: `"latest"` (the default), `"earliest"`,
-///   `"pending"` or a hex quantity. These are **committed-leader heights** —
-///   the same counter `kovanica_blockNumber` returns and the value the
-///   per-height receipt list is keyed by.
+///   `"pending"`, `"safe"`, `"finalized"`, a JSON integer, or a hex quantity.
+///   These are **committed-leader heights** — the same counter
+///   `kovanica_blockNumber` returns and the value the per-height receipt list
+///   is keyed by. `"pending"`, `"safe"`, and `"finalized"` alias the committed
+///   tip (`"latest"`). There is no separate uncommitted log range.
 /// - `address`: an address or an array of addresses. A log matches when the
 ///   event's emitting address is one of them.
 /// - `topics`: an array of positions, each `null` (wildcard), a topic string,
@@ -1202,8 +1200,10 @@ pub async fn handle_get_logs(params: Value, state: RpcState) -> Result<Value, Rp
     Ok(Value::Array(logs))
 }
 
-/// Resolve a block reference (`"latest"`, `"earliest"`, `"pending"`, a `0x`
-/// hex quantity or a number) to a committed-leader height.
+/// Resolve a block reference to a committed-leader height.
+///
+/// `"latest"`, `"pending"`, `"safe"`, and `"finalized"` are the committed tip.
+/// `"earliest"` is height 0. Anything else is a JSON integer or a `0x` quantity.
 fn parse_block_ref(value: &Value, latest: u64, what: &str) -> Result<u64, RpcError> {
     if let Some(tag) = value.as_str() {
         match tag {
@@ -2194,6 +2194,10 @@ fn parse_light_client_checkpoint_params(
 }
 
 /// Find a committed [`LeaderHeader`] by leader block digest or header hash.
+///
+/// The lookup is the `leader_digest_to_height` index. A miss, including an
+/// index row whose stored header does not carry this digest or hash, is
+/// `None` (JSON `null` at the RPC boundary).
 fn find_leader_header_by_hash(
     storage: &kovanica_storage::Storage,
     target: &Hash,
@@ -2203,29 +2207,23 @@ fn find_leader_header_by_hash(
     }
     let txn = storage.begin_read().map_err(internal)?;
     let state_store = storage.state();
-    let Some(latest) = state_store
-        .get_latest_leader_header(&txn)
+    let Some(height) = state_store
+        .get_leader_height_by_digest(&txn, target)
         .map_err(internal)?
     else {
         return Ok(None);
     };
-    if latest.leader_digest == *target || latest.hash() == *target {
-        return Ok(Some(latest));
-    }
-    if let Some(height) = state_store
-        .get_leader_height_by_digest(&txn, target)
+    let Some(hdr) = state_store
+        .get_leader_header(&txn, height)
         .map_err(internal)?
-    {
-        if let Some(hdr) = state_store
-            .get_leader_header(&txn, height)
-            .map_err(internal)?
-        {
-            if hdr.leader_digest == *target || hdr.hash() == *target {
-                return Ok(Some(hdr));
-            }
-        }
+    else {
+        return Ok(None);
+    };
+    if hdr.leader_digest == *target || hdr.hash() == *target {
+        Ok(Some(hdr))
+    } else {
+        Ok(None)
     }
-    Ok(None)
 }
 
 /// Resolve the [`kovanica_types::Committee`] for `epoch` from persisted epoch
@@ -3450,7 +3448,11 @@ mod tests {
         // Block references: tags and quantities.
         assert_eq!(parse_block_ref(&json!("latest"), 7, "b").unwrap(), 7);
         assert_eq!(parse_block_ref(&json!("earliest"), 7, "b").unwrap(), 0);
+        assert_eq!(parse_block_ref(&json!("pending"), 7, "b").unwrap(), 7);
+        assert_eq!(parse_block_ref(&json!("safe"), 7, "b").unwrap(), 7);
+        assert_eq!(parse_block_ref(&json!("finalized"), 7, "b").unwrap(), 7);
         assert_eq!(parse_block_ref(&json!("0x2a"), 0, "b").unwrap(), 42);
+        assert_eq!(parse_block_ref(&json!(42), 0, "b").unwrap(), 42);
         assert!(parse_block_ref(&json!("nope"), 0, "b").is_err());
 
         // Block target for getBlockByNumber: only latest, earliest, or quantity/integer
@@ -5670,5 +5672,200 @@ mod tests {
 
         // Timestamps are non-decreasing along the chain
         assert!(lh2_pow_ts >= lh1_pow_ts);
+
+        // getBlockByHash by the leader header hash, not only the block digest.
+        assert_ne!(header1.hash(), block1.digest);
+        let by_header_hash = handle_get_block_by_hash(
+            json!([to_hex(header1.hash().as_ref()), false]),
+            state.clone(),
+        )
+        .await
+        .expect("getBlockByHash(header hash)");
+        assert_eq!(by_header_hash["hash"], res_num1["hash"]);
+        assert_eq!(by_header_hash["height"], json!("0x1"));
+
+        // Replacing the header drops the previous header hash.
+        let old_hash = header1.hash();
+        let mut replaced = header1.clone();
+        replaced.state_root = Hash([0x99; 32]);
+        assert_ne!(replaced.hash(), old_hash);
+        {
+            let txn = storage.begin_write().unwrap();
+            storage.state().save_leader_header(&txn, &replaced).unwrap();
+            txn.commit().unwrap();
+        }
+        let stale = handle_get_block_by_hash(json!([to_hex(old_hash.as_ref())]), state.clone())
+            .await
+            .unwrap();
+        assert!(stale.is_null(), "replaced header hash must be a miss");
+        let fresh = handle_get_block_by_hash(
+            json!([to_hex(replaced.hash().as_ref()), false]),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fresh["hash"], res_num1["hash"]);
+        assert_eq!(fresh["height"], json!("0x1"));
+        assert_eq!(
+            fresh["state_root"],
+            json!(to_hex(replaced.state_root.as_ref()))
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_block_height_fallback_does_not_report_a_round_as_height() {
+        let (_dir, storage) = open_storage();
+        let state = test_state(storage.clone());
+        let mut block = StatementBlock {
+            author: 0,
+            round: 4,
+            parents: vec![],
+            transactions: vec![],
+            statements: vec![],
+            signature: kovanica_types::Signature([0u8; 64]),
+            digest: Hash::zero(),
+            merkle_root: Hash::zero(),
+        };
+        block.digest = StatementBlock::compute_digest(
+            block.author,
+            block.round,
+            &block.parents,
+            &block.transactions,
+        );
+        {
+            let txn = storage.begin_write().unwrap();
+            storage.blocks().put_block(&txn, &block, &[]).unwrap();
+            storage
+                .consensus()
+                .set_committed_leader_height(&txn, 10)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+        let res = handle_get_block_by_number(json!([4, false]), state)
+            .await
+            .expect("legacy round row");
+        assert_eq!(res["round"], json!("0x4"));
+        assert!(
+            res["height"].is_null(),
+            "a block_height key is a round, not a committed height"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_block_by_hash_cost_stays_bounded_as_height_grows() {
+        const ROWS: u64 = 4_096;
+        const LOOKUPS: u64 = 32;
+
+        let (_dir, storage) = open_storage();
+        let state = test_state(storage.clone());
+        let headers: Vec<LeaderHeader> = (0..ROWS).map(indexed_header).collect();
+        {
+            let txn = storage.begin_write().unwrap();
+            for header in &headers {
+                storage.state().save_leader_header(&txn, header).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        for step in 0..LOOKUPS {
+            let header = &headers[(step * 127) as usize % headers.len()];
+            let block = statement_block(header.leader_digest, header.leader_round);
+            state.consensus_store.put_block(&block).unwrap();
+        }
+
+        let one_scan = median_header_scan(&storage);
+        let mut index_samples = Vec::with_capacity(LOOKUPS as usize);
+        let index_started = std::time::Instant::now();
+        for step in 0..LOOKUPS {
+            let header = &headers[(step * 127) as usize % headers.len()];
+            let found = find_leader_header_by_hash(&storage, &header.hash())
+                .unwrap()
+                .expect("index hit");
+            assert_eq!(found.committed_height, header.committed_height);
+            index_samples.push(found.committed_height);
+        }
+        let index_time = index_started.elapsed();
+        assert_eq!(index_samples.len(), LOOKUPS as usize);
+
+        let rpc_started = std::time::Instant::now();
+        for step in 0..LOOKUPS {
+            let header = &headers[(step * 127) as usize % headers.len()];
+            let res = handle_get_block_by_hash(
+                json!([to_hex(header.hash().as_ref()), false]),
+                state.clone(),
+            )
+            .await
+            .expect("getBlockByHash");
+            assert_eq!(res["height"], quantity(header.committed_height));
+            assert_eq!(res["hash"], json!(to_hex(header.leader_digest.as_ref())));
+        }
+        let rpc_time = rpc_started.elapsed();
+
+        assert!(
+            index_time.saturating_mul(4) < one_scan.saturating_mul(LOOKUPS as u32),
+            "getBlockByHash index cost grew with height: {LOOKUPS} lookups took {index_time:?}, one full scan took {one_scan:?}"
+        );
+        assert!(
+            rpc_time < index_time.saturating_mul(15) + std::time::Duration::from_millis(250),
+            "getBlockByHash took {rpc_time:?} against an index lookup of {index_time:?}"
+        );
+    }
+
+    fn indexed_header(height: u64) -> LeaderHeader {
+        let mut digest = [0u8; 32];
+        digest[..8].copy_from_slice(&height.to_le_bytes());
+        digest[8] = 0xA5;
+        LeaderHeader {
+            committed_height: height,
+            leader_round: height,
+            leader_digest: Hash(digest),
+            leader_author: 0,
+            parent_leader_digest: Hash::zero(),
+            tx_merkle_root: Hash::zero(),
+            executed_tx_root: Hash::zero(),
+            non_blue_root: Hash::zero(),
+            blue_root: Hash::zero(),
+            mysticghost: false,
+            state_root: Hash(digest),
+            epoch: 0,
+            committee_hash: Hash::zero(),
+            timestamp: 0,
+        }
+    }
+
+    fn statement_block(digest: Hash, round: u64) -> StatementBlock {
+        StatementBlock {
+            author: 0,
+            round,
+            parents: vec![],
+            transactions: vec![],
+            statements: vec![],
+            signature: kovanica_types::Signature([0u8; 64]),
+            digest,
+            merkle_root: Hash::zero(),
+        }
+    }
+
+    fn median_header_scan(storage: &Storage) -> std::time::Duration {
+        use redb::ReadableTable;
+
+        let mut samples = [std::time::Duration::ZERO; 3];
+        for sample in &mut samples {
+            let started = std::time::Instant::now();
+            let txn = storage.begin_read().unwrap();
+            let table = txn
+                .open_table(kovanica_storage::tables::LEADER_HEADERS)
+                .unwrap();
+            let mut checksum = 0u64;
+            for entry in table.iter().unwrap() {
+                let (_height, value) = entry.unwrap();
+                let bytes = value.value();
+                let header: LeaderHeader = bincode::deserialize(&bytes).unwrap();
+                checksum = checksum.wrapping_add(header.committed_height);
+            }
+            assert!(checksum > 0);
+            *sample = started.elapsed();
+        }
+        samples.sort();
+        samples[1]
     }
 }

@@ -35,7 +35,7 @@ pub use address_tx_index::{
 };
 pub use block_store::{BlockStore, BlockStoreError};
 pub use consensus_store::{ConsensusStore, ConsensusStoreError};
-pub use state_store::{StateStore, StateStoreError};
+pub use state_store::{LeaderDigestIndexBackfill, StateStore, StateStoreError};
 pub use tables::{
     ACCOUNTS, CONTRACT_CODE, CONTRACT_STORAGE, EMISSION_POLICY, FEE_ACCOUNTING_STATE,
     GENESIS_DIGEST, MINING_REWARD_STATE, STAKING_STATE, STATE_ROOT,
@@ -93,6 +93,13 @@ impl Storage {
     /// Get a mutable reference to the consensus store.
     pub fn consensus_mut(&mut self) -> &mut ConsensusStore {
         &mut self.consensus_store
+    }
+
+    /// Fill `leader_digest_to_height` from stored leader headers once.
+    ///
+    /// A second call sees `leader_digest_index_v1` and does not scan.
+    pub fn backfill_leader_digest_index(&self) -> Result<LeaderDigestIndexBackfill, StorageError> {
+        Ok(self.state_store.backfill_leader_digest_index(&self.db)?)
     }
 
     /// Begin a read transaction.
@@ -184,6 +191,12 @@ pub mod tables {
     /// Leader block digest or header hash -> committed leader height (O(1) index).
     pub const LEADER_DIGEST_TO_HEIGHT: TableDefinition<[u8; 32], u64> =
         TableDefinition::new("leader_digest_to_height");
+    /// Local index-maintenance flags. Not a state-root input and not part of
+    /// the snapshot payload.
+    pub const INDEX_META: TableDefinition<&'static str, Vec<u8>> =
+        TableDefinition::new("index_meta");
+    /// Set once `LEADER_DIGEST_TO_HEIGHT` has been filled from `LEADER_HEADERS`.
+    pub const LEADER_DIGEST_INDEX_META_KEY: &str = "leader_digest_index_v1";
     /// One commit seal: `(committed height, authority index)` -> signature bytes.
     pub const COMMIT_SEALS: TableDefinition<(u64, u16), Vec<u8>> =
         TableDefinition::new("commit_seals");

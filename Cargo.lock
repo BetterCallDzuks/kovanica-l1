@@ -2921,6 +2921,7 @@ dependencies = [
  "kovanica-vault",
  "nonzero_ext 0.1.5",
  "parking_lot",
+ "redb",
  "serde",
  "serde_json",
  "serde_yaml",
