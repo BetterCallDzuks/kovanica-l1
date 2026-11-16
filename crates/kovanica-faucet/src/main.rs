@@ -2028,24 +2028,27 @@ mod http_tests {
             "192.0.2.10:5000".parse::<SocketAddr>().unwrap(),
         ));
 
-        let mut in_flight = std::pin::pin!(app.clone().oneshot(req));
-        tokio::select! {
-            finished = &mut in_flight => {
-                let status = finished.expect("handler response").status();
-                panic!("handler finished before the stub held submit: {status}");
+        // The block ends after the stub has the tx, which drops the handler
+        // future. That is the client cancel. `pin!` keeps the future alive
+        // until this scope ends; dropping the `Pin` alone would not.
+        {
+            let mut in_flight = std::pin::pin!(app.clone().oneshot(req));
+            tokio::select! {
+                finished = &mut in_flight => {
+                    let status = finished.expect("handler response").status();
+                    panic!("handler finished before the stub held submit: {status}");
+                }
+                _ = started.notified() => {}
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    panic!("timed out waiting for the stub to receive the transaction");
+                }
             }
-            _ = started.notified() => {}
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                panic!("timed out waiting for the stub to receive the transaction");
-            }
+            assert_eq!(
+                dispensed.lock().len(),
+                1,
+                "the stub must have received the transaction before cancel"
+            );
         }
-        // Client cancelled after the node accepted the tx. The slot stays taken.
-        drop(in_flight);
-        assert_eq!(
-            dispensed.lock().len(),
-            1,
-            "the stub must have received the transaction before cancel"
-        );
 
         let (status, body) =
             post_faucet(&app, "192.0.2.11:5000", None, json!({ "address": address })).await;
