@@ -1,6 +1,6 @@
 # STATE — living source of truth
 
-**Tip:** `9029514b448fd825cd9f19f6d72885974bc3340a` (merge of `chore/canonical-cleanup-chain1-hybrid` #224 on 2026-11-10: chain 1 declared canonical hybrid, chain 4 removed from the registry, chain-independent stored-address parsing; prior #223 `feat(hybrid)` merge `7b5b5a7`, prior living tips `d0b129639150e114d88d6d97336cb82546ae4f76`, `89394a2da7d9fb119072aacd1ff7997f0e3225c4`, `559cc2014592e1c621da2df78d9671e7476972d1`).
+**Tip:** `e3fce499afe6637b2a594b60306aef6312ef4bbf` (2026-11-16, merge #252; deployed to `seed1` `kovanica-testnet` (chain ID 2) with re-genesis and faucet rotation; tag `v0.3.0-node` still pending; prior living tips `9029514b448fd825cd9f19f6d72885974bc3340a`, `7b5b5a7`, `d0b129639150e114d88d6d97336cb82546ae4f76`, `89394a2da7d9fb119072aacd1ff7997f0e3225c4`, `559cc2014592e1c621da2df78d9671e7476972d1`).
 Update this file when frozen params or open product gaps change. Point-in-time dumps live under `docs/archive/`; they are not SoT.
 
 ## Active Priority: Hybrid PoW + GHOSTDAG (P0–P8)

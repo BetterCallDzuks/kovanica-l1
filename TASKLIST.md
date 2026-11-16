@@ -2,7 +2,7 @@
 
 Historical completed items moved to `docs/dev/NOTED*` and `docs/archive/`. This file lists only remaining work as of 2026-10-31.
 
-Base tip: `d951da451c9982fc8924c4c7f2ec08e06f549d64` (main @ merge #165). Full prior checklist: `docs/archive/TASKLIST-pre-baf41511.md`.
+Base tip: `e3fce499afe6637b2a594b60306aef6312ef4bbf` (main @ merge #252, 2026-11-16; deployed to `seed1` `kovanica-testnet` chain ID 2 with re-genesis and faucet rotation; tag `v0.3.0-node` still pending; prior base tip `d951da451c9982fc8924c4c7f2ec08e06f549d64`). Full prior checklist: `docs/archive/TASKLIST-pre-baf41511.md`.
 
 ## Protocol / consensus
 
