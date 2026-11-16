@@ -3,7 +3,7 @@
 **Replaces Gazda for day-to-day agent work.**
 Read this before any change. If a rule here conflicts with a prompt, stop and ask Toni.
 
-Last updated: 2026-11-16 (after seed1 deploy of `e3fce499`, tag `v0.3.0-node`, docs #257/#258 merged, DAA #259 open).
+Last updated: 2026-11-16 (main protected on all five repos; #259 activation in progress on seed1).
 
 ## 1. Frozen values — do not change, do not remove
 
@@ -71,17 +71,15 @@ A change to `calculate_next_target_bits`, reward math, header format, or commit 
 - Open the PR.
 - Write the activation plan in the PR body (height gate **or** empty-volume re-genesis).
 - Do **not** deploy to seed1 until Toni says so.
-- Current example: #259 (non-compounding DAA) is open and must stay undeployed until activation is decided.
+- #259 (non-compounding DAA) is merged. Activation on seed1 is in progress (empty-volume re-genesis). Do not start a second deploy.
 
 ## 5. Live seed1 state (do not break)
 
-- Deployed SHA: `e3fce499afe6637b2a594b60306aef6312ef4bbf`
-- Path: `/opt/kovanica-testnet-e3fce499`
-- Compose project: `kovanica-chain2-official`
-- Tag: `v0.3.0-node` points at the same SHA
-- Faucet rotated: new address `kvnc8a4atp0g5tngcua9h90anhel7233alyd5y88h0yc592cv8adu5uyz46d3dag`
+- Previous deploy: `e3fce499afe6637b2a594b60306aef6312ef4bbf` at `/opt/kovanica-testnet-e3fce499`
+- Tag `v0.3.0-node` points at `e3fce499` (do not move it unless Toni names a new tag)
+- #259 activation (empty-volume re-genesis of current main) is in progress. Do not touch seed1 until that report lands.
+- Faucet address (pre-activation): `kvnc8a4atp0g5tngcua9h90anhel7233alyd5y88h0yc592cv8adu5uyz46d3dag`
 - Backup: `/root/kovanica-backup/20261116-pre-e3fce499/`
-- DAA still oscillates (known). Do not “fix” it by restarting or changing volumes.
 
 ## 6. Agent roles (short)
 
@@ -104,7 +102,22 @@ A change to `calculate_next_target_bits`, reward math, header format, or commit 
 - Cite the SHA you based on.
 - For consensus changes, state the activation plan.
 - Never print secrets, IPs, keystores, or env contents.
+- `main` is protected on kovanica-l1, kovanica-web, kovanica-sdk, kovanica-apps, kovanica-playground. Changes land only via PR. Force-push and branch deletion are blocked.
 
-## 8. When in doubt
+## 8. Progress marking (HARD RULE)
+
+When an agent starts work on an item listed in `docs/PLAN-2026-11.md` or `docs/PLAN-FULL-SCOPE.md`:
+
+1. **Mark it in the same turn** you start, in the plan doc (or a one-line docs PR if the plan is on main).
+2. Status must be one of:
+   - `IN PROGRESS` — you have started and have not finished (cite your PR URL or the SHA you are editing).
+   - `FINISHED` — the work is done (PR merged, or the deliverable exists and is cited).
+3. Do not leave a plan item as open/blank while you are working on it.
+4. If you stop early, leave it `IN PROGRESS` and note the blocker.
+5. Do not mark `FINISHED` until the PR is merged or Toni confirms the deliverable.
+
+This replaces the old Gazda board for tracking. If two agents claim the same item, the second stops and asks Toni.
+
+## 9. When in doubt
 
 Stop. Ask Toni. Do not guess a frozen value. Do not “clean up” legacy constants that are still referenced.
