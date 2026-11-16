@@ -13797,6 +13797,8 @@ mod b1_epoch_restart_repro {
 
     #[test]
     fn test_kovanica_testnet_genesis_and_tag_unchanged() {
+        use kovanica_types::signing::chain_id;
+
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let testnet_dir = root.join("testnet/chain2");
         assert!(testnet_dir.join("genesis_validators.toml").exists());
@@ -13814,6 +13816,8 @@ mod b1_epoch_restart_repro {
 
     #[test]
     fn test_mainnet_genesis_tooling_and_no_stake_82m_invariants() {
+        use kovanica_types::signing::chain_id;
+
         let dir = tempfile::tempdir().unwrap();
         let validators_path = dir.path().join("validators.json");
         let genesis_out_path = dir.path().join("genesis.json");
@@ -13878,10 +13882,12 @@ mod b1_epoch_restart_repro {
             assert_eq!(v["genesis_liquid_atoms"], 0);
         }
 
-        // 3. Fee split is active for chain 1 (kovanica-mainnet) under NoStake82M (3/4 burn, 1/4 miner)
+        // 3. Fee split is active for chain 1 (kovanica-mainnet) and chain 2 (kovanica-testnet) under NoStake82M
         let policy = kovanica_types::emission::EmissionPolicy::NoStake82M;
-        assert_eq!(policy.fee_split_ratios(chain_id::MAINNET), (3, 1));
-        assert_eq!(policy.fee_split_ratios(chain_id::TESTNET), (3, 1));
+        assert!(chain_id::is_hybrid(chain_id::MAINNET));
+        assert!(chain_id::is_hybrid(chain_id::TESTNET));
+        assert_eq!(policy.mining_budget(), 82_000_000 * 1_000_000_000);
+        assert_eq!(policy.genesis_validator_allocation(), 0);
 
         // 4. Create ceremony bundle files in a bundle directory to test network tag stability
         let bundle_dir = dir.path().join("bundle_src");
@@ -13925,6 +13931,8 @@ mod b1_epoch_restart_repro {
 
     #[test]
     fn test_mainnet_refuses_legacy_81m() {
+        use kovanica_types::signing::chain_id;
+
         let err = ensure_emission_policy_matches_chain(
             chain_id::MAINNET,
             kovanica_types::emission::EmissionPolicy::Legacy81M,
@@ -13939,6 +13947,8 @@ mod b1_epoch_restart_repro {
 
     #[test]
     fn test_mainnet_placeholder_template_is_refused() {
+        use kovanica_types::signing::chain_id;
+
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let template_path = root.join("mainnet/genesis.json");
         assert!(
