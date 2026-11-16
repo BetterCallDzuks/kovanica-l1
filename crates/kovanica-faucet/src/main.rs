@@ -375,7 +375,7 @@ impl PendingNonce {
     fn take_next(&mut self, committed_nonce: u64) -> u64 {
         if self
             .last_reset_expected
-            .is_some_and(|e| committed_nonce > e)
+            .is_some_and(|e| committed_nonce >= e)
         {
             self.last_reset_expected = None;
         }
@@ -398,6 +398,17 @@ impl PendingNonce {
         let n = self.next.unwrap_or(expected);
         self.next = Some(n.saturating_add(1));
         n
+    }
+
+    fn take_retry_in_flight(&mut self, nonce: u64) -> u64 {
+        let retry = nonce.saturating_add(1);
+        let next = self.next.unwrap_or(retry);
+        self.next = Some(std::cmp::max(next, retry.saturating_add(1)));
+        retry
+    }
+
+    fn clear_last_reset(&mut self) {
+        self.last_reset_expected = None;
     }
 }
 
@@ -919,6 +930,7 @@ async fn faucet_handler(
     .await;
 
     // Nonce conflict retry: if rejected with "nonce too low / already proposed", resync from node and retry once
+    let mut retry_attempted = false;
     if let SubmitOutcome::ExplicitRejection(ref err) = submit_outcome {
         if is_nonce_error(err) {
             warn!(
@@ -926,27 +938,14 @@ async fn faucet_handler(
                 error = %err,
                 "nonce conflict detected; resyncing nonce from node and retrying once"
             );
+            retry_attempted = true;
             let expected_opt = parse_expected_nonce(err);
             let retry_nonce = if let Some(expected) = expected_opt {
                 let mut guard = state.pending_nonce.lock();
                 guard.take_retry(expected)
             } else {
-                let fresh_committed = match get_nonce(
-                    &state.client,
-                    &state.config.rpc_url,
-                    state.config.rpc_token.as_deref(),
-                    &state.faucet_address,
-                )
-                .await
-                {
-                    Ok(n) => n,
-                    Err(e) => {
-                        warn!("Failed to resync faucet nonce: {}", e);
-                        committed_nonce
-                    }
-                };
                 let mut guard = state.pending_nonce.lock();
-                guard.take_retry(fresh_committed)
+                guard.take_retry_in_flight(nonce)
             };
             nonce = retry_nonce;
             if let Ok(new_signed_tx) = build_and_sign_tx(nonce) {
@@ -986,6 +985,10 @@ async fn faucet_handler(
         }
         SubmitOutcome::Unknown(e) => {
             // UNKNOWN outcome (transport error or timeout): keep address slot to prevent double payout.
+            if retry_attempted {
+                let mut guard = state.pending_nonce.lock();
+                guard.clear_last_reset();
+            }
             warn!(
                 to = %to_address,
                 error = %e,
@@ -1010,6 +1013,9 @@ async fn faucet_handler(
             {
                 let mut guard = state.pending_nonce.lock();
                 guard.rollback_if_matching(nonce);
+                if retry_attempted {
+                    guard.clear_last_reset();
+                }
             }
             warn!(
                 to = %to_address,
@@ -1763,6 +1769,7 @@ mod http_tests {
         dispensed: Arc<Mutex<Vec<u64>>>,
         dispensed_nonces: Arc<Mutex<Vec<u64>>>,
         expected_nonce: Arc<Mutex<u64>>,
+        committed_nonce: Arc<Mutex<u64>>,
         fail_submit: Arc<Mutex<bool>>,
         submit_error: Arc<Mutex<Option<String>>>,
         /// When set, the next `sendRawTransaction` signals `submit_started`
@@ -1783,6 +1790,19 @@ mod http_tests {
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if method == "kovanica_sendRawTransaction" {
+            let err = stub.submit_error.lock().take();
+            if let Some(err) = err {
+                return (
+                    StatusCode::OK,
+                    Json(json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "error": { "code": -32000, "message": err }
+                    })),
+                );
+            }
+        }
         if method == "kovanica_sendRawTransaction" && stub.fail_with_http_400.load(Ordering::SeqCst)
         {
             return (
@@ -1805,24 +1825,13 @@ mod http_tests {
         let result = match method {
             "kovanica_getBalance" => json!(format!("0x{:x}", stub.balance_atoms)),
             "kovanica_getNonce" => {
-                let exp = *stub.expected_nonce.lock();
-                json!(format!("0x{:x}", exp))
+                let committed = *stub.committed_nonce.lock();
+                json!(format!("0x{:x}", committed))
             }
             "kovanica_sendRawTransaction" => {
                 let delay = *stub.submit_delay_ms.lock();
                 if let Some(delay) = delay {
                     tokio::time::sleep(Duration::from_millis(delay)).await;
-                }
-                let err = stub.submit_error.lock().take();
-                if let Some(err) = err {
-                    return (
-                        StatusCode::OK,
-                        Json(json!({
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "error": { "code": -32000, "message": err }
-                        })),
-                    );
                 }
                 if *stub.fail_submit.lock() {
                     return (
@@ -1859,6 +1868,7 @@ mod http_tests {
                             );
                         }
                         *exp += 1;
+                        *stub.committed_nonce.lock() += 1;
                         stub.dispensed_nonces.lock().push(tx.nonce);
                         if let TransactionKind::Transfer { amount, .. } = tx.kind {
                             stub.dispensed.lock().push(amount);
@@ -1918,6 +1928,7 @@ mod http_tests {
         let dispensed = Arc::new(Mutex::new(Vec::new()));
         let dispensed_nonces = Arc::new(Mutex::new(Vec::new()));
         let expected_nonce = Arc::new(Mutex::new(0));
+        let committed_nonce = Arc::new(Mutex::new(0));
         let fail_submit = Arc::new(Mutex::new(false));
         let submit_error = Arc::new(Mutex::new(None));
         let submit_started = Arc::new(tokio::sync::Notify::new());
@@ -1930,6 +1941,7 @@ mod http_tests {
             dispensed: dispensed.clone(),
             dispensed_nonces: dispensed_nonces.clone(),
             expected_nonce: expected_nonce.clone(),
+            committed_nonce: committed_nonce.clone(),
             fail_submit: fail_submit.clone(),
             submit_error: submit_error.clone(),
             hold_submit: Arc::new(AtomicBool::new(hold_submit)),
@@ -2564,10 +2576,10 @@ mod http_tests {
     async fn nonce_retry_on_proposed_block_conflict() {
         let (rpc, _, _, _, nonces, submit_error, _, _, exp_nonce, _, _) =
             spawn_stub_full(1_000 * 1_000_000_000, false).await;
-        // Node expects nonce 1
+        // Node expects nonce 1 (committed is 0)
         *exp_nonce.lock() = 1;
-        // First submit fails with "Invalid nonce: expected 1, got 0"
-        *submit_error.lock() = Some("Invalid nonce: expected 1, got 0".to_string());
+        // First submit fails with exact seed1 error text without expected
+        *submit_error.lock() = Some("Nonce 0 is already in a proposed block".to_string());
 
         let app = app(faucet_state(&rpc, 60, 100, 86_400, 100, "", 0));
         let (status, body) = post_faucet(
@@ -2580,12 +2592,59 @@ mod http_tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["success"], true);
 
-        // First attempt sent nonce 0 (and was rejected with expected 1), retry parsed expected 1, sent nonce 1 (and succeeded)
+        // First attempt sent nonce 0 (rejected with "Nonce 0 is already in a proposed block").
+        // Retry advances to n+1 (1) instead of falling back to committed-only getNonce (0).
         let recorded = nonces.lock().clone();
         assert_eq!(
             recorded,
             vec![1],
-            "retried transaction must be submitted with expected nonce"
+            "retried transaction must be submitted with expected nonce 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_at_retry_nonce_tx_never_landing_then_new_request_recovers() {
+        let (rpc, _, _, _, nonces, submit_error, _, _, exp_nonce, fail_500, _) =
+            spawn_stub_full(1_000 * 1_000_000_000, false).await;
+        // Node expects nonce 1
+        *exp_nonce.lock() = 1;
+        // First submit fails with nonce conflict
+        *submit_error.lock() = Some("Invalid nonce: expected 1, got 0".to_string());
+        // Retry submit at nonce 1 fails with HTTP 500 (Unknown outcome)
+        fail_500.store(true, Ordering::SeqCst);
+
+        let app = app(faucet_state(&rpc, 60, 100, 86_400, 100, "", 0));
+
+        // Request 1: first submit sent nonce 0, retry sent nonce 1 (fails with Unknown outcome -> 502)
+        let (status1, body1) = post_faucet(
+            &app,
+            "192.0.2.1:5000",
+            None,
+            json!({ "address": canonical(1) }),
+        )
+        .await;
+        assert_eq!(status1, StatusCode::BAD_GATEWAY, "{body1}");
+
+        // The transaction at nonce 1 never landed on the node; clear failure so node can accept txs
+        fail_500.store(false, Ordering::SeqCst);
+
+        // Request 2 (different client): sends next pending nonce (2), node rejects with expected 1.
+        // Since last_reset_expected was cleared on Unknown, take_retry resets the guard to 1 and succeeds.
+        let (status2, body2) = post_faucet(
+            &app,
+            "192.0.2.2:5000",
+            None,
+            json!({ "address": canonical(2) }),
+        )
+        .await;
+        assert_eq!(status2, StatusCode::OK, "{body2}");
+        assert_eq!(body2["success"], true);
+
+        let recorded = nonces.lock().clone();
+        assert_eq!(
+            recorded,
+            vec![1],
+            "recovered request must successfully submit nonce 1"
         );
     }
 
