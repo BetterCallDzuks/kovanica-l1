@@ -72,36 +72,35 @@ A resilient P2P mesh requires at least 3 geographically independent DNS seed nod
 
 ### 3.1 DNS Architecture (Cloudflare DNS-Only / Grey-Cloud)
 
-P2P communication runs over plaintext TCP on port `8000`. **Cloudflare HTTP proxy (orange-cloud) must be disabled** for all seed records.
+P2P communication runs over plaintext TCP on port `8000`. **Cloudflare HTTP proxy (orange-cloud) must be disabled** for all seed records. External peers bootstrap via DNS names only.
 
-| DNS Record | Type | Target IP / Host | Cloudflare Status | Purpose |
+| DNS Record | Type | Host Target | Cloudflare Status | Purpose |
 |---|---|---|---|---|
-| `mainnet.kovanica.online` | A | `<Seed-1-IP>` | **DNS-only (grey-cloud)** | Primary mainnet seed |
-| `seed1.kovanica.online` | A | `<Seed-1-IP>` (EU Central) | **DNS-only (grey-cloud)** | Independent Seed 1 |
-| `seed3.kovanica.online` | A | `<Seed-3-IP>` (AP Southeast) | **DNS-only (grey-cloud)** | Independent Seed 3 |
-| `rpc.kovanica.online` | A | `<RPC-LoadBalancer-IP>` | **DNS-only (grey-cloud)** | Public JSON-RPC (port 8545) |
+| `mainnet.kovanica.online` | A | seed1 host | **DNS-only (grey-cloud)** | Primary mainnet seed |
+| `seed1.kovanica.online` | A | seed1 host (EU Central) | **DNS-only (grey-cloud)** | Independent Seed 1 |
+| `rpc.kovanica.online` | A | RPC gateway | **DNS-only (grey-cloud)** | Public JSON-RPC (port 8545) |
+
+*(Note: seed3 is no longer a host).*
 
 ### 3.2 Verifying Seed Reachability
 
-Run network diagnostics across all seed targets:
+Run network diagnostics across seed targets:
 
 ```bash
 # Verify DNS resolution
 dig +short seed1.kovanica.online
-dig +short seed3.kovanica.online
 dig +short mainnet.kovanica.online
 
 # Verify TCP 8000 ingress
 nc -zvw3 seed1.kovanica.online 8000
-nc -zvw3 seed3.kovanica.online 8000
 ```
 
 ### 3.3 Bootstrap Peer Multiaddr Formatting
 
-Each seed node generates a persistent libp2p identity key (`p2p.key`). The resulting Multiaddrs populate `KOVANICA_BOOTNODES`:
+The seed node generates a persistent libp2p identity key (`p2p.key`). The resulting Multiaddr populates `KOVANICA_BOOTNODES`:
 
 ```text
-/dns4/seed1.kovanica.online/tcp/8000/p2p/12D3KooW...,/dns4/seed3.kovanica.online/tcp/8000/p2p/12D3KooW...
+/dns4/seed1.kovanica.online/tcp/8000/p2p/12D3KooW...
 ```
 
 ---

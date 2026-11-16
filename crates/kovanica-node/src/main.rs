@@ -375,6 +375,12 @@ fn genesis_bundle_config(chain_id: u64, source: &std::path::Path) -> Result<Node
     let path = source.join("genesis_validators.toml");
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    if text.contains("PLACEHOLDER_") {
+        anyhow::bail!(
+            "genesis file {} contains unfilled placeholders; refusing to cut bundle",
+            path.display()
+        );
+    }
     let genesis: GenesisValidatorsFile =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
 
@@ -616,11 +622,10 @@ fn run_genesis(args: GenesisArgs) -> Result<()> {
             "founder_address_bytes": hex::encode(founder.0),
             "founder_premine_atoms": FOUNDER_PREMINE,
             "founder_premine_kovanica": FOUNDER_PREMINE / ONE_KUNA,
-            "founder_premine_kuna": FOUNDER_PREMINE / ONE_KUNA,
             "mining_subsidy_budget_atoms": policy.mining_budget(),
             "mining_subsidy_budget_kovanica": policy.mining_budget() / ONE_KUNA,
             "genesis_validator_allocation_atoms": policy.genesis_validator_allocation(),
-            "genesis_validator_allocation_kuna": policy.genesis_validator_allocation() / ONE_KUNA,
+            "genesis_validator_allocation_kovanica": policy.genesis_validator_allocation() / ONE_KUNA,
             "validators": declared_validators.iter().map(|(address, stake, pk)| {
                 let share = alloc_entries
                     .iter()
@@ -2579,6 +2584,14 @@ fn verify_genesis_json(config: &NodeConfig, canonical: &Hash, allow_mismatch: bo
     }
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    if text.contains("PLACEHOLDER_") {
+        anyhow::bail!(
+            "genesis file {} is an unfilled template containing placeholders; \
+             run the offline ceremony tool (ops/genesis/ceremony.sh) with real addresses \
+             before starting the node",
+            path.display()
+        );
+    }
     let value: serde_json::Value =
         serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     let declared = value
@@ -6080,6 +6093,14 @@ fn check_chain_id(config: &NodeConfig) -> Result<()> {
     if genesis_json_path.exists() {
         let text = std::fs::read_to_string(&genesis_json_path)
             .with_context(|| format!("reading {}", genesis_json_path.display()))?;
+        if text.contains("PLACEHOLDER_") {
+            anyhow::bail!(
+                "genesis file {} is an unfilled template containing placeholders; \
+                 run the offline ceremony tool (ops/genesis/ceremony.sh) with real addresses \
+                 before starting the node",
+                genesis_json_path.display()
+            );
+        }
         let value: serde_json::Value = serde_json::from_str(&text)
             .with_context(|| format!("parsing {}", genesis_json_path.display()))?;
         if let Some(genesis_id) = value.get("chain_id").and_then(|v| v.as_u64()) {
@@ -13810,5 +13831,189 @@ mod b1_epoch_restart_repro {
 
         // Drain network commands
         while net_cmd_rx.try_recv().is_ok() {}
+    }
+
+    #[test]
+    fn test_kovanica_testnet_genesis_and_tag_unchanged() {
+        use kovanica_types::signing::chain_id;
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let testnet_dir = root.join("testnet/chain2");
+        assert!(testnet_dir.join("genesis_validators.toml").exists());
+        assert!(testnet_dir.join("founder_premine.hex").exists());
+        assert!(testnet_dir.join("funded_accounts.toml").exists());
+
+        let config = genesis_bundle_config(chain_id::TESTNET, &testnet_dir)
+            .expect("must load testnet/chain2 config");
+        let tag = network_tag_from_config(&config).expect("must compute testnet network tag");
+        assert_eq!(
+            tag, "2-acfdf6a6c80fd28a",
+            "kovanica-testnet network tag must be byte-identical to published tag 2-acfdf6a6c80fd28a"
+        );
+    }
+
+    #[test]
+    fn test_mainnet_genesis_tooling_and_no_stake_82m_invariants() {
+        use kovanica_types::signing::chain_id;
+
+        let dir = tempfile::tempdir().unwrap();
+        let validators_path = dir.path().join("validators.json");
+        let genesis_out_path = dir.path().join("genesis.json");
+
+        // Generate 2 dummy random keys (marked test-only)
+        let (_sk1, pk1) = kovanica_crypto::generate_keypair();
+        let (_sk2, pk2) = kovanica_crypto::generate_keypair();
+        let addr1 = Address::from_public_key(&pk1).to_string();
+        let addr2 = Address::from_public_key(&pk2).to_string();
+
+        let (_sk_f, pk_f) = kovanica_crypto::generate_keypair();
+        let founder_addr = Address::from_public_key(&pk_f).to_string();
+        let (_sk_t, pk_t) = kovanica_crypto::generate_keypair();
+        let treasury_addr = Address::from_public_key(&pk_t).to_string();
+
+        let validators_input = serde_json::json!([
+            {
+                "address": addr1,
+                "public_key": hex::encode(pk1.0),
+            },
+            {
+                "address": addr2,
+                "public_key": hex::encode(pk2.0),
+            }
+        ]);
+        std::fs::write(
+            &validators_path,
+            serde_json::to_string(&validators_input).unwrap(),
+        )
+        .unwrap();
+
+        // 1. Run run_genesis for kovanica-mainnet (chain ID 1) with no-stake-82m
+        let args = GenesisArgs {
+            chain_id: chain_id::MAINNET,
+            validators: validators_path.display().to_string(),
+            treasury_address: treasury_addr.clone(),
+            founder_address: founder_addr.clone(),
+            output: genesis_out_path.display().to_string(),
+            force: true,
+            validator_keys_out: None,
+            emission_policy: "no-stake-82m".to_string(),
+        };
+        run_genesis(args).expect("run_genesis for kovanica-mainnet must succeed");
+
+        // 2. Verify genesis.json contents
+        let text = std::fs::read_to_string(&genesis_out_path).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(val["allocations"]["emission_policy"], "no-stake-82m");
+        assert_eq!(val["allocations"]["genesis_validator_allocation_atoms"], 0);
+        assert_eq!(
+            val["allocations"]["genesis_validator_allocation_kovanica"],
+            0
+        );
+        assert_eq!(val["allocations"]["founder_premine_kovanica"], 200_000);
+        assert_eq!(
+            val["allocations"]["mining_subsidy_budget_kovanica"],
+            82_000_000
+        );
+
+        let validators = val["allocations"]["validators"].as_array().unwrap();
+        assert_eq!(validators.len(), 2);
+        for v in validators {
+            assert_eq!(v["stake"], 0);
+            assert_eq!(v["genesis_share_atoms"], 0);
+            assert_eq!(v["genesis_liquid_atoms"], 0);
+        }
+
+        // 3. Fee split is active for chain 1 (kovanica-mainnet) and chain 2 (kovanica-testnet) under NoStake82M
+        let policy = kovanica_types::emission::EmissionPolicy::NoStake82M;
+        assert!(chain_id::is_hybrid(chain_id::MAINNET));
+        assert!(chain_id::is_hybrid(chain_id::TESTNET));
+        assert_eq!(policy.mining_budget(), 82_000_000 * 1_000_000_000);
+        assert_eq!(policy.genesis_validator_allocation(), 0);
+
+        // 4. Create ceremony bundle files in a bundle directory to test network tag stability
+        let bundle_dir = dir.path().join("bundle_src");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+
+        let validators_toml_content = format!(
+            "chain_id = 1\nemission_policy = \"no-stake-82m\"\ntreasury_address = \"{treasury_addr}\"\n\n\
+             [[validator]]\naddress = \"{addr1}\"\npublic_key = \"{}\"\n\n\
+             [[validator]]\naddress = \"{addr2}\"\npublic_key = \"{}\"\n",
+            hex::encode(pk1.0),
+            hex::encode(pk2.0),
+        );
+        std::fs::write(
+            bundle_dir.join("genesis_validators.toml"),
+            validators_toml_content,
+        )
+        .unwrap();
+        std::fs::write(
+            bundle_dir.join("founder_premine.hex"),
+            format!("{founder_addr}\n"),
+        )
+        .unwrap();
+
+        let bundle_cfg1 =
+            genesis_bundle_config(chain_id::MAINNET, &bundle_dir).expect("must load bundle config");
+        let tag1 = network_tag_from_config(&bundle_cfg1).expect("tag computation 1");
+
+        let bundle_cfg2 =
+            genesis_bundle_config(chain_id::MAINNET, &bundle_dir).expect("must load bundle config");
+        let tag2 = network_tag_from_config(&bundle_cfg2).expect("tag computation 2");
+
+        assert_eq!(
+            tag1, tag2,
+            "network tag must be deterministic and stable across runs"
+        );
+        assert!(
+            tag1.starts_with("1-"),
+            "mainnet tag must start with chain ID 1-"
+        );
+    }
+
+    #[test]
+    fn test_mainnet_refuses_legacy_81m() {
+        use kovanica_types::signing::chain_id;
+
+        let err = ensure_emission_policy_matches_chain(
+            chain_id::MAINNET,
+            kovanica_types::emission::EmissionPolicy::Legacy81M,
+        )
+        .expect_err("chain 1 must refuse legacy-81m");
+        assert!(
+            err.to_string()
+                .contains("requires the no-stake-82m emission policy"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    #[test]
+    fn test_mainnet_placeholder_template_is_refused() {
+        use kovanica_types::signing::chain_id;
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let template_path = root.join("mainnet/genesis.json");
+        assert!(
+            template_path.exists(),
+            "mainnet/genesis.json template must exist"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("genesis.json");
+        std::fs::copy(&template_path, &target).unwrap();
+
+        let config = NodeConfig {
+            chain_id: chain_id::MAINNET,
+            data_dir: dir.path().to_path_buf(),
+            ..NodeConfig::default()
+        };
+
+        let err = verify_genesis_json(&config, &canonical_genesis_digest(), false)
+            .expect_err("template with placeholders must be refused by verify_genesis_json");
+        assert!(
+            err.to_string()
+                .contains("unfilled template containing placeholders"),
+            "unexpected error: {err}"
+        );
     }
 }

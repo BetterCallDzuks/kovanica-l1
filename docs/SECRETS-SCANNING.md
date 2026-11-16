@@ -69,7 +69,7 @@ sudo mv gitleaks /usr/local/bin/
 
 ### Historical Secrets (Already in History)
 The following are already in commit history and are **revoked**:
-- 4 Ed25519 validator keys in `testnet/node-data/` and `mainnet/validators/` (PRO-28)
+- 4 Ed25519 validator keys in `testnet/node-data/` and `docs/archive/mainnet-legacy-81m/` (PRO-28)
 - `LINEAR_API_KEY` and `NOTION_TOKEN` in `opencode.json` at `e48b7530` (PRO-28);
   the file now uses `${env:...}` placeholders
 
