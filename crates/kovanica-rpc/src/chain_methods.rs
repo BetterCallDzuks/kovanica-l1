@@ -129,6 +129,17 @@ fn served_chain_id(state: &RpcState) -> u64 {
     state.mempool.signing_context().chain_id
 }
 
+/// Reject legacy validator / stake / committee-schedule RPCs on hybrid PoW + GHOSTDAG chains.
+fn reject_on_hybrid(state: &RpcState, method: &str, reason: &str) -> Result<(), RpcError> {
+    let chain_id = served_chain_id(state);
+    if kovanica_types::signing::chain_id::is_hybrid(chain_id) {
+        return Err(RpcError::InvalidRequest(format!(
+            "{method} is not available on hybrid PoW + GHOSTDAG networks (chain_id {chain_id}); {reason}"
+        )));
+    }
+    Ok(())
+}
+
 /// Parse an integer parameter accepted as either a JSON number or a
 /// `0x`-prefixed quantity string.
 fn parse_u64(value: &Value, what: &str) -> Result<u64, RpcError> {
@@ -1404,8 +1415,13 @@ pub async fn handle_get_storage_at(params: Value, state: RpcState) -> Result<Val
 // Staking methods
 // ============================================================================
 
-/// `kovanica_getValidators()` — active validator set.
+/// `kovanica_getValidators()` — active validator set (legacy / non-hybrid only).
 pub async fn handle_get_validators(_params: Value, state: RpcState) -> Result<Value, RpcError> {
+    reject_on_hybrid(
+        &state,
+        "kovanica_getValidators",
+        "there is no validator set",
+    )?;
     let staking = state.staking.read().await;
     let validators: Vec<Value> = staking
         .validators
@@ -1428,6 +1444,11 @@ pub async fn handle_get_validators(_params: Value, state: RpcState) -> Result<Va
 /// Sums the address's own validator stake (if any) and any delegations it
 /// has made.
 pub async fn handle_get_stake(params: Value, state: RpcState) -> Result<Value, RpcError> {
+    reject_on_hybrid(
+        &state,
+        "kovanica_getStake",
+        "stake is not used for consensus",
+    )?;
     let args = params_vec(&params);
     let address = parse_address(
         required(&args, 0, "address")?,
@@ -1711,6 +1732,11 @@ pub fn leader_schedule_rounds(anchor_round: u64, count: usize) -> Vec<u64> {
 /// decided round. Each entry has the shape
 /// `{ "round", "leader_index", "leader_address" }`.
 pub async fn handle_get_leader_schedule(params: Value, state: RpcState) -> Result<Value, RpcError> {
+    reject_on_hybrid(
+        &state,
+        "kovanica_getLeaderSchedule",
+        "there is no committee leader schedule",
+    )?;
     let args = params_vec(&params);
     let count = match args.first() {
         Some(value) => parse_u64(value, "count")?,
@@ -3597,6 +3623,35 @@ mod tests {
             handle_estimate_fee(Value::Null, state).await.unwrap(),
             json!("0x1")
         );
+    }
+
+    #[tokio::test]
+    async fn hybrid_chains_reject_validator_stake_and_leader_schedule_rpcs() {
+        for chain_id in [
+            kovanica_types::signing::chain_id::MAINNET,
+            kovanica_types::signing::chain_id::TESTNET,
+        ] {
+            let (_dir, storage) = open_storage();
+            let mut state = test_state(storage.clone());
+            state.mempool = Arc::new(Mempool::new(
+                MempoolConfig::default(),
+                storage,
+                kovanica_types::SigningContext::new(chain_id),
+            ));
+
+            assert!(matches!(
+                handle_get_validators(Value::Null, state.clone()).await,
+                Err(RpcError::InvalidRequest(_))
+            ));
+            assert!(matches!(
+                handle_get_stake(json!([Address([0x11; 32]).to_string()]), state.clone()).await,
+                Err(RpcError::InvalidRequest(_))
+            ));
+            assert!(matches!(
+                handle_get_leader_schedule(Value::Null, state.clone()).await,
+                Err(RpcError::InvalidRequest(_))
+            ));
+        }
     }
 
     #[tokio::test]
