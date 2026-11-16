@@ -275,7 +275,11 @@ pub(crate) fn resolve_leader_header_timestamp(state: &RpcState, header: &mut Lea
             }
         }
         if let Ok(txn) = state.storage.begin_read() {
-            if let Ok(block) = state.storage.blocks().get_block(&txn, &header.leader_digest) {
+            if let Ok(block) = state
+                .storage
+                .blocks()
+                .get_block(&txn, &header.leader_digest)
+            {
                 if let Some((ts, ..)) = kovanica_types::decode_pow_statement(&block.statements) {
                     header.timestamp = ts;
                 }
@@ -312,11 +316,7 @@ pub(crate) fn block_to_json_ext(
     committed_height: Option<u64>,
     leader_header: Option<&LeaderHeader>,
 ) -> Value {
-    let parents_hex: Vec<String> = block
-        .parents
-        .iter()
-        .map(|p| to_hex(&p.digest.0))
-        .collect();
+    let parents_hex: Vec<String> = block.parents.iter().map(|p| to_hex(&p.digest.0)).collect();
 
     let txs_val = if full_transactions {
         Value::Array(block.transactions.iter().map(transaction_to_json).collect())
@@ -376,10 +376,7 @@ pub(crate) fn block_to_json_ext(
             map.insert("timestamp".to_string(), json!(ts));
         }
         if let Some(tb) = target_bits_opt {
-            map.insert(
-                "target_bits".to_string(),
-                json!(quantity(tb as u64)),
-            );
+            map.insert("target_bits".to_string(), json!(quantity(tb as u64)));
         }
         if let Some(n) = nonce_opt {
             map.insert("nonce".to_string(), json!(n));
@@ -392,7 +389,10 @@ pub(crate) fn block_to_json_ext(
         }
         if let Some(lh) = leader_header {
             map.insert("state_root".to_string(), json!(to_hex(&lh.state_root.0)));
-            map.insert("tx_merkle_root".to_string(), json!(to_hex(&lh.tx_merkle_root.0)));
+            map.insert(
+                "tx_merkle_root".to_string(),
+                json!(to_hex(&lh.tx_merkle_root.0)),
+            );
         }
     }
 
@@ -421,7 +421,8 @@ pub async fn handle_get_block_by_hash(params: Value, state: RpcState) -> Result<
 
     // 1. Try consensus DAG store by block digest
     if let Ok(block) = state.consensus_store.get_block(&hash) {
-        let (committed_height, leader_hdr) = match find_leader_header_by_hash(&state.storage, &hash) {
+        let (committed_height, leader_hdr) = match find_leader_header_by_hash(&state.storage, &hash)
+        {
             Ok(Some(mut hdr)) => {
                 resolve_leader_header_timestamp(&state, &mut hdr);
                 let h = hdr.committed_height;
@@ -466,14 +467,15 @@ pub async fn handle_get_block_by_hash(params: Value, state: RpcState) -> Result<
     let txn = state.storage.begin_read().map_err(internal)?;
     match state.storage.blocks().get_block(&txn, &hash) {
         Ok(block) => {
-            let (committed_height, leader_hdr) = match find_leader_header_by_hash(&state.storage, &hash) {
-                Ok(Some(mut hdr)) => {
-                    resolve_leader_header_timestamp(&state, &mut hdr);
-                    let h = hdr.committed_height;
-                    (Some(h), Some(hdr))
-                }
-                _ => (None, None),
-            };
+            let (committed_height, leader_hdr) =
+                match find_leader_header_by_hash(&state.storage, &hash) {
+                    Ok(Some(mut hdr)) => {
+                        resolve_leader_header_timestamp(&state, &mut hdr);
+                        let h = hdr.committed_height;
+                        (Some(h), Some(hdr))
+                    }
+                    _ => (None, None),
+                };
             Ok(block_to_json_ext(
                 &block,
                 full_transactions,
@@ -508,7 +510,11 @@ pub async fn handle_get_block_by_number(params: Value, state: RpcState) -> Resul
                 Some(&header),
             ));
         }
-        if let Ok(block) = state.storage.blocks().get_block(&txn, &header.leader_digest) {
+        if let Ok(block) = state
+            .storage
+            .blocks()
+            .get_block(&txn, &header.leader_digest)
+        {
             return Ok(block_to_json_ext(
                 &block,
                 full_transactions,
@@ -521,14 +527,15 @@ pub async fn handle_get_block_by_number(params: Value, state: RpcState) -> Resul
     // 2. Check blocks by round in consensus DAG store (e.g. genesis round 0)
     if let Ok(blocks) = state.consensus_store.get_blocks_by_round(number) {
         if let Some(block) = blocks.into_iter().next() {
-            let (committed_height, leader_hdr) = match find_leader_header_by_hash(&state.storage, &block.digest) {
-                Ok(Some(mut hdr)) => {
-                    resolve_leader_header_timestamp(&state, &mut hdr);
-                    let h = hdr.committed_height;
-                    (Some(h), Some(hdr))
-                }
-                _ => (None, None),
-            };
+            let (committed_height, leader_hdr) =
+                match find_leader_header_by_hash(&state.storage, &block.digest) {
+                    Ok(Some(mut hdr)) => {
+                        resolve_leader_header_timestamp(&state, &mut hdr);
+                        let h = hdr.committed_height;
+                        (Some(h), Some(hdr))
+                    }
+                    _ => (None, None),
+                };
             return Ok(block_to_json_ext(
                 &block,
                 full_transactions,
@@ -578,7 +585,11 @@ pub async fn handle_get_block_header_by_number(
             };
             return Ok(serde_json::to_value(&header).map_err(internal)?);
         }
-        if let Ok(block) = state.storage.blocks().get_block(&txn, &header.leader_digest) {
+        if let Ok(block) = state
+            .storage
+            .blocks()
+            .get_block(&txn, &header.leader_digest)
+        {
             let header = match block.extract_pow_header(chain_id) {
                 Ok(h) => h,
                 Err(_) => block.pow_header(chain_id),
@@ -5304,7 +5315,10 @@ mod tests {
             let txn = storage.begin_write().unwrap();
             storage.state().save_leader_header(&txn, &header1).unwrap();
             storage.state().save_leader_header(&txn, &header2).unwrap();
-            storage.consensus().set_committed_leader_height(&txn, 2).unwrap();
+            storage
+                .consensus()
+                .set_committed_leader_height(&txn, 2)
+                .unwrap();
             txn.commit().unwrap();
         }
 
@@ -5313,12 +5327,18 @@ mod tests {
             .await
             .expect("getBlockByNumber(1) should succeed");
         assert!(!res_num1.is_null());
-        assert_eq!(res_num1["hash"], json!(format!("0x{}", hex::encode(block1.digest.0))));
+        assert_eq!(
+            res_num1["hash"],
+            json!(format!("0x{}", hex::encode(block1.digest.0)))
+        );
         assert_eq!(res_num1["number"], json!("0x1"));
         assert_eq!(res_num1["round"], json!("0x1"));
         assert_eq!(res_num1["timestamp"], json!(ts1));
         assert_eq!(res_num1["nonce"], json!(101));
-        assert_eq!(res_num1["pow_hash"], json!(format!("0x{}", hex::encode([0x11; 32]))));
+        assert_eq!(
+            res_num1["pow_hash"],
+            json!(format!("0x{}", hex::encode([0x11; 32])))
+        );
         assert_eq!(res_num1["parent_hashes"], json!([]));
         assert_eq!(res_num1["transactions"], json!([]));
 
@@ -5339,15 +5359,24 @@ mod tests {
         assert!(!res_num2.is_null());
         assert_eq!(res_num2["number"], json!("0x2"));
         assert_eq!(res_num2["timestamp"], json!(ts2));
-        assert_eq!(res_num2["parents"], json!([format!("0x{}", hex::encode(block1.digest.0))]));
-        assert_eq!(res_num2["parent_hashes"], json!([format!("0x{}", hex::encode(block1.digest.0))]));
+        assert_eq!(
+            res_num2["parents"],
+            json!([format!("0x{}", hex::encode(block1.digest.0))])
+        );
+        assert_eq!(
+            res_num2["parent_hashes"],
+            json!([format!("0x{}", hex::encode(block1.digest.0))])
+        );
 
         // Test 4: getBlockByNumber("latest")
         let res_latest = handle_get_block_by_number(json!(["latest"]), state.clone())
             .await
             .expect("getBlockByNumber(latest) should succeed");
         assert_eq!(res_latest["number"], json!("0x2"));
-        assert_eq!(res_latest["hash"], json!(format!("0x{}", hex::encode(block2.digest.0))));
+        assert_eq!(
+            res_latest["hash"],
+            json!(format!("0x{}", hex::encode(block2.digest.0)))
+        );
 
         // Test 5: Unknown height returns null
         let res_unknown = handle_get_block_by_number(json!(["0x999"]), state.clone())
@@ -5355,9 +5384,12 @@ mod tests {
             .expect("getBlockByNumber(999) should succeed");
         assert!(res_unknown.is_null());
 
-        let res_unknown_hash = handle_get_block_by_hash(json!([format!("0x{}", hex::encode([0xff; 32]))]), state.clone())
-            .await
-            .expect("getBlockByHash(unknown) should succeed");
+        let res_unknown_hash = handle_get_block_by_hash(
+            json!([format!("0x{}", hex::encode([0xff; 32]))]),
+            state.clone(),
+        )
+        .await
+        .expect("getBlockByHash(unknown) should succeed");
         assert!(res_unknown_hash.is_null());
 
         // Test 6: getLeaderHeader derives non-zero timestamp from PoW block
@@ -5365,7 +5397,15 @@ mod tests {
             .await
             .expect("getLeaderHeader(1) should succeed");
         assert!(!lh1.is_null());
-        let lh1_ts = u64::from_str_radix(lh1["timestamp"].as_str().unwrap().strip_prefix("0x").unwrap(), 16).unwrap();
+        let lh1_ts = u64::from_str_radix(
+            lh1["timestamp"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("0x")
+                .unwrap(),
+            16,
+        )
+        .unwrap();
         assert_eq!(lh1_ts, ts1);
         assert_ne!(lh1_ts, 0);
 
@@ -5373,7 +5413,15 @@ mod tests {
             .await
             .expect("getLeaderHeader(2) should succeed");
         assert!(!lh2.is_null());
-        let lh2_ts = u64::from_str_radix(lh2["timestamp"].as_str().unwrap().strip_prefix("0x").unwrap(), 16).unwrap();
+        let lh2_ts = u64::from_str_radix(
+            lh2["timestamp"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("0x")
+                .unwrap(),
+            16,
+        )
+        .unwrap();
         assert_eq!(lh2_ts, ts2);
         assert_ne!(lh2_ts, 0);
 
