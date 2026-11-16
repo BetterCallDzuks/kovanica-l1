@@ -7,7 +7,8 @@
 **Agent project-manager docs (read first):**
 - [`docs/AGENT-RULES.md`](docs/AGENT-RULES.md) — frozen values, what agents may/must not touch, consensus-change rule, live seed1 state.
 - [`docs/PLAN-2026-11.md`](docs/PLAN-2026-11.md) — current priorities (P0–P5), open PRs, mainnet prep, non-goals.
-These two replace Gazda for day-to-day agent work. If a prompt conflicts with them, stop and ask Toni.
+- [`docs/PLAN-FULL-SCOPE.md`](docs/PLAN-FULL-SCOPE.md) — ecosystem-wide plan across `kovanica-l1`, `kovanica-sdk`, `kovanica-playground`, `kovanica-web`, `kovanica-apps` (cross-repo rules, P6–P9, non-goals).
+These replace Gazda for day-to-day agent work. If a prompt conflicts with them, stop and ask Toni.
 
 **Naming (zaključano):** chain = **Kovanica**, native coin ticker = **KVNC** (9 decimals; preimenovano natrag iz KUNA per Toni 2026-11-05),
 codebase/binary/env prefiks = **kovanica** (`kovanica-*` crate-ovi, `kovanica-node`, `KOVANICA_*`). Adresa je
