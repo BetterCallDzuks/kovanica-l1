@@ -17,8 +17,8 @@
 # Keeping one implementation is the point: a CI file that drifts from what
 # people run locally turns into a check nobody trusts.
 #
-# `audit` is network-dependent (fresh advisory database) and therefore nightly
-# in CI, not on every push. `all` leaves it out for the same reason.
+# `audit` runs in CI on push and PRs; ignored advisories are justified in
+# .cargo/audit.toml. `all` leaves it out locally unless explicitly passed.
 #
 # `cluster` is the counterpart of what `test` excludes: four tests that start
 # real nodes on localhost and measure wall-clock liveness. They are not part of

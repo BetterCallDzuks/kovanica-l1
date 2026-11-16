@@ -2,11 +2,25 @@
 [advisories]
 ignore = [
   # RUSTSEC-2024-0344: timing variability in curve25519-dalek 3.2.0 Scalar sub.
-  # Pulled in only via `ecvrf` 0.4.3 (VRF leader election in kovanica-crypto),
-  # whose latest release still depends on curve25519-dalek 3.x, so there is no
-  # semver-compatible upgrade. Replacing the VRF backend changes consensus-
-  # critical cryptography and needs its own reviewed change (already tracked in
-  # AUDIT_REPORT.md / AUTOMATED_SECURITY_CHECKS.md). Remove this ignore once
-  # the VRF moves to a curve25519-dalek >= 4.1.3 implementation.
+  # Pulled in only via `ecvrf` 0.4.3 (in kovanica-crypto), whose latest release
+  # still depends on curve25519-dalek 3.x, so there is no semver-compatible
+  # upgrade. Replacing the crypto dependency changes critical cryptography
+  # and needs its own reviewed change (tracked in AUDIT_REPORT.md /
+  # AUTOMATED_SECURITY_CHECKS.md). Remove this ignore once moved to a
+  # curve25519-dalek >= 4.1.3 implementation.
   "RUSTSEC-2024-0344",
+
+  # RUSTSEC-2025-0141: bincode 1.3.3 is unmaintained.
+  # Bincode 1.3.3 canonical serialization format is baked into block header
+  # hashing, state root computation, transaction wire format, and consensus signing.
+  # Migrating to bincode v2 or postcard changes serialized byte layout and
+  # requires a coordinated hard fork. Tracked in AUTOMATED_SECURITY_CHECKS.md.
+  # Review date: 2026-12-15.
+  "RUSTSEC-2025-0141",
+
+  # RUSTSEC-2026-0374: basic-toml 0.1.10 is unmaintained.
+  # Used transitively for configuration and test data parsing. No untrusted input
+  # or network exposure in production node consensus/execution paths.
+  # Review date: 2026-12-15.
+  "RUSTSEC-2026-0374",
 ]
