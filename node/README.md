@@ -89,6 +89,33 @@ published by accident. The output
 byte-identical across rebuilds. Attach it to the `v<version>-node` release
 next to the binaries. Details and the refusal rules: `docs/TESTNET-RESET.md`.
 
+### BLOCKED: do not cut the chain-2 bundle yet
+
+**Status: not run.** `node/scripts/install.sh` cannot complete an install for
+kovanica-testnet (chain ID 2) until this bundle is attached to a
+`v<version>-node` release, but the bundle must not be cut until the final
+production key ceremony addresses exist.
+
+- **What is still missing:** the final mainnet/testnet addresses produced by the
+  production key ceremony (`ops/genesis/ceremony.sh`, see `docs/KEY-CEREMONY.md`
+  and `docs/MAINNET-RUNBOOK.md`). Until Toni supplies them, `testnet/chain2/`
+  carries placeholder/pre-ceremony content and any bundle cut from it would
+  publish the wrong genesis and the wrong network tag.
+- **Exact command to run later** (from the repo root, on the commit whose tree
+  contains the final `testnet/chain2/` file set):
+
+  ```sh
+  kovanica-node genesis-bundle --chain-id 2 --source testnet/chain2
+  ```
+
+  Then attach `kovanica-chain2-genesis.tar.gz` to the `v<version>-node`
+  release and confirm the embedded `expected-tag` is `2-acfdf6a6c80fd28a`.
+- **Gate:** do **not** run the command, generate a bundle, or attach one to a
+  release until **Toni supplies the ceremony addresses** and the genesis file
+  set is final. Generating one now is out of scope for every agent; changing
+  `testnet/chain2/*` genesis files or the network tag is forbidden without an
+  explicit Toni decision.
+
 ## State sync: full-state commitment is activated at round 500 000
 
 A node installed by this script starts at height 0 with the network's genesis
