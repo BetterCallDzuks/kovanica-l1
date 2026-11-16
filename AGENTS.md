@@ -4,6 +4,11 @@
 
 **kovanica-l1** is a clean, from-scratch Rust Layer-1 blockchain repository (`KovanicaDAG/kovanica-l1`, renamed from `kovanica`, #243). Apps live in `KovanicaDAG/kovanica-apps`, web in `KovanicaDAG/kovanica-web`.
 
+**Agent project-manager docs (read first):**
+- [`docs/AGENT-RULES.md`](docs/AGENT-RULES.md) — frozen values, what agents may/must not touch, consensus-change rule, live seed1 state.
+- [`docs/PLAN-2026-11.md`](docs/PLAN-2026-11.md) — current priorities (P0–P5), open PRs, mainnet prep, non-goals.
+These two replace Gazda for day-to-day agent work. If a prompt conflicts with them, stop and ask Toni.
+
 **Naming (zaključano):** chain = **Kovanica**, native coin ticker = **KVNC** (9 decimals; preimenovano natrag iz KUNA per Toni 2026-11-05),
 codebase/binary/env prefiks = **kovanica** (`kovanica-*` crate-ovi, `kovanica-node`, `KOVANICA_*`). Adresa je
 `kvnc` + 57 base32 znakova (bech32 abeceda, samo mala slova) + `dag` = 64 znaka (PRO-21: 32 B ključ ‖ prvih 29 bitova blake3(ključ)); `FromStr` je samo taj oblik. Legacy `kvnc<hex>dag` i hex (heks znamenke case-insensitive, affixi i `0x` mala slova) na kovanica-devnet (chain ID 3) i local (chain ID 1337), odbijeni na kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2) i svakom drugom id-u. Adresni prefiks `kvnc`...`dag` je usklađen s KVNC tickerom.
@@ -33,6 +38,7 @@ codebase/binary/env prefiks = **kovanica** (`kovanica-*` crate-ovi, `kovanica-no
 3. Preferiraj **male, fokusirane, auditabilne** promjene. Jedan PR = jedna jasna namjera.
 4. Ne diraj tokenomics parametre bez eksplicitnog odobrenja.
 5. Ciljaj uvijek na 2–4 GB RAM footprint.
+6. **Read `docs/AGENT-RULES.md` before any change.** Frozen values and live seed1 state are listed there. Consensus changes need an activation plan and must not be deployed without Toni.
 
 ## Consensus & PoW Hash (zaključano Toni 2026-11-05)
 
@@ -153,6 +159,9 @@ Contracts (već implementirani): HTLC, Vault, Multisig, Token + Host trait.
 
 ## Preferred next focus areas (prioritet)
 
+See `docs/PLAN-2026-11.md` for the current ordered list (P0 live stability → P1 DAA #259 → P3 ops polish → P4 mainnet prep → P5 codebase polish).
+
+Historical focus areas (still valid as themes):
 A. Network & Node hardening (P2P, sync, snapshot/pruning, genesis)
 B. Hybrid PoW & GHOSTDAG consensus & mining operations (KovanicaHash, DAA, GHOSTDAG K=5)
 C. Execution & Contract UX (gas metering, ABI, deployment)
@@ -165,6 +174,7 @@ E. Testnet readiness (multi-node, faucet, chaos)
 - OpenCode (ti) = implementator (file edit + shell + testovi)
 - Kad dobiješ plan od Grok-a → izvrši ga u ovom sessionu
 - Nakon implementacije vrati diff / test output za review
+- Prije rada pročitaj `docs/AGENT-RULES.md` i `docs/PLAN-2026-11.md`.
 
 ## Zabranjeno
 
@@ -173,3 +183,5 @@ E. Testnet readiness (multi-node, faucet, chaos)
 - Veliki refaktori bez plana
 - Dodavanje novih crate-ova bez opravdanja
 - Non-deterministički kod u consensus/execution putu
+- Deploy consensus promjena (npr. #259 DAA) bez Toni odluke o aktivaciji
+- Dirati seed1 docker/volumes/nginx osim ako je prompt eksplicitni ops zadatak
