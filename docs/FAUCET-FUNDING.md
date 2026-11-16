@@ -52,7 +52,7 @@ Preconditions:
 4. Nothing is published on a host port: the funder shares the node's network
    namespace and listens on loopback only.
 
-Run on seed1 (values are placeholders for the copy actually in use):
+Run on seed1 (these paths are the ones used in the blocked attempt):
 
 ```sh
 docker run -d --name kovanica-faucet-topup \
@@ -70,10 +70,11 @@ docker run -d --name kovanica-faucet-topup \
   --dispense-kovanica 99999
 ```
 
-- `--user 0:0` is required: the bind-mounted keystore/passphrase are root-owned
-  `0600`, and the `--passphrase-file` check runs as the container user. (The
-  long-running compose faucet runs as uid 10001 and therefore takes its
-  passphrase from the env instead.)
+- `--user 0:0` is needed because the bind-mounted keystore/passphrase are
+  root-owned `0600`: the container user must be able to read them, and
+  `read_passphrase_file` separately rejects any file that is group- or
+  world-readable. (The long-running compose faucet runs as uid 10001 and
+  therefore takes its passphrase from the env instead.)
 - `--dispense-kovanica 99999` drains the sender down to the 0.001 KVNC fee plus
   dust. Use any amount ≤ `balance − 0.001`.
 - There is no per-request cap and the request body's `amount` is ignored; the
