@@ -1,6 +1,6 @@
 # Kovanica Mainnet Freeze Checklist & Genesis Sign-Off Gates
 
-> **Network ID:** `1` (`MAINNET`)  
+> **Network:** `kovanica-mainnet` (chain ID 1)  
 > **Native Ticker:** **KVNC** (9 decimals: $1\text{ KVNC} = 10^9\text{ atoms}$, legacy alias `KUNA`)  
 > **Canonical Address Format:** PRO-21 base32 (`kvnc<57 base32>dag`, exactly 64 characters)  
 > **Target Date:** Mainnet Genesis ($T_0$)  
@@ -18,7 +18,7 @@ This checklist establishes the mandatory sign-off gates required prior to execut
 | Gate | Domain | Objective | Required Sign-Offs |
 |---|---|---|---|
 | **Gate 1** | **Code Freeze & Reproducibility** | Immutable Git commit, clean CI run, passing cargo-deny and gitleaks, byte-for-byte reproducible binaries. | Lead Core Developer, Security Auditor |
-| **Gate 2** | **Parameter Invariants & Ledger Safety** | Chain ID `1`, 90.2M KVNC cap, 2.5 KVNC block reward, epoch/unbonding limits, no `funded_accounts.toml`. | Consensus Architect, Lead Tokenomics Auditor |
+| **Gate 2** | **Parameter Invariants & Ledger Safety** | kovanica-mainnet (chain ID 1), 90.2M KVNC cap, 2.5 KVNC block reward, epoch/unbonding limits, no `funded_accounts.toml`. | Consensus Architect, Lead Tokenomics Auditor |
 | **Gate 3** | **Genesis Ceremony & Key Distribution** | Ceremony execution per [`docs/KEY-CEREMONY.md`](KEY-CEREMONY.md), Treasury 3-of-5 SSS distribution, Founder key custody, 3–5 bootstrap seed nodes (1..=20 bound). | Master of Ceremonies, Treasury Custodians, Seed Operators |
 | **Gate 4** | **Infrastructure & Network Topology** | 3+ independent seed nodes per [`docs/MAINNET-RUNBOOK.md`](MAINNET-RUNBOOK.md), DNS resolution, firewall port hardening (8000, 8545, 8546, 9100). | Lead DevOps/Infra Engineer, Seed Node Operators |
 | **Gate 5** | **Monitoring, Alerting & Observability** | Prometheus alerts verified (`alerts.yml`), health probes, peer drop/stall alerts, equivocation detection. | Site Reliability Engineer (SRE), Ops Lead |
@@ -124,7 +124,7 @@ Verify that every parameter in the release binary matches the canonical mainnet 
 
 | Parameter | Mainnet Value | Invariant Expression | Source File | Status |
 |---|---|---|---|---|
-| **Chain ID** | `1` (`MAINNET`) | `CHAIN_ID == 1` | `crates/kovanica-params/src/lib.rs` | [ ] |
+| **Chain ID** | `1` (`kovanica-mainnet`) | `CHAIN_ID == 1` | `crates/kovanica-params/src/lib.rs` | [ ] |
 | **Native Ticker** | **KVNC** | Decimals: `9` | `crates/kovanica-params/src/lib.rs` | [ ] |
 | **Address Format** | PRO-21 base32 | `kvnc` + 57 base32 chars + `dag` (64 chars) | `crates/kovanica-types/src/address.rs` | [ ] |
 | **Total Supply Ceiling** | `90,200,000 KVNC` | `90_200_000 * 10^9` atoms | `crates/kovanica-staking/src/lib.rs` | [ ] |
@@ -145,8 +145,8 @@ Verify that every parameter in the release binary matches the canonical mainnet 
 
 ### 3.2 Pre-Flight Safety Invariants
 
-- [ ] **No `funded_accounts.toml`:** On Chain ID `1`, `funded_accounts.toml` is strictly forbidden. The binary aborts immediately if this file is present in the data directory.
-- [ ] **Strict Address Validation:** Legacy hex addresses (`kvnc<hex>dag`, raw hex) are rejected on Chain ID `1`. Only canonical PRO-21 base32 is accepted.
+- [ ] **No `funded_accounts.toml`:** On kovanica-mainnet (chain ID 1), `funded_accounts.toml` is strictly forbidden. The binary aborts immediately if this file is present in the data directory.
+- [ ] **Strict Address Validation:** Legacy hex addresses (`kvnc<hex>dag`, raw hex) are rejected on kovanica-mainnet (chain ID 1). Only canonical PRO-21 base32 is accepted.
 - [ ] **Hardened Runtime Flags:** The following testnet/development switches must be strictly disabled across all mainnet nodes:
   ```bash
   KOVANICA_ALLOW_RESET=0
@@ -178,8 +178,8 @@ The genesis ceremony establishes the cryptographic trust root of the network and
 ### 4.2 Committee Sizing & Stake Allocation
 
 - [ ] **Bootstrap Seed Set:** Between 1 and 20 bootstrap seed nodes confirmed (3–5 recommended for public launch).
-- [ ] **Genesis Validator Allocation:** Exactly 0 KVNC. Chains 1 and 2 run the `NoStake82M` policy: the former 1,000,000 KVNC allocation is folded into the 82,000,000 KVNC mining budget and the genesis bootstrap seeds (1..=20) hold no stake.
-- [ ] **Minimum Stake:** Not applicable on chains 1 and 2 (`NoStake82M`); bootstrap seeds hold no stake, so there is no `MIN_VALIDATOR_STAKE` check at genesis.
+- [ ] **Genesis Validator Allocation:** Exactly 0 KVNC. kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) run the `NoStake82M` policy: the former 1,000,000 KVNC allocation is folded into the 82,000,000 KVNC mining budget and the genesis bootstrap seeds (1..=20) hold no stake.
+- [ ] **Minimum Stake:** Not applicable on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) (`NoStake82M`); bootstrap seeds hold no stake, so there is no `MIN_VALIDATOR_STAKE` check at genesis.
 
 ### 4.3 Treasury Custody (Shamir's Secret Sharing)
 
@@ -192,7 +192,7 @@ The genesis ceremony establishes the cryptographic trust root of the network and
 - [ ] **Ceremony Execution:** Master of Ceremonies executes `ops/genesis/ceremony.sh`:
   ```bash
   ./ops/genesis/ceremony.sh \
-      --network mainnet \
+      --network kovanica-mainnet \
       --validators validators.json \
       --treasury-address kvnc1...dag \
       --founder-address kvnc1...dag \
@@ -300,7 +300,7 @@ Pre-defined, unambiguous contingency criteria must be established to handle laun
 A rollback or launch abort is **mandatory** if any of the following conditions occur within 60 minutes of $T_0$:
 
 1. **Zero Block Progression:** No committed block achieved within 15 minutes of $T_0$.
-2. **Mesh Partition:** Fewer than the planned bootstrap seed set successfully connects to the P2P mesh within 30 minutes of $T_0$. (The `2f+1` stake quorum below is legacy committee arithmetic and does not apply to chains 1 and 2.)
+2. **Mesh Partition:** Fewer than the planned bootstrap seed set successfully connects to the P2P mesh within 30 minutes of $T_0$. (The `2f+1` stake quorum below is legacy committee arithmetic and does not apply to kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2).)
 3. **State Root Divergence:** Two or more nodes produce differing state roots for the same committed block height.
 4. **Fatal Crash Loop:** Deterministic panic or invariant violation occurring on $\ge 33\%$ of bootstrap nodes.
 
@@ -332,7 +332,7 @@ If rollback criteria are triggered:
 
 Post-genesis emergency hard forks require coordinated execution:
 
-1. **Quorum Approval (legacy):** The `2f+1` active-stake agreement below the retired committee model does not apply on chains 1 and 2; a hard fork there is coordinated by published activation height and operator upgrade.
+1. **Quorum Approval (legacy):** The `2f+1` active-stake agreement below the retired committee model does not apply on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2); a hard fork there is coordinated by published activation height and operator upgrade.
 2. **Activation Height Scheduling:** Hard fork activation block height scheduled at least 1,200 blocks (~4 hours) in advance (or immediately if consensus is halted).
 3. **Emergency Communication Channel:** Dedicated, end-to-end encrypted Matrix / Signal room restricted to genesis bootstrap-seed operators, core engineers, and the Master of Ceremonies.
 

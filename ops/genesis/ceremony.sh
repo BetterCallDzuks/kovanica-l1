@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Genesis ceremony for the Kovanica canonical chains.
+# Genesis ceremony for the Kovanica canonical networks:
 #
-#   chain 1    mainnet (hybrid PoW + GHOSTDAG, no-stake-82m)
-#   chain 2    testnet (hybrid PoW + GHOSTDAG, no-stake-82m)
-#   chain 3    devnet  (legacy policy, dev overrides)
-#   chain 1337 local   (legacy policy, dev overrides)
+#   kovanica-mainnet (chain ID 1)   hybrid PoW + GHOSTDAG, no-stake-82m
+#   kovanica-testnet (chain ID 2)   hybrid PoW + GHOSTDAG, no-stake-82m
+#   kovanica-devnet  (chain ID 3)   legacy policy, dev overrides
+#   local            (chain ID 1337) legacy policy, dev overrides
 #
 # DRAFT tooling: the procedure is documented in docs/GENESIS-CEREMONY.md. It
 # produces the genesis file set a node needs (genesis.json preview,
-# genesis_validators.toml, founder_premine.hex, bootnodes.toml), never a
+# genesis_validators.toml, founder_premine.hex, bootnodes.toml, SHA256SUMS), never a
 # published network. The official genesis waits on the owner's real founder,
 # treasury and bootstrap-seed addresses (addresses only, never private keys).
 set -euo pipefail
@@ -34,7 +34,7 @@ usage() {
     cat <<'EOF'
 Usage: ops/genesis/ceremony.sh --network <mainnet|testnet|devnet|local> [OPTIONS]
 
-Required for every chain:
+Required for every network:
   --treasury-address <address>  Real treasury address (owner-supplied).
   --founder-address <address>   Real founder premine address (owner-supplied).
 
@@ -42,14 +42,14 @@ Options:
   --validators <file.json>      Input validator set (default: <network>/validators/validators.json)
   --output <dir>                Output directory (default: ./genesis-out)
   --chain-id <id>               Override the network's chain id (1, 2, 3, 1337)
-  --generate-keys               Write throwaway validator keys under <output>/keys
+  --generate-keys               Write throwaway validator keys under <output>/keys (refused on kovanica-mainnet)
   --force                       Overwrite files inside <output>
   -h, --help                    This message
 
-Chains 1 and 2 are hybrid (PoW + GHOSTDAG): the ceremony passes
---emission-policy no-stake-82m, writes no stake field, and requires every
-validator, founder and treasury address to already be a canonical PRO-21
-kvnc...dag address. Legacy hex is refused, not converted.
+kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) are hybrid (PoW + GHOSTDAG):
+the ceremony passes --emission-policy no-stake-82m, writes no stake field, and requires every
+validator, founder and treasury address to already be a canonical PRO-21 kvnc...dag address.
+Legacy hex is refused, not converted.
 EOF
 }
 
@@ -70,10 +70,10 @@ done
 
 if [[ -z "$CHAIN_ID" ]]; then
     case "$NETWORK" in
-        mainnet) CHAIN_ID=1 ;;
-        testnet) CHAIN_ID=2 ;;
+        mainnet|kovanica-mainnet) CHAIN_ID=1 ;;
+        testnet|kovanica-testnet) CHAIN_ID=2 ;;
         hybrid-testnet|hybrid_testnet) CHAIN_ID=2 ;;
-        devnet) CHAIN_ID=3 ;;
+        devnet|kovanica-devnet) CHAIN_ID=3 ;;
         local) CHAIN_ID=1337 ;;
         *) die "unknown --network '$NETWORK'; use mainnet, testnet, devnet or local" ;;
     esac
@@ -82,8 +82,12 @@ fi
 case "$CHAIN_ID" in
     1|2) HYBRID=true ;;
     3|1337) HYBRID=false ;;
-    *) die "chain id $CHAIN_ID is not a canonical chain; use 1 (mainnet), 2 (testnet), 3 (devnet) or 1337 (local)" ;;
+    *) die "chain id $CHAIN_ID is not a canonical chain; use 1 (kovanica-mainnet), 2 (kovanica-testnet), 3 (kovanica-devnet) or 1337 (local)" ;;
 esac
+
+if [[ "$CHAIN_ID" -eq 1 ]] && $GENERATE_KEYS; then
+    die "kovanica-mainnet (chain ID 1) refuses --generate-keys: mainnet private keys must be generated offline by Toni; the ceremony tool accepts public addresses and public keys only"
+fi
 
 # PRO-21: "kvnc" + 57 bech32 characters + "dag" = 64 characters, lower case.
 is_pro21_address() {
@@ -310,8 +314,8 @@ else
 fi
 
 # Step 4: Create bootnode config
-echo "[4/4] Creating bootnode config..."
-if [[ "$NETWORK" == "mainnet" ]]; then
+echo "[4/5] Creating bootnode config..."
+if [[ "$NETWORK" == "mainnet" || "$NETWORK" == "kovanica-mainnet" || "$CHAIN_ID" -eq 1 ]]; then
     SEED="mainnet.kovanica.online:8000"
 else
     SEED="testnet.kovanica.online:8000"
@@ -323,6 +327,19 @@ cat > "$OUTPUT_DIR/bootnodes.toml" << EOF
 bootnodes = ["$SEED"]
 EOF
 
+# Step 5: Generate SHA-256 manifest
+echo "[5/5] Generating SHA256SUMS manifest..."
+(
+    cd "$OUTPUT_DIR"
+    if [[ "$CHAIN_ID" -eq 1 ]]; then
+        sha256sum genesis_validators.toml founder_premine.hex > SHA256SUMS
+    else
+        FILES=(genesis_validators.toml founder_premine.hex)
+        [[ -f funded_accounts.toml ]] && FILES+=(funded_accounts.toml)
+        sha256sum "${FILES[@]}" > SHA256SUMS
+    fi
+)
+
 echo ""
 echo "=== Genesis Ceremony Complete ==="
 echo "Files generated:"
@@ -330,6 +347,7 @@ echo "  $OUTPUT_DIR/genesis.json"
 echo "  $OUTPUT_DIR/genesis_validators.toml"
 echo "  $OUTPUT_DIR/founder_premine.hex"
 echo "  $OUTPUT_DIR/bootnodes.toml"
+echo "  $OUTPUT_DIR/SHA256SUMS"
 if $GENERATE_KEYS; then
     echo "  $KEYS_DIR/ (throwaway validator keys — never commit)"
 fi
