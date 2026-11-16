@@ -1,5 +1,5 @@
 /**
- * Relay HTTP client (v1) — `docs/COMMS-M1-INTERFACES.md` §4.
+ * Relay HTTP client (v1). Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §4).
  *
  * Base path `/v1`, JSON in / JSON out. This client only speaks the blind
  * relay contract: it never inspects or needs plaintext. Errors are

@@ -9,7 +9,7 @@
 
 kovanica-testnet (chain ID 2) is the canonical Hybrid PoW + GHOSTDAG testnet:
 - Constant: `CHAIN_ID_HYBRID_TESTNET: u64 = 2` (`= CHAIN_ID_TESTNET`) in `kovanica-params` and `kovanica-types::signing::chain_id`.
-- Network tag: `hybrid-testnet` (`kovanica_params::NETWORK_TAG_HYBRID_TESTNET`).
+- Network tag: `kovanica-testnet` (`kovanica_params::NETWORK_TAG_HYBRID_TESTNET`, alias of `NETWORK_TAG_TESTNET`).
 - Activation intent: Gated under feature flag `hybrid-pow`. Under hybrid consensus, block authoring uses PoW mining (KovanicaHash) and block ordering uses GHOSTDAG (k=5, 4 s block time) without stake weighting.
 - Address acceptance: Canonical PRO-21 (`kvnc...dag`, 64 characters) only. kovanica-testnet (chain ID 2) is a hybrid network, so legacy hex addresses are rejected (`legacy_address_allowed(2) == false`).
 

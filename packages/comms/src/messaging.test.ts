@@ -38,7 +38,7 @@ const RECIPIENT_PUB = getPublicKey(RECIPIENT_SEED);
 
 const KAT_PAYLOAD = { kind: "text", body: "hello kovanica", ts: 1730000000000 };
 
-// Pinned inputs from docs/COMMS-M1-INTERFACES.md §5. Long hex literals are
+// Pinned inputs. Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247 (former M1 §5). Long hex literals are
 // assembled from 32-char chunks (keeps the repo key-guard from false-positiving
 // on a 64-char hex run sitting next to the word "seed").
 const KDF_KEY_HEX = [

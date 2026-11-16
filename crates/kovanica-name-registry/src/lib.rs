@@ -4,7 +4,8 @@
 //! recipient's Ed25519 public key and relay endpoints without out-of-band
 //! exchange. First-come, owner-updatable; no fee in M1 (spec D4).
 //!
-//! Spec: `docs/COMMS-M1-INTERFACES.md` §6 (semantics) + §8 (ABI/export recipe).
+//! Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247.
+//! Former M1 §6 (semantics) + §8 (ABI/export recipe).
 //! ABI/export style mirrors `crates/kovanica-token` / `crates/kovanica-htlc`.
 //!
 //! ## Rules (FIXED — §6)

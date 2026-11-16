@@ -1,6 +1,6 @@
 /**
- * Envelope wire format v1 — JSON + base64 (§3 of
- * `docs/COMMS-M1-INTERFACES.md`).
+ * Envelope wire format v1 — JSON + base64 (former M1 §3).
+ * Spec moved to KovanicaDAG/kovanica-apps (Comms); removed from kovanica-l1 in #247.
  *
  * Byte-for-byte mirror of the Rust `kovanica-comms-relay` `Envelope` type:
  * - signing bytes use a fixed, non-JSON layout (§3.3);
