@@ -16,8 +16,8 @@ that blocked it on 2026-11-16.
 |---|---|---|---|
 | Pre-rotation faucet (genesis-funded) | `kvnck2559l6vnpcchmtkuf2eslmdtxc6wtfm9nf9zqqructs4336nla58y78mdag` | 100 000 KVNC, nonce 0 | only genesis-funded account; the sender for a top-up |
 | Live faucet (rotated) | `kvnc8a4atp0g5tngcua9h90anhel7233alyd5y88h0yc592cv8adu5uyz46d3dag` | `0x0` | process healthy (`/health` 200) but cannot dispense |
-| Genesis validators (mining reward) | `kvncda8z9…`, `kvnc8kscelhl…`, `kvnc30f77rhd…` | 630 / 735 / 772.5 KVNC | reward recipients; no host seed derives to them |
-| Treasury | `kvncqctcedn…` | `0x0` | pre-funded only on mainnet |
+| Genesis bootstrap identities (`testnet/chain2/genesis_validators.toml`) | `kvncda8z9…`, `kvnc8kscelhl…`, `kvnc30f77rhd…` | 630 / 735 / 772.5 KVNC | no genesis allocation (the `[[validator]]` table is a legacy-named bootstrap record: no stake, no balance); balances are block rewards earned as block authors, and no host key derives to them |
+| Treasury | `kvncqctcedn…` | `0x0` | treasury funds are emitted on the vesting schedule, not minted at genesis |
 
 The compose faucet also runs with `--min-balance-ku 100`
 (`ops/docker/docker-compose.chain2.yml`), so it refuses to dispense at all while
@@ -135,10 +135,12 @@ host or in git history**, so nothing can sign from it. Concretely:
 - The real passphrase was supplied out-of-band and is not recoverable from the
   repo, the vault, shell history, or any backup on the host.
 
-Nothing else on the host can sign: founder/operator wallet seeds, node-volume
-validator keys, and the `etc-kovanica` validator keys all derive to accounts with
-`0x0`, and `founder_premine.hex` is a placeholder, not a seed. The three genesis
-validators hold 2 137.5 KVNC between them, but no host seed derives to them.
+Nothing else on the host can sign: the founder/operator wallet seeds, the
+node-volume signing keys (`validator.key`, legacy file name) and the
+`etc-kovanica` key files all derive to accounts with `0x0`, and
+`founder_premine.hex` is a placeholder, not a seed. The three genesis bootstrap
+identities hold 2 137.5 KVNC of earned block rewards between them, but no host
+key derives to those addresses either.
 
 ### Unblock options
 
