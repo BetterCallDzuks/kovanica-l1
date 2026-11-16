@@ -38,8 +38,54 @@ env:
   GENESIS_CHAIN_ID: "2"
 
 jobs:
+  validate:
+    name: validate tag and version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag matches node Cargo.toml version and is reachable from main
+        run: |
+          set -eu
+          if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+            echo "Validating release tag: $tag"
+            tag_ver="${tag#v}"
+            tag_ver="${tag_ver%-node}"
+
+            # Extract version for kovanica-node (inherited from [workspace.package] or crates/kovanica-node/Cargo.toml)
+            node_ver="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' crates/kovanica-node/Cargo.toml | head -n 1)"
+            if [ -z "$node_ver" ]; then
+              node_ver="$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+            fi
+
+            if [ -z "$node_ver" ]; then
+              echo "::error::Could not determine node version from Cargo.toml"
+              exit 1
+            fi
+
+            if [ "$tag_ver" != "$node_ver" ]; then
+              echo "::error::Tag version '$tag_ver' does not match node Cargo.toml version '$node_ver'"
+              exit 1
+            fi
+            echo "Tag version '$tag_ver' matches node Cargo.toml version '$node_ver'"
+
+            # Verify tag commit is reachable from main
+            git fetch origin main:refs/remotes/origin/main
+            if ! git merge-base --is-ancestor HEAD origin/main; then
+              echo "::error::Tag commit $(git rev-parse HEAD) is not reachable from origin/main"
+              exit 1
+            fi
+            echo "Tag commit is reachable from origin/main"
+          else
+            echo "Not a tag trigger ($GITHUB_REF); skipping tag reachability validation"
+          fi
+
   build:
     name: node ${{ matrix.arch }}
+    needs: [validate]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -214,17 +260,15 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Write SHA256SUMS
+      - name: Verify SHA256SUMS from checksums job
         run: |
           set -eu
           cd dist
-          # Strip the `./` that `sha256sum ./*` puts in front of each name so
-          # install.sh can match on the bare asset name.
-          sha256sum ./*.tar.gz | sed 's| \./| |' >SHA256SUMS
           test -s SHA256SUMS
           grep -q 'kovanica-node-x86_64-linux.tar.gz' SHA256SUMS
           grep -q 'kovanica-node-aarch64-linux.tar.gz' SHA256SUMS
           grep -q 'kovanica-chain2-genesis.tar.gz' SHA256SUMS
+          sha256sum -c SHA256SUMS
           cat SHA256SUMS
 
       - name: Create the GitHub release

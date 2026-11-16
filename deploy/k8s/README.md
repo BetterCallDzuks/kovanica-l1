@@ -29,7 +29,7 @@ deploy/
 │   ├── statefulset.yaml           # StatefulSet deploying kovanica-node with PVC
 │   └── README.md                  # This deployment manual
 └── helm/
-    └── kovanica/                  # Production Helm chart (v0.2.0)
+    └── kovanica/                  # Production Helm chart (v0.3.0)
         ├── Chart.yaml             # Chart metadata
         ├── values.yaml            # Default deployment configuration
         └── templates/             # Parameterized Kubernetes templates
@@ -91,14 +91,14 @@ helm install kovanica deploy/helm/kovanica
 
 ### 2. Configuration for Specific Environments
 
-#### Canonical Testnet (Chain ID 2)
+#### kovanica-testnet (chain ID 2)
 ```bash
 helm install kovanica-testnet deploy/helm/kovanica \
   --set node.chainId=2 \
-  --set image.tag="v0.2.0"
+  --set image.tag="v0.3.0"
 ```
 
-#### Hybrid PoW Testnet (Chain ID 2 with Mining Enabled)
+#### kovanica-testnet (chain ID 2 with Mining Enabled)
 ```bash
 helm install kovanica-hybrid deploy/helm/kovanica \
   --set node.chainId=2 \
@@ -122,8 +122,8 @@ helm install kovanica-rpc deploy/helm/kovanica \
 | Parameter | Default | Description |
 |---|---|---|
 | `image.repository` | `kovanica/kovanica-node` | Docker image repository |
-| `image.tag` | `v0.2.0` | Node software version tag |
-| `node.chainId` | `1` | Chain ID: `1` (Mainnet), `2` (Testnet), `3` (Devnet), `1337` (Local) |
+| `image.tag` | `v0.3.0` | Node software version tag |
+| `node.chainId` | `1` | Chain ID: `1` (kovanica-mainnet), `2` (kovanica-testnet), `3` (kovanica-devnet), `1337` (local) |
 | `node.role` | `validator` | Node role: `validator` (= PoW block author on chains 1/2), `seed`, or `rpc` |
 | `node.targetBlockMs` | `4000` | Target block time in milliseconds (4 s) |
 | `node.maxPeers` | `50` | Maximum connected libp2p peers |

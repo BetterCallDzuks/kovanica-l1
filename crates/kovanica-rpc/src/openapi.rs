@@ -75,7 +75,7 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
         openapi: "3.1.0".to_string(),
         info: OpenApiInfo {
             title: "Kovanica JSON-RPC API".to_string(),
-            version: "0.2.0".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             description: "JSON-RPC API for Kovanica (kovanica) node. All methods use JSON-RPC 2.0 over HTTP POST to /rpc endpoint.".to_string(),
         },
         servers: vec![
