@@ -398,8 +398,8 @@ Detailed architectural specifications and operational runbooks:
 - **Documentation Archive Index:** [`docs/archive/README.md`](docs/archive/README.md)
 - **JSON-RPC Reference:** [`docs/RPC.md`](docs/RPC.md)
 - **Comprehensive 2026 Audit Report (point-in-time):** [`docs/AUDIT_REPORT_2026.md`](docs/AUDIT_REPORT_2026.md)
-- **Mainnet Launch & Monitoring Runbook (draft, not normative):** [`docs/MAINNET-RUNBOOK.md`](docs/MAINNET-RUNBOOK.md)
-- **Genesis Key Ceremony Protocol (draft, not normative):** [`docs/KEY-CEREMONY.md`](docs/KEY-CEREMONY.md)
+- **Mainnet Launch & Monitoring Runbook (operational runbook for Hybrid PoW + GHOSTDAG):** [`docs/MAINNET-RUNBOOK.md`](docs/MAINNET-RUNBOOK.md)
+- **Genesis Key Ceremony Protocol (normative procedure; addresses pending offline ceremony):** [`docs/KEY-CEREMONY.md`](docs/KEY-CEREMONY.md)
 - **Mainnet Launch Freeze Checklist:** [`docs/MAINNET-FREEZE-CHECKLIST.md`](docs/MAINNET-FREEZE-CHECKLIST.md)
 - **Explorer & Console Deployment Guide:** [`docs/EXPLORER.md`](docs/EXPLORER.md)
 
