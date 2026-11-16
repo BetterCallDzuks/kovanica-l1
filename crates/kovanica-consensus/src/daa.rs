@@ -243,8 +243,14 @@ pub fn calculate_next_target_bits(
         return config.max_target_bits;
     }
 
-    // Scale target: new = old * (clamped_actual / target_duration)
-    let mut new_target = mul_div_u256(current_target, clamped_actual, target_duration_ms);
+    // Scale target with 1/W damping so sliding-window calls do not compound
+    // the full window ratio on every consecutive block.
+    let effective_window = num_intervals.clamp(1, config.window_size.max(1));
+    let damped_num = (effective_window - 1)
+        .saturating_mul(target_duration_ms)
+        .saturating_add(clamped_actual);
+    let damped_den = effective_window.saturating_mul(target_duration_ms).max(1);
+    let mut new_target = mul_div_u256(current_target, damped_num, damped_den);
 
     // Clamp against max target (easiest difficulty)
     let max_target = compact_to_target(config.max_target_bits);
@@ -253,6 +259,128 @@ pub fn calculate_next_target_bits(
     }
 
     // Clamp against min target (hardest difficulty)
+    let min_target = compact_to_target(config.min_target_bits);
+    if min_target != [0u8; 32] && new_target < min_target {
+        new_target = min_target;
+    }
+
+    target_to_compact(&new_target)
+}
+
+/// Compute the arithmetic mean of a slice of 256-bit big-endian targets using
+/// 320-bit limb accumulation (overflow-free for up to 2^64 entries).
+fn average_u256_targets(targets: &[[u8; 32]]) -> [u8; 32] {
+    let count = targets.len() as u64;
+    if count == 0 {
+        return [0u8; 32];
+    }
+
+    let mut sum = [0u32; 10];
+    for t in targets {
+        let mut carry = 0u64;
+        for (i, s) in sum.iter_mut().take(8).enumerate() {
+            let offset = 32 - (i + 1) * 4;
+            let limb = u32::from_be_bytes([t[offset], t[offset + 1], t[offset + 2], t[offset + 3]]);
+            let cur = (*s as u64) + (limb as u64) + carry;
+            *s = (cur & 0xffff_ffff) as u32;
+            carry = cur >> 32;
+        }
+        let cur8 = (sum[8] as u64) + carry;
+        sum[8] = (cur8 & 0xffff_ffff) as u32;
+        sum[9] = sum[9].saturating_add((cur8 >> 32) as u32);
+    }
+
+    let mut quotient = [0u32; 10];
+    let mut rem: u128 = 0;
+    for i in (0..10).rev() {
+        let cur = (rem << 32) | (sum[i] as u128);
+        quotient[i] = (cur / (count as u128)) as u32;
+        rem = cur % (count as u128);
+    }
+
+    if quotient[8] != 0 || quotient[9] != 0 {
+        return [0xff; 32];
+    }
+
+    let mut result = [0u8; 32];
+    for (i, &q) in quotient.iter().take(8).enumerate() {
+        let offset = 32 - (i + 1) * 4;
+        result[offset..offset + 4].copy_from_slice(&q.to_be_bytes());
+    }
+    result
+}
+
+/// Non-compounding Linearly Weighted Moving Average (LWMA) difficulty controller.
+///
+/// Computes the next target from the window's mean target and linearly weighted
+/// solve times (`new_target = avg_target * lwma_solve_time / target_block_time_ms`),
+/// eliminating per-block exponential compounding over the sliding window.
+///
+/// `entries` contains `(timestamp_ms, target_bits)` pairs; it is sorted
+/// deterministically by `(timestamp_ms, target_bits)` before evaluation.
+#[must_use]
+pub fn calculate_next_target_bits_lwma(entries: &[(u64, u32)], config: &DaaConfig) -> u32 {
+    if entries.is_empty() {
+        return clamp_target_bits(config.max_target_bits, config);
+    }
+    if entries.len() < 2 {
+        return clamp_target_bits(entries[0].1, config);
+    }
+
+    let mut sorted = entries.to_vec();
+    sorted.sort_unstable();
+
+    let window_len = config.window_size.max(2) as usize;
+    let window_slice = if sorted.len() > window_len {
+        &sorted[sorted.len() - window_len..]
+    } else {
+        &sorted[..]
+    };
+
+    let n = (window_slice.len() - 1) as u64;
+    let max_factor = config.max_adjustment_factor.max(1);
+    let max_solve_time = config
+        .target_block_time_ms
+        .saturating_mul(max_factor)
+        .max(1);
+
+    let mut weighted_solve_sum: u64 = 0;
+    let mut targets = Vec::with_capacity(window_slice.len() - 1);
+
+    for i in 1..window_slice.len() {
+        let solve_time = window_slice[i]
+            .0
+            .saturating_sub(window_slice[i - 1].0)
+            .clamp(1, max_solve_time);
+        let weight = i as u64;
+        weighted_solve_sum = weighted_solve_sum.saturating_add(weight.saturating_mul(solve_time));
+
+        let t = compact_to_target(window_slice[i].1);
+        if t != [0u8; 32] {
+            targets.push(t);
+        }
+    }
+
+    let avg_target = average_u256_targets(&targets);
+    if avg_target == [0u8; 32] {
+        return clamp_target_bits(config.max_target_bits, config);
+    }
+
+    let total_weight = n.saturating_mul(n + 1) / 2;
+    let target_weighted_sum = total_weight
+        .saturating_mul(config.target_block_time_ms)
+        .max(1);
+    let min_allowed = (target_weighted_sum / max_factor).max(1);
+    let max_allowed = target_weighted_sum.saturating_mul(max_factor);
+    let clamped_weighted_solve = weighted_solve_sum.clamp(min_allowed, max_allowed);
+
+    let mut new_target = mul_div_u256(avg_target, clamped_weighted_solve, target_weighted_sum);
+
+    let max_target = compact_to_target(config.max_target_bits);
+    if max_target != [0u8; 32] && new_target > max_target {
+        new_target = max_target;
+    }
+
     let min_target = compact_to_target(config.min_target_bits);
     if min_target != [0u8; 32] && new_target < min_target {
         new_target = min_target;
@@ -376,18 +504,18 @@ pub fn required_target_bits(
         }
     };
 
-    let timestamps = extract_ancestor_timestamps(
+    let entries = extract_ancestor_headers(
         dag_store,
         &parent_hashes,
         chain_id,
         config.window_size as usize,
     )?;
 
-    Ok(calculate_next_target_bits(
-        current_target_bits,
-        &timestamps,
-        config,
-    ))
+    if entries.is_empty() {
+        return Ok(clamp_target_bits(current_target_bits, config));
+    }
+
+    Ok(calculate_next_target_bits_lwma(&entries, config))
 }
 
 /// Alias for [`required_target_bits`], returning an explicit [`Result`].
@@ -401,17 +529,17 @@ pub fn try_required_target_bits(
     required_target_bits(dag_store, parents, chain_id, config)
 }
 
-/// Extract timestamps in ascending order from ancestor blocks for DAA.
+/// Extract `(timestamp, target_bits)` pairs in ascending order from ancestor blocks for DAA.
 ///
 /// Fails closed with [`DaaError`] if any ancestor in the window cannot be read from
 /// storage or contains an invalid/corrupted PoW header.
-pub fn extract_ancestor_timestamps(
+pub fn extract_ancestor_headers(
     dag_store: &DagStore,
     parent_hashes: &[Hash],
     chain_id: u64,
     limit: usize,
-) -> Result<Vec<u64>, DaaError> {
-    let mut timestamps = Vec::new();
+) -> Result<Vec<(u64, u32)>, DaaError> {
+    let mut entries = Vec::new();
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
 
@@ -433,7 +561,7 @@ pub fn extract_ancestor_timestamps(
 
         match block.extract_pow_header(chain_id) {
             Ok(header) => {
-                timestamps.push(header.timestamp);
+                entries.push((header.timestamp, header.target_bits));
             }
             Err(e) => {
                 return Err(DaaError::InvalidParentHeader(
@@ -444,7 +572,7 @@ pub fn extract_ancestor_timestamps(
             }
         }
 
-        if timestamps.len() >= limit {
+        if entries.len() >= limit {
             break;
         }
 
@@ -455,8 +583,22 @@ pub fn extract_ancestor_timestamps(
         }
     }
 
-    timestamps.sort_unstable();
-    Ok(timestamps)
+    entries.sort_unstable();
+    Ok(entries)
+}
+
+/// Extract timestamps in ascending order from ancestor blocks for DAA.
+///
+/// Fails closed with [`DaaError`] if any ancestor in the window cannot be read from
+/// storage or contains an invalid/corrupted PoW header.
+pub fn extract_ancestor_timestamps(
+    dag_store: &DagStore,
+    parent_hashes: &[Hash],
+    chain_id: u64,
+    limit: usize,
+) -> Result<Vec<u64>, DaaError> {
+    let entries = extract_ancestor_headers(dag_store, parent_hashes, chain_id, limit)?;
+    Ok(entries.into_iter().map(|(ts, _)| ts).collect())
 }
 
 #[cfg(test)]

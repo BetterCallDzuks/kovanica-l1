@@ -7,7 +7,9 @@
 //! 4. DAA (Difficulty Adjustment Algorithm) dynamic response to variable block arrival times
 //! 5. PoW anti-DoS rejection of invalid proofs before consensus ingestion
 
-use kovanica_consensus::daa::{calculate_next_target_bits, DaaConfig};
+use kovanica_consensus::daa::{
+    calculate_next_target_bits, calculate_next_target_bits_lwma, DaaConfig,
+};
 use kovanica_consensus::ghostdag::GhostdagCommitter;
 use kovanica_consensus::mining::MiningWorker;
 use kovanica_params::{
@@ -555,11 +557,11 @@ fn test_testnet_daa_convergence_with_one_and_three_miners() {
 
     let run_sim = |hash_rate: f64, num_rounds: usize| -> (f64, u32) {
         let mut curr_bits = config.max_target_bits;
-        let mut ts_list = vec![1_700_000_000_000u64];
+        let mut entries = vec![(1_700_000_000_000u64, curr_bits)];
         let mut intervals = Vec::new();
 
         for _ in 1..=num_rounds {
-            curr_bits = calculate_next_target_bits(curr_bits, &ts_list, &config);
+            curr_bits = calculate_next_target_bits_lwma(&entries, &config);
             let t_val = compact_to_target(curr_bits);
             assert!(t_val >= min_target && t_val <= max_target);
 
@@ -570,8 +572,8 @@ fn test_testnet_daa_convergence_with_one_and_three_miners() {
 
             let dt_ms = (expected_hashes / hash_rate * 1000.0).round() as u64;
             intervals.push(dt_ms);
-            let next_ts = ts_list.last().unwrap() + dt_ms.max(1);
-            ts_list.push(next_ts);
+            let next_ts = entries.last().unwrap().0 + dt_ms.max(1);
+            entries.push((next_ts, curr_bits));
         }
 
         let steady = &intervals[intervals.len().saturating_sub(30)..];
@@ -602,4 +604,66 @@ fn test_testnet_daa_convergence_with_one_and_three_miners() {
         "3 miners simulation must converge toward 4000 ms (got {:.1} ms)",
         mean_3_miners
     );
+}
+
+#[test]
+fn test_daa_constant_hashrate_no_oscillation_200_rounds() {
+    let config = DaaConfig::for_chain(kovanica_params::CHAIN_ID_TESTNET);
+    let max_target = compact_to_target(config.max_target_bits);
+    let min_target = compact_to_target(config.min_target_bits);
+
+    for hash_rate in [685.0_f64, 5_000.0_f64, 20_000.0_f64] {
+        let mut curr_bits = config.max_target_bits;
+        let mut entries = vec![(1_700_000_000_000u64, curr_bits)];
+        let mut target_history = Vec::with_capacity(250);
+        let mut intervals = Vec::with_capacity(250);
+
+        for _ in 1..=250 {
+            curr_bits = calculate_next_target_bits_lwma(&entries, &config);
+            let t_val = compact_to_target(curr_bits);
+            assert!(
+                t_val >= min_target && t_val <= max_target,
+                "target 0x{curr_bits:08x} out of DaaConfig bounds at {hash_rate} H/s"
+            );
+            target_history.push(curr_bits);
+
+            let exp = (curr_bits >> 24) as i32;
+            let mantissa = (curr_bits & 0x007f_ffff) as f64;
+            let shift = 256 - 8 * (exp - 3);
+            let expected_hashes = (2.0f64).powi(shift) / mantissa;
+
+            let dt_ms = (expected_hashes / hash_rate * 1000.0).round() as u64;
+            intervals.push(dt_ms);
+            let next_ts = entries.last().unwrap().0 + dt_ms.max(1);
+            entries.push((next_ts, curr_bits));
+        }
+
+        // Steady-state tail (last 100 rounds of 250): must stay near 4,000 ms
+        // and never slam into min_target_bits or max_target_bits.
+        let steady_intervals = &intervals[150..];
+        let mean_dt =
+            steady_intervals.iter().copied().sum::<u64>() as f64 / steady_intervals.len() as f64;
+        assert!(
+            (mean_dt - 4000.0).abs() < 400.0,
+            "hashrate {hash_rate} H/s failed to converge near 4000 ms (got {mean_dt:.1} ms)"
+        );
+
+        let steady_targets = &target_history[150..];
+        let hit_min = steady_targets
+            .iter()
+            .filter(|&&b| b == config.min_target_bits)
+            .count();
+        let hit_max = steady_targets
+            .iter()
+            .filter(|&&b| b == config.max_target_bits)
+            .count();
+        assert_eq!(
+            hit_min, 0,
+            "DAA oscillated into min_target_bits ({hit_min} times) at {hash_rate} H/s"
+        );
+        assert_eq!(
+            hit_max, 0,
+            "DAA oscillated into max_target_bits ({hit_max} times) at {hash_rate} H/s"
+        );
+    }
 }
