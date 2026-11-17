@@ -22,7 +22,7 @@ from current `main` refuses to start on it. See
 
 The default installer downloads `v0.3.0-node`, writes a bootnode of
 `seed1.kovanica.online:8000` (DNS name only), and refuses to finish unless
-`kovanica-node network-tag` prints `2-acfdf6a6c80fd28a`.
+`kovanica-node network-tag` prints `2-24cdb5fadd98b207`.
 
 ```sh
 curl -fsSL https://kovanica.online/download/install.sh | sh
@@ -63,7 +63,7 @@ has no peers. See `docs/TESTNET-RESET.md`.
 The installer takes the expected tag from, in order:
 
 1. `--expected-tag` (or `KOVANICA_EXPECTED_TAG`);
-2. on kovanica-testnet, the built-in pin `2-acfdf6a6c80fd28a`;
+2. on kovanica-testnet, the built-in pin `2-24cdb5fadd98b207`;
 3. an `expected-tag` file inside the checksum-verified bundle.
 
 A bundle `expected-tag` that disagrees with the pin is refused. If none of
@@ -100,9 +100,9 @@ next to the binaries. Details and the refusal rules: `docs/TESTNET-RESET.md`.
   ```
 
 - **Verified bundle metadata:**
-  - **Archive path:** `/tmp/kovanica-testnet-genesis.tar.gz` (`6679` bytes)
-  - **Archive SHA256:** `0892ff8056b1a4d999141752d258750b02be7e141ae0e742b1721b3d2bcfd38a`
-  - **Embedded `expected-tag`:** `2-acfdf6a6c80fd28a`
+  - **Archive path:** `/tmp/kovanica-testnet-genesis.tar.gz` (`747` bytes)
+  - **Archive SHA256:** `a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`
+  - **Embedded `expected-tag`:** `2-24cdb5fadd98b207`
   - **Embedded `SHA256SUMS`:**
     ```text
     045c9dd35fe36885c8645161e66dbb7f8d2c28a0f46246a60a4d015efa005da1  founder_premine.hex
@@ -178,7 +178,7 @@ git push origin v0.3.0-node
 ```
 
 The workflow builds both architectures, fails unless `network-tag` prints
-`2-acfdf6a6c80fd28a`, and on a tag publishes the tarballs, the
+`2-24cdb5fadd98b207`, and on a tag publishes the tarballs, the
 kovanica-testnet genesis bundle and `SHA256SUMS`. `workflow_dispatch` builds
 the same artifacts and does not publish. The installer defaults to
 `VERSION=0.3.0` and pins that network tag. Earlier tags `v0.1.0-node` and
@@ -186,4 +186,4 @@ the same artifacts and does not publish. The installer defaults to
 
 > The release workflow cuts the kovanica-testnet bundle from `testnet/chain2/`
 > with `kovanica-node genesis-bundle --chain-id 2` and requires the computed
-> network tag to be `2-acfdf6a6c80fd28a`.
+> network tag to be `2-24cdb5fadd98b207`.
