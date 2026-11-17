@@ -3,7 +3,7 @@
 **Companion to `docs/AGENT-RULES.md` and `docs/PLAN-2026-11.md`.**
 This is the full-scope plan across all public product repos. Frozen values stay frozen. Consensus changes need an activation plan and Toni’s OK before deploy.
 
-Snapshot: 2026-11-17 (L1 `main` at `8c24431`, post-#275/#277/#278/#279).
+Snapshot: 2026-11-17 (L1 `main` at `b42953f`, post-#275/#277–#281).
 Live L1: `seed1` (`kovanica-testnet`, chain ID 2, tag `2-acfdf6a6c80fd28a`) live at `9758ffe0` with `#259` non-compounding LWMA DAA active; release tag `v0.3.0-node` stays on `e3fce499`.
 
 ## Repos in scope
@@ -97,28 +97,28 @@ Current state: read-only preview (`main` at `9a8a2045`, PR `#10` merged). Verifi
 
 ## P7 — Playground (kovanica-playground)
 
-Current state: `main` at `f7b2892e` (PR `#10` merged, pins `kovanica-sdk` `5aa4f34` and documents hybrid staking RPC rejection). Read-only, no keys, no faucet, no mining submit.
+Current state: `main` at `9aabda4` (PR `#11` merged, pins `kovanica-sdk` `9a8a2045`; PR `#10` `f7b2892` documented hybrid staking RPC rejection). Read-only, no keys, no faucet, no mining submit.
 
 | ID | Item | Status / Notes |
 |----|------|----------------|
-| P7-1 | After SDK update, bump the pinned SHA and re-run CI | Done (`#9`, `#10` `f7b2892e`) |
+| P7-1 | After SDK update, bump the pinned SHA and re-run CI | Done (`#9`, `#10` `f7b2892`, `#11` `9aabda4`) |
 | P7-2 | Point default testnet endpoint at public testnet only if CORS and auth are confirmed | Open (no seed1 docker changes) |
 | P7-3 | Keep zero-key boundary | Active boundary |
 
 ## P8 — Web (kovanica-web)
 
-Current state: TanStack Start site for kovanica.online (`main` at `1366018` PR `#14`; follow-up PR `#15` at `558bac00`). Vendored `@kovanica/sdk-wasm`. Env-driven config; no secrets in repo.
+Current state: TanStack Start site for kovanica.online (`main` at `66d2c0a`; PR `#15` `b5ddb18` and PR `#16` `66d2c0a` merged). Vendored `@kovanica/sdk-wasm`. Env-driven config; no secrets in repo.
 
 | ID | Item | Status / Notes |
 |----|------|----------------|
-| P8-1 | Align public copy with live testnet (chain 2, tag, no stake) | `#14` (`1366018`) merged; `#15` (`558bac00`) open for L1 `#272`/`#259` & SDK `#10` RPC table |
-| P8-2 | Confirm explorer / health links match deployed endpoints | Done (`#14` / `#15`, no nginx edits) |
+| P8-1 | Align public copy with live testnet (chain 2, tag, no stake) | Done (`#14` `1366018`, `#15` `b5ddb18` for L1 `#272`/`#259` & SDK `#10` RPC table) |
+| P8-2 | Confirm explorer / health links match deployed endpoints | Done (`#14` / `#15` `b5ddb18`, no nginx edits; `#16` `66d2c0a` fixes stale-build test harness) |
 | P8-3 | Refresh vendored wasm only from a tagged SDK build | Open (awaiting tagged SDK build) |
 | P8-4 | Brand assets stay consistent with L1 palette (ink / copper / paper) | Done (`#14` `1366018`) |
 
 ## P9 — Apps (kovanica-apps)
 
-Current state: Android (wallet, comms, chain, node), iOS light client, desktop / console-desktop / node-desktop (Tauri), wallet-web. FFI stays in L1.
+Current state: Android (wallet, comms, chain, node), iOS light client, desktop / console-desktop / node-desktop (Tauri), wallet-web (`main` at `86ad7d8`, PR `#23` merged; PR `#24` `e91151b` open to align with L1 `main` `8c24431`). FFI stays in L1.
 
 | ID | Item | Status / Notes |
 |----|------|----------------|
