@@ -3,7 +3,7 @@
 **Replaces Gazda for day-to-day agent work.**
 Read this before any change. If a rule here conflicts with a prompt, stop and ask Toni.
 
-Last updated: 2026-11-17 (chain ID 1337 retired and merged into devnet 3 per Toni; main protected on all five repos; #259 activated on seed1 at `9758ffe0`).
+Last updated: 2026-11-17 (chain ID 1337 retired and merged into devnet 3 per Toni; main protected on all five repos; #259 activated on seed1 at `9758ffe0`; mainnet genesis ceremony #290 executed with network tag `1-4d827d40dd9655db`).
 
 ## 1. Frozen values — do not change, do not remove
 
@@ -28,6 +28,7 @@ These are locked. Any PR that alters them without an explicit Toni decision is r
 | Fee split (devnet) | 100% burn | execution |
 | Address format | `kvnc` + 57 base32 + `dag` (64 chars) | types |
 | Chain IDs | 1 mainnet, 2 testnet, 3 devnet (1337 retired/merged into devnet per Toni 2026-11-17) | params |
+| Network tag (mainnet) | `1-4d827d40dd9655db` | genesis |
 | Network tag (testnet) | `2-acfdf6a6c80fd28a` | genesis |
 | Network tag (mainnet) | `1-4d827d40dd9655db` | genesis (#290) |
 | DAA easiest (testnet/devnet) | `0x1f7f_ffff` | params |
@@ -54,8 +55,8 @@ Legacy Mysticeti constants (`WAVE_LENGTH`, `EPOCH_ROUNDS`, `MIN_VALIDATOR_STAKE`
 
 ## 3. What agents must NOT touch without explicit Toni OK
 
-- Genesis files (`testnet/chain2/*`, `mainnet/genesis.json`, tags)
-- Network tag `2-acfdf6a6c80fd28a`
+- Genesis files (`testnet/chain2/*`, `mainnet/*`, tags)
+- Network tags `1-4d827d40dd9655db` (mainnet) and `2-acfdf6a6c80fd28a` (testnet)
 - Any frozen value in section 1
 - `Cargo.toml` workspace version or dependency pins that affect consensus determinism
 - CI workflows that gate merges

@@ -1,6 +1,6 @@
 # Kovanica Mainnet Freeze Checklist & Genesis Sign-Off Gates
 
-> **Network:** `kovanica-mainnet` (chain ID 1)  
+> **Network:** `kovanica-mainnet` (chain ID 1, network tag `1-4d827d40dd9655db`)  
 > **Native Ticker:** **KVNC** (9 decimals: $1\text{ KVNC} = 10^9\text{ atoms}$, legacy alias `KUNA`)  
 > **Canonical Address Format:** PRO-21 base32 (`kvnc<57 base32>dag`, exactly 64 characters)  
 > **Target Date:** Mainnet Genesis ($T_0$)  
@@ -124,7 +124,8 @@ Verify that every parameter in the release binary matches the canonical mainnet 
 
 | Parameter | Mainnet Value | Invariant Expression | Source File | Status |
 |---|---|---|---|---|
-| **Chain ID** | `1` (`kovanica-mainnet`) | `CHAIN_ID == 1` | `crates/kovanica-params/src/lib.rs` | [ ] |
+| **Chain ID** | `1` (`kovanica-mainnet`) | `CHAIN_ID == 1` | `crates/kovanica-params/src/lib.rs` | [x] |
+| **Network Tag** | `1-4d827d40dd9655db` | `<chain_id>-<16 hex genesis digest>` (`kovanica-mainnet-genesis.tar.gz` sha256 `75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e`) | `mainnet/genesis.json` | [x] |
 | **Native Ticker** | **KVNC** | Decimals: `9` | `crates/kovanica-params/src/lib.rs` | [ ] |
 | **Address Format** | PRO-21 base32 | `kvnc` + 57 base32 chars + `dag` (64 chars) | `crates/kovanica-types/src/address.rs` | [ ] |
 | **Total Supply Ceiling** | `90,200,000 KVNC` | `90_200_000 * 10^9` atoms | `crates/kovanica-staking/src/lib.rs` | [ ] |
@@ -189,7 +190,7 @@ The genesis ceremony establishes the cryptographic trust root of the network and
 
 ### 4.4 Genesis Artifact Generation & Distribution
 
-- [ ] **Ceremony Execution:** Master of Ceremonies executes `ops/genesis/ceremony.sh`:
+- [x] **Ceremony Execution:** Master of Ceremonies executes `ops/genesis/ceremony.sh`:
   ```bash
   ./ops/genesis/ceremony.sh \
       --network kovanica-mainnet \
@@ -198,11 +199,11 @@ The genesis ceremony establishes the cryptographic trust root of the network and
       --founder-address kvnc1...dag \
       --output ./mainnet-genesis
   ```
-- [ ] **Checksum Matching:** All bootstrap seed operators download genesis artifacts and verify SHA-256 checksums:
+- [x] **Checksum Matching:** All bootstrap seed operators download genesis artifacts (`kovanica-mainnet-genesis.tar.gz`, `sha256: 75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e`) and verify SHA-256 checksums:
   ```bash
   sha256sum -c SHA256SUMS
   ```
-- [ ] **Network Tag Derived:** Network Tag matches `1-<16 hex chars>` identically across all operators.
+- [x] **Network Tag Derived:** Network Tag matches `1-4d827d40dd9655db` (`1-<16 hex chars>`) identically across all operators (`#290`).
 - [ ] **Data Directory Lock:** `KOVANICA_DATA_DIR` populated; policy established that data directories are never wiped post-genesis.
 
 ---
