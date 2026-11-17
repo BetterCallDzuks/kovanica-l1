@@ -1,6 +1,6 @@
 # External Audit / Seed / DNS — Checklist
 
-Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, Wasmi execution, KVNC tokenomics, PRO-21 address requirements, 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#284`), canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`), genesis-active hardening gates (`#288`), and pinned `main` commit `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b`.
+Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, Wasmi execution, KVNC tokenomics, PRO-21 address requirements, 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#284`), canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`), genesis-active hardening gates (`#288`), automated fuzz smoke runner (`#309`/`#310`), peer reputation and IP ban scoring subsystem (`#312`), and pinned `main` commit `e15b20a1dbdc97fc7ebecb78a9c2ce0320490eb7`.
 
 ## 1. Seed / DNS audit (gating before public launch)
 - [x] Automated DNS probe script (`scripts/check-dns-seeds.sh`) implemented and verified
@@ -10,12 +10,13 @@ Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, Kovanic
 - [ ] Publish each seed's libp2p PeerId and confirm `/p2p/` in the multiaddr matches
 - [x] Confirm `KOVANICA_BOOTNODES` defaults stay empty in code; seeds configured via env/TOML
 
-## 2. External audit scope (mandatory before mainnet $T_0$; internal code verification locked at `6bcca86`)
+## 2. External audit scope (mandatory before mainnet $T_0$; internal code verification locked at `e15b20a`)
 - [ ] **Consensus (Hybrid PoW + GHOSTDAG, K=5, target 4s):**
   - [ ] Verify KovanicaHash PoW algorithm (BLAKE3 + 2 MiB memory mix scratchpad, `KOVANICA_HASH_MIX_ROUNDS = 1024`) determinism and memory-hardness (`crates/kovanica-types/src/pow.rs:59-175`)
   - [ ] Verify Difficulty Adjustment Algorithm (LWMA DAA, `TARGET_BLOCK_MS = 4000`) stability, time warp resistance, and target clamping (`crates/kovanica-consensus/src/daa.rs:204-518`, `crates/kovanica-params/src/lib.rs:37`)
   - [ ] Verify GHOSTDAG K=5 (`GHOSTDAG_K = 5`) coloring, blue set selection, and topological DAG linear order (`crates/kovanica-params/src/lib.rs:39`, `crates/kovanica-consensus/src/ghostdag_scoped.rs:40`)
   - [ ] Verify edge anti-DoS ingress: PoW target & `GHOSTDAG_K` parent bound verification before gossip relay (`validate_pow_target`, `crates/kovanica-network/src/validation.rs:268`)
+  - [ ] Verify automated fuzz smoke test suite & runner across block, tx, vote, and consensus boundaries (`fuzz/tests/smoke_tests.rs`, `scripts/run-fuzz-smoke.sh`, `#309`/`#310`)
   - [ ] Verify that consensus is strictly leaderless PoW + GHOSTDAG (NO stake in consensus path; legacy Mysticeti gated on `!is_hybrid` in `crates/kovanica-node/src/main.rs`)
 - [ ] **Execution & Hardening Gates (Wasmi deterministic WASM engine):**
   - [ ] Verify deterministic fuel metering per instruction and host call (`crates/kovanica-runtime/src/lib.rs`, `crates/kovanica-execution/src/lib.rs:912`)
@@ -36,6 +37,7 @@ Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, Kovanic
   - [ ] Verify keystore v2: Argon2id (64 MiB, 3 iter, 4 parallelism) + XChaCha20-Poly1305 (`crates/kovanica-keystore/src/lib.rs:29-35,112`)
 - [ ] **P2P Networking & Node Security:**
   - [ ] Verify eclipse / Sybil resistance, peer discovery, gossip limits (port 8000 default)
+  - [ ] Verify in-memory peer reputation & IP ban scoring subsystem (`crates/kovanica-network/src/peer_scorer.rs`), penalty matrix (+50 malformed, +100 invalid block/PoW instant ban, +25 bad sig, +20 flood spam), socket gating (`InboundGate`), and 15-minute ban enforcement (`#312`)
   - [ ] Confirm no keys or seed material passed to or stored by the node daemon
   - [ ] Verify systemd sandboxing (`MemoryMax=3G`, `ProtectSystem=strict`, syscall filters)
 - [ ] **Licensing & Copyleft:**

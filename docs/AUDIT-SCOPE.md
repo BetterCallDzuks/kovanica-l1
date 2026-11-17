@@ -4,7 +4,7 @@
 **Date:** 2026-11-17  
 **Codebase:** `kovanica` (Hybrid PoW + GHOSTDAG, account-based, Wasmi execution)  
 **Repository:** `https://github.com/KovanicaDAG/kovanica-l1`  
-**Pinned Commit (`main`):** `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b`  
+**Pinned Commit (`main`):** `e15b20a1dbdc97fc7ebecb78a9c2ce0320490eb7`  
 **License:** GPL-3.0-or-later  
 **Native Coin:** **KVNC** (9 decimals; `ONE_KVNC = 10^9`)  
 
@@ -102,7 +102,7 @@ $$\text{TOTAL\_SUPPLY} = \text{PREMINE } (0.2\text{M}) + \text{TREASURY } (8\tex
 |---|---|---|
 | Libp2p Swarm & Protocols | **High** | Transport: TCP on port 8000, authenticated encryption via Noise, multiplexing via Yamux. Identification: `/kovanica/<network-tag>/1.0.0`. |
 | Gossipsub Mesh | **High** | Topics: `kovanica/<network-tag>/{blocks, transactions, sync}`. Message framing capped at `MAX_TRANSMIT_SIZE = 1 MiB` (64 KiB above the `MAX_BLOCK_BYTES = 960 KiB` consensus limit). |
-| Edge Validation & Scoring | **Critical** | Pre-gossip edge validation: PoW target check (`validate_pow_target`), transaction signature and fee validation. Peer scoring, topic mesh penalties, and automatic disconnection/banning of misbehaving nodes. |
+| Edge Validation & Scoring | **Critical** | Pre-gossip edge validation: PoW target check (`validate_pow_target`), transaction signature and fee validation. In-memory peer reputation scoring (`crates/kovanica-network/src/peer_scorer.rs`), penalty matrix (+50 malformed, +100 invalid block/PoW, +25 bad sig, +20 flood spam), socket gating (`InboundGate`), and automatic 15-minute IP bans. Continuous fuzz smoke validation (`fuzz/tests/smoke_tests.rs`). |
 | Seed Bootstrap | **Medium** | Bootstrap via DNS seeds (`testnet.kovanica.online`, `seed1/2/3.kovanica.online`). Verification that no third-party infrastructure is baked into code. |
 
 ---

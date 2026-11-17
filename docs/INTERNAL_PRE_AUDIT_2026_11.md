@@ -3,7 +3,7 @@
 **Audit Team:** Kovanica Core Security & Protocol Engineering (Internal Pre-Audit Handoff)  
 **Audit Period:** 2026-11-05 – 2026-11-17  
 **Report Date:** 2026-11-17  
-**Codebase Commit (`origin/main`):** `833e7e9caa46d696402968567a67bfc95e2ac260` (code tip `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b`, post-`#283`–`#289`)  
+**Codebase Commit (`origin/main`):** `e15b20a1dbdc97fc7ebecb78a9c2ce0320490eb7` (code tip post-`#308`–`#312`)  
 **Scope Document:** [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) v2.0  
 **Checklist Document:** [`docs/AUDIT-CHECKLIST.md`](AUDIT-CHECKLIST.md)  
 **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, network tag `2-24cdb5fadd98b207`)  
@@ -49,7 +49,7 @@
 | **Domain-separated BLAKE3 seed & finalize phases** | `crates/kovanica-types/src/pow.rs:62-65`, `98-107`, `153-167` | Seed phase uses `blake3::keyed_hash` with `KVNC-POW-SEED-v1` (`pow.rs:62,101`), expands buffer via `blake3::Hasher::new_keyed(&seed_bytes).finalize_xof()` (`pow.rs:105-106`), and finalizes under `KVNC-POW-FINL-v1` over `seed_bytes`, `state`, and boundary chunks `[0..32]` and `[2097120..2097152]` (`pow.rs:157-166`). | **VERIFIED** |
 | **Cheap structural & clock checks BEFORE 2 MiB PoW hash** | `crates/kovanica-network/src/validation.rs:250-300`, `crates/kovanica-types/src/block.rs:590-645` | Gossip edge verifies `block.digest`, `merkle_root`, PoW header extraction, `header.parents.len() <= GHOSTDAG_K` (`5`), duplicate parent rejection, self-parent rejection, parent round ordering (`p.round < block.round`), and `block.round - p.round <= MAX_PARENT_ROUND_GAP` (`validation.rs:268-295`) *before* invoking `header.verify_pow_with_clock(now_ms)` (`validation.rs:297-299`). Inside `verify_pow_with_clock`, timestamp drift and compact target validity are checked before `kovanica_hash` is evaluated (`crates/kovanica-crypto/tests/audit_31_hot_path.rs`). | **VERIFIED** |
 
-- **Key Tests:** `kovanica_hash_buffer_size_invariants`, `kovanica_hash_deterministic_and_reproducible`, `kovanica_hash_golden_vectors` (`crates/kovanica-types/src/pow.rs:185-238`); `crates/kovanica-crypto/tests/audit_31_hot_path.rs`; `crates/kovanica-network/src/validation.rs:1050-1120`.
+- **Key Tests:** `kovanica_hash_buffer_size_invariants`, `kovanica_hash_deterministic_and_reproducible`, `kovanica_hash_golden_vectors` (`crates/kovanica-types/src/pow.rs:185-238`); `crates/kovanica-crypto/tests/audit_31_hot_path.rs`; `crates/kovanica-network/src/validation.rs:1050-1120`; automated fuzz smoke parser/boundary suite (`fuzz/tests/smoke_tests.rs`, `scripts/run-fuzz-smoke.sh`, PR `#309`/`#310`).
 
 ---
 
@@ -108,6 +108,8 @@
 | **Admission size, signature, hash-binding & fee floors** | `crates/kovanica-mempool/src/lib.rs:380-520` | Enforces `MAX_TX_BYTES = 512 KiB`, `MAX_TX_GAS_LIMIT = 10_000_000`, `tx.hash == tx.signing_hash(chain_id)`, strict Ed25519 signature verification, and `fee_rate >= min_fee_rate` (`lib.rs:437-442`). | **VERIFIED** |
 | **Replace-By-Fee (RBF) 10% minimum bump & cumulative balance check** | `crates/kovanica-mempool/src/lib.rs:490-515` | Replacing an existing same-sender, same-nonce transaction requires at least a 10% fee bump (`bump.max(1)`, `lib.rs:493-498`), and cumulative pending spend (`amount + fee`) across all queued nonces for a sender cannot exceed committed account balance. | **VERIFIED** |
 
+- **Key Tests:** `mempool_rbf_and_eviction_tests` (`crates/kovanica-mempool/tests/`); `fuzz/tests/smoke_tests.rs` (transaction deserialization and malformed signature bounds).
+
 ---
 
 ### Area 7: P2P Network Anti-DoS & RPC Security Middleware (`kovanica-network`, `kovanica-rpc`)
@@ -115,8 +117,11 @@
 | Invariant / Check | Code Reference | Verification Details & Backing Tests | Status |
 |---|---|---|---|
 | **P2P Gossipsub frame cap & network-tag isolation** | `crates/kovanica-network/src/lib.rs`, `crates/kovanica-network/src/network_id.rs` | Transport uses TCP port `8000` + Noise + Yamux; protocol and gossip topics bind `/kovanica/<network-tag>/1.0.0` (`2-24cdb5fadd98b207` on testnet). `MAX_TRANSMIT_SIZE = 1 MiB` bounds gossip frames above `MAX_BLOCK_BYTES = 960 KiB`. | **VERIFIED** |
+| **Peer reputation tracker & Inbound socket IP ban gate (`#312`)** | `crates/kovanica-network/src/peer_scorer.rs`, `crates/kovanica-network/src/behaviour.rs:50-135` | Thread-safe `PeerScorer` assigns deterministic penalties: malformed frame (+50), invalid block/PoW (+100 instant ban), invalid tx signature (+25), rate limit flood (+20). Reaching `BAN_SCORE_THRESHOLD = 100` bans the IP for 15 minutes (`DEFAULT_BAN_DURATION`). `InboundGate` intercepts pending connections in libp2p and drops banned IPs immediately before allocating frame buffers, handshake cryptography, or protocol state. Automatic ban expiration and thread-safe ban maintenance. | **VERIFIED** |
 | **RPC Bearer token write auth (constant-time, no loopback bypass)** | `crates/kovanica-rpc/src/rpc_middleware.rs:250-276` | `AuthConfig::authorize` requires `Authorization: Bearer <token>` on all `WRITE_METHODS` (`kovanica_sendRawTransaction`, `kovanica_submitWork`, etc.) when `require_auth_for_writes` is enabled, comparing every configured token via `constant_time_eq` without early exit (`rpc_middleware.rs:266-270`) and with no loopback bypass. | **VERIFIED** |
 | **Per-IP token-bucket rate limiter & strict CORS allowlist** | `crates/kovanica-rpc/src/rpc_middleware.rs:124-145`, `288-360` | Per-IP `TokenBucket` with `MAX_TRACKED_CLIENTS = 100_000` and idle eviction (`rpc_middleware.rs:124-128`). Browser CORS is restricted to `CONSOLE_ALLOWED_ORIGINS` on `/rpc`, `/ws`, and `/health` (`rpc_middleware.rs:313-327`), leaving `/metrics` unexposed to cross-origin browsers. | **VERIFIED** |
+
+- **Key Tests:** `crates/kovanica-network/tests/peer_reputation_scoring.rs` (reputation accumulation, ban threshold, socket gating, expiration); `crates/kovanica-rpc/tests/middleware_tests.rs`.
 
 ---
 
