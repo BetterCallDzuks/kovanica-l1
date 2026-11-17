@@ -43,6 +43,8 @@ Update this file when frozen params or open product gaps change. Point-in-time d
 
 Hardening gates (`*_ACTIVE_FROM_ROUND`: gas, contract, size limits, slashing) are `0` (`GENESIS_ROUND`) in tree since `P4-6` (`#288`, 2026-11-17), so fresh genesis / empty-volume re-genesis chains enforce them from round 0 (`STATE_COMMITMENT_ACTIVE_FROM_ROUND` stays `500_000`). Live seed1 (chain ID 2, deploy SHA `9758ffe0`) still runs the pre-flip build, so they remain inert there until an empty-volume re-genesis; seed1 is **not** re-deployed unless Toni orders it.
 
+- **Mainnet (chain ID 1) genesis ceremony (P4-3) executed 2026-11-17.** Network tag `1-4d827d40dd9655db`. Bundle `/tmp/kovanica-mainnet-genesis.tar.gz` sha256 `75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e` (files: `genesis_validators.toml`, `founder_premine.hex`). Public genesis files committed under `mainnet/` (5 seeds, founder `kvnc2yuz...`, treasury `kvncd2xk...`). `funded_accounts.toml` absent (forbidden on chain 1). Keystores/passphrases remain in `/tmp/mainnet-ceremony-private` (never committed).
+
 ## Open product gaps (not archived noise)
 
 1. Ops drift (live fleet cutover): VPS systemd units & migration script prepared in `ops/systemd/` and `scripts/cutover-vps-systemd.sh` (live cutover execution pending VPS Seed Ops deploy); DNS seed audit probe automated in `scripts/check-dns-seeds.sh` (`docs/SEED-DNS-AUDIT.md`).

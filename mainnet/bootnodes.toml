@@ -1,0 +1,3 @@
+# Kovanica mainnet bootnodes
+# All nodes should use this seed
+bootnodes = ["mainnet.kovanica.online:8000"]

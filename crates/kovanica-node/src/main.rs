@@ -14021,15 +14021,21 @@ mod b1_epoch_restart_repro {
         use kovanica_types::signing::chain_id;
 
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let template_path = root.join("mainnet/genesis.json");
+        let committed_path = root.join("mainnet/genesis.json");
+        assert!(committed_path.exists(), "mainnet/genesis.json must exist");
+        let committed_text = std::fs::read_to_string(&committed_path).unwrap();
         assert!(
-            template_path.exists(),
-            "mainnet/genesis.json template must exist"
+            !committed_text.contains("PLACEHOLDER_"),
+            "committed mainnet/genesis.json must not contain unfilled PLACEHOLDER_ tokens"
         );
 
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("genesis.json");
-        std::fs::copy(&template_path, &target).unwrap();
+        std::fs::write(
+            &target,
+            r#"{"chain_id":1,"founder":"PLACEHOLDER_MAINNET_FOUNDER"}"#,
+        )
+        .unwrap();
 
         let config = NodeConfig {
             chain_id: chain_id::MAINNET,

@@ -1,44 +1,110 @@
 {
-  "chain_id": 1,
-  "comment": "UNUSABLE TEMPLATE: Placeholders (digest_hex, signature_hex, founder/treasury addresses, bootstrap seed keys) must be filled by the offline genesis ceremony (ops/genesis/ceremony.sh) with Toni's verified public keys and PRO-21 addresses before kovanica-mainnet launch (1.1.2027). Premine (200k KVNC), treasury schedule (8M KVNC at 1M/yr), MAX_TARGET_BITS (0x1f00ffff), and genesis time are fixed in kovanica-params / consensus, not ceremony input. The node fails closed if placeholders remain.",
+  "allocations": {
+    "emission_policy": "no-stake-82m",
+    "founder_address_bytes": "51382fddc9607ccad492cab085a494abc0763358f1dfc444c9cfe3ab41d70ba6",
+    "founder_address_hex": "kvnc2yuzlhwfvp7v44yje2cgtfy540q8vv6c780ug3xfel36kswhpwnfthzxvdag",
+    "founder_premine_atoms": 200000000000000,
+    "founder_premine_kovanica": 200000,
+    "genesis_validator_allocation_atoms": 0,
+    "genesis_validator_allocation_kovanica": 0,
+    "mining_subsidy_budget_atoms": 82000000000000000,
+    "mining_subsidy_budget_kovanica": 82000000,
+    "treasury_address_bytes": "6a8d69357e3d880c57361e56f70e2d9cc638b8866bb64b59dc90c218fe3fd04e",
+    "treasury_address_hex": "kvncd2xkjdt78kyqc4ekret0wr3dnnrr3wyxdwmykkwujrpp3l3l6p80mk2dgdag",
+    "validators": [
+      {
+        "address_hex": "a7a39cf0881d191bf0e8fbe91a00d3c02f0ffae65b0f3bed9e5ad69cf432124f",
+        "genesis_liquid_atoms": 0,
+        "genesis_share_atoms": 0,
+        "public_key_hex": "a7a39cf0881d191bf0e8fbe91a00d3c02f0ffae65b0f3bed9e5ad69cf432124f",
+        "stake": 0
+      },
+      {
+        "address_hex": "0ad815bd9725bd54aa3fea282394e4fb2f1bd995933668e62598eca994dbea9f",
+        "genesis_liquid_atoms": 0,
+        "genesis_share_atoms": 0,
+        "public_key_hex": "0ad815bd9725bd54aa3fea282394e4fb2f1bd995933668e62598eca994dbea9f",
+        "stake": 0
+      },
+      {
+        "address_hex": "85abc64a8fd59ca453619a99168d60e45f87e86545f76ab8c619b079df219a7a",
+        "genesis_liquid_atoms": 0,
+        "genesis_share_atoms": 0,
+        "public_key_hex": "85abc64a8fd59ca453619a99168d60e45f87e86545f76ab8c619b079df219a7a",
+        "stake": 0
+      },
+      {
+        "address_hex": "24390df04fc8660fd751243e0ff8b4720c0127a1ac6ff5cf95274ad2710a532f",
+        "genesis_liquid_atoms": 0,
+        "genesis_share_atoms": 0,
+        "public_key_hex": "24390df04fc8660fd751243e0ff8b4720c0127a1ac6ff5cf95274ad2710a532f",
+        "stake": 0
+      },
+      {
+        "address_hex": "55378a9a8b862960a2dd0fd609d97e1044f64a602c1af29397b329f89e8815e8",
+        "genesis_liquid_atoms": 0,
+        "genesis_share_atoms": 0,
+        "public_key_hex": "55378a9a8b862960a2dd0fd609d97e1044f64a602c1af29397b329f89e8815e8",
+        "stake": 0
+      }
+    ]
+  },
   "genesis_block": {
     "author": 0,
+    "digest_hex": "492ae34598de7d9f0a1e213445d8f0d32be06a18887c764f30544933923d5199",
+    "parents": [],
     "round": 0,
-    "digest_hex": "PLACEHOLDER_MAINNET_GENESIS_DIGEST",
-    "signature_hex": "PLACEHOLDER_MAINNET_GENESIS_SIGNATURE",
-    "transactions": [],
+    "signature_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
     "statements": [],
-    "parents": []
+    "transactions": []
   },
   "staking_state": {
     "committed_leader_height": 0,
     "delegations": [],
+    "reward_totals": {},
     "total_mining_issued": 0,
     "total_staked": 0,
-    "treasury": "PLACEHOLDER_MAINNET_TREASURY_ADDRESS",
-    "validators": {}
-  },
-  "allocations": {
-    "emission_policy": "no-stake-82m",
-    "treasury_address_hex": "PLACEHOLDER_MAINNET_TREASURY_ADDRESS",
-    "treasury_address_bytes": "PLACEHOLDER_MAINNET_TREASURY_ADDRESS_BYTES",
-    "founder_address_hex": "PLACEHOLDER_MAINNET_FOUNDER_ADDRESS",
-    "founder_address_bytes": "PLACEHOLDER_MAINNET_FOUNDER_ADDRESS_BYTES",
-    "founder_premine_atoms": 200000000000000,
-    "founder_premine_kovanica": 200000,
-    "mining_subsidy_budget_atoms": 82000000000000000,
-    "mining_subsidy_budget_kovanica": 82000000,
-    "genesis_validator_allocation_atoms": 0,
-    "genesis_validator_allocation_kovanica": 0,
-    "validators": [
-      {
-        "address_hex": "PLACEHOLDER_MAINNET_BOOTSTRAP_SEED_ADDRESS",
-        "genesis_liquid_atoms": 0,
-        "genesis_share_atoms": 0,
-        "public_key_hex": "PLACEHOLDER_MAINNET_BOOTSTRAP_SEED_PUBLIC_KEY",
-        "stake": 0
-      }
-    ]
+    "treasury": {
+      "claimed": 0,
+      "start_height": 0,
+      "treasury_address": [
+        106,
+        141,
+        105,
+        53,
+        126,
+        61,
+        136,
+        12,
+        87,
+        54,
+        30,
+        86,
+        247,
+        14,
+        45,
+        156,
+        198,
+        56,
+        184,
+        134,
+        107,
+        182,
+        75,
+        89,
+        220,
+        144,
+        194,
+        24,
+        254,
+        63,
+        208,
+        78
+      ],
+      "vested": 0
+    },
+    "unbonding_queue": [],
+    "validators": []
   },
   "validator_keys": []
 }
