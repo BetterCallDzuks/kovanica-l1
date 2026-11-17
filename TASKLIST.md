@@ -27,9 +27,9 @@ Base tip: `e3fce499afe6637b2a594b60306aef6312ef4bbf` (main @ merge #252, 2026-11
 
 - [x] BIP32-style HD derivation (SLIP-0010 Ed25519; coin type 3007; opt-in via --hd/--account/--index).
 - [x] Kubernetes manifests (`deploy/k8s/`, `deploy/helm/kovanica/`).
-- [ ] Key distribution ceremony (`docs/KEY-CEREMONY.md`) — **draft, not normative**; being rewritten for PoW + GHOSTDAG no-stake.
+- [x] Key distribution ceremony (`docs/KEY-CEREMONY.md`) — rewritten for Hybrid PoW + GHOSTDAG no-stake (PR #261); normative ceremony procedures and frozen parameters locked; actual address generation pending offline ceremony ($T_0 - 48\text{h}$).
 - [x] External security review scope — finalized comprehensive scope document (`docs/AUDIT-SCOPE.md`), checklist (`docs/AUDIT-CHECKLIST.md`), and auditor invitation (`docs/AUDITOR-INVITATION.md`) covering KovanicaHash (BLAKE3 + 2 MiB scratchpad), GHOSTDAG K=5, DAA, Wasmi fuel sandboxing, PRO-21 addresses, and KVNC tokenomics (engagement pending external auditor assignment).
-- [ ] Mainnet launch + monitoring runbook (`docs/MAINNET-RUNBOOK.md`) — **draft, not normative**; being rewritten for PoW + GHOSTDAG no-stake.
+- [x] Mainnet launch + monitoring runbook (`docs/MAINNET-RUNBOOK.md`) — rewritten for Hybrid PoW + GHOSTDAG no-stake (PR #261); covers seed, miner, and RPC node operations, systemd caps, health endpoints, alerts, and incident handling.
 - [x] ~~Governance: parameter proposals, stake-weighted voting, treasury spend (`propose`/`vote` in `kovanica-cli`, state tracking in `kovanica-staking`).~~ **Removed** — stale stake-weighted governance deleted; consensus is PoW + GHOSTDAG, no stake. Governance model pending decision.
 - [x] ~~Staking user-facing guide~~ (was `docs/STAKING-GUIDE.md`) — covered delegator & validator onboarding, CLI staking/delegation/unbonding/rewards, and FAQ. **Removed** — superseded by the no-stake decision; the file no longer exists.
 - [x] Explorer docs ([`docs/EXPLORER.md`](docs/EXPLORER.md)) and mainnet freeze checklist ([`docs/MAINNET-FREEZE-CHECKLIST.md`](docs/MAINNET-FREEZE-CHECKLIST.md)).
