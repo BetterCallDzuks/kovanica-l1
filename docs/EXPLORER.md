@@ -1,6 +1,6 @@
 # Kovanica Block Explorer & Console Deployment Guide
 
-> **Network ID:** `1` (`MAINNET`) / `4` (`TESTNET`)  
+> **Network ID:** `1` (`kovanica-mainnet`) / `2` (`kovanica-testnet`)  
 > **Native Ticker:** **KVNC** (9 decimals: $1\text{ KVNC} = 10^9\text{ atoms}$, legacy alias `KUNA`)  
 > **Canonical Address Format:** PRO-21 base32 (`kvnc<57 base32>dag`, exactly 64 characters)  
 > **Frontends Covered:** `packages/web` (Kovanica Block Explorer) and `packages/console` (Kovanica Node & Operator Console)  
@@ -14,12 +14,12 @@ Kovanica ships with two dedicated TypeScript web applications designed for clust
 
 1. **Kovanica Block Explorer (`packages/web`):**
    - Public-facing block explorer for the Kovanica network.
-   - Visualizes the GHOSTDAG structure, committed blocks, transactions, legacy staking rows, contract execution logs, and account balances. Chains 1 and 2 have no validator committee; any validator/stake data shown is legacy ledger state.
+   - Visualizes the GHOSTDAG structure, committed blocks, transactions, contract execution logs, and account balances. Chains 1 and 2 have no validator committee; `kovanica_getValidators`, `kovanica_getStake`, and `kovanica_getLeaderSchedule` return JSON-RPC `-32600` (`InvalidRequest`) on hybrid chains (#272).
    - Hosted typically at `https://explorer.kovanica.online`.
 
 2. **Kovanica Node Console (`packages/console`):**
    - Web application for node operators, developers, and power users.
-   - Interfaces directly with local or remote Kovanica nodes for keystore management, offline transaction signing via `@kovanica/signer`, legacy staking/delegation/unbonding operations (ledger-only; they do not affect block production), network sync inspection, and smart contract invocation.
+   - Interfaces directly with local or remote Kovanica nodes for keystore management, offline transaction signing via `@kovanica/signer`, network sync inspection, and smart contract invocation (staking transactions are refused with `HYBRID_STAKE_REFUSAL` on hybrid chains 1 and 2).
    - Hosted typically at `https://console.kovanica.online`.
 
 ### 1.1 Ingress & Proxy Topology

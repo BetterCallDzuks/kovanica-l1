@@ -3,8 +3,8 @@
 **Companion to `docs/AGENT-RULES.md` and `docs/PLAN-2026-11.md`.**
 This is the full-scope plan across all public product repos. Frozen values stay frozen. Consensus changes need an activation plan and Toni’s OK before deploy.
 
-Snapshot: 2026-11-16.
-Live L1: seed1 on `e3fce499` / tag `v0.3.0-node`. #259 merged, not activated.
+Snapshot: 2026-11-17 (L1 `main` at `8c24431`, post-#275/#277/#278/#279).
+Live L1: `seed1` (`kovanica-testnet`, chain ID 2, tag `2-acfdf6a6c80fd28a`) live at `9758ffe0` with `#259` non-compounding LWMA DAA active; release tag `v0.3.0-node` stays on `e3fce499`.
 
 ## Repos in scope
 
@@ -85,48 +85,48 @@ Out of this plan: `kovanica-vault` (separate private tool).
 
 ## P6 — SDK (kovanica-sdk)
 
-Current state: read-only preview. README still cites an old L1 commit (`feab9050`). No key derivation, no signing, no mining submit.
+Current state: read-only preview (`main` at `9a8a2045`, PR `#10` merged). Verified against L1 `de641f6`; documents `-32600` (`InvalidRequest`) rejection of legacy staking RPCs (`kovanica_getValidators`, `kovanica_getStake`, `kovanica_getLeaderSchedule`) on hybrid chains 1 and 2. No key derivation, no signing, no mining submit.
 
-| ID | Item | Notes |
-|----|------|-------|
-| P6-1 | Re-verify RPC methods against current L1 main | Update the cited SHA |
-| P6-2 | Confirm hybrid methods (`getMiningInfo`, `getDagTips`) match live chain 2 | |
-| P6-3 | Keep read-only | No signing until a design PR is approved |
-| P6-4 | Chain registry stays 1/2/3/1337 with frozen address rules | |
-| P6-5 | Publish or document how web/playground should pin a SHA | |
+| ID | Item | Status / Notes |
+|----|------|----------------|
+| P6-1 | Re-verify RPC methods against current L1 main | Done (`#8` `039d0e8`, `#9` `5aa4f34`, `#10` `9a8a2045` citing L1 `de641f6`) |
+| P6-2 | Confirm hybrid methods (`getMiningInfo`, `getDagTips`) match live chain 2 | Done (`#10` `9a8a2045` + deterministic transport tests) |
+| P6-3 | Keep read-only | Active boundary — no signing until a design PR is approved |
+| P6-4 | Chain registry stays 1/2/3/1337 with frozen address rules | Done |
+| P6-5 | Publish or document how web/playground should pin a SHA | Done (`#10` / playground `#10`) |
 
 ## P7 — Playground (kovanica-playground)
 
-Current state: pins SDK at `7b790bee`. Read-only, no keys, no faucet, no mining submit.
+Current state: `main` at `f7b2892e` (PR `#10` merged, pins `kovanica-sdk` `5aa4f34` and documents hybrid staking RPC rejection). Read-only, no keys, no faucet, no mining submit.
 
-| ID | Item | Notes |
-|----|------|-------|
-| P7-1 | After SDK update, bump the pinned SHA and re-run CI | Do not float on moving main |
-| P7-2 | Point default testnet endpoint at public testnet only if CORS and auth are confirmed | No seed1 docker changes |
-| P7-3 | Keep zero-key boundary | |
+| ID | Item | Status / Notes |
+|----|------|----------------|
+| P7-1 | After SDK update, bump the pinned SHA and re-run CI | Done (`#9`, `#10` `f7b2892e`) |
+| P7-2 | Point default testnet endpoint at public testnet only if CORS and auth are confirmed | Open (no seed1 docker changes) |
+| P7-3 | Keep zero-key boundary | Active boundary |
 
 ## P8 — Web (kovanica-web)
 
-Current state: TanStack Start site for kovanica.online. Vendored `@kovanica/sdk-wasm`. Env-driven config; no secrets in repo.
+Current state: TanStack Start site for kovanica.online (`main` at `1366018` PR `#14`; follow-up PR `#15` at `558bac00`). Vendored `@kovanica/sdk-wasm`. Env-driven config; no secrets in repo.
 
-| ID | Item | Notes |
-|----|------|-------|
-| P8-1 | Align public copy with live testnet (chain 2, tag, no stake) | Docs/copy only |
-| P8-2 | Confirm explorer / health links match deployed endpoints | No nginx edits unless ops prompt |
-| P8-3 | Refresh vendored wasm only from a tagged SDK build | |
-| P8-4 | Brand assets stay consistent with L1 palette (ink / copper / paper) | |
+| ID | Item | Status / Notes |
+|----|------|----------------|
+| P8-1 | Align public copy with live testnet (chain 2, tag, no stake) | `#14` (`1366018`) merged; `#15` (`558bac00`) open for L1 `#272`/`#259` & SDK `#10` RPC table |
+| P8-2 | Confirm explorer / health links match deployed endpoints | Done (`#14` / `#15`, no nginx edits) |
+| P8-3 | Refresh vendored wasm only from a tagged SDK build | Open (awaiting tagged SDK build) |
+| P8-4 | Brand assets stay consistent with L1 palette (ink / copper / paper) | Done (`#14` `1366018`) |
 
 ## P9 — Apps (kovanica-apps)
 
-Current state: Android (wallet, comms, chain, node), iOS light client, desktop / console-desktop / node-desktop (Tauri), wallet-web. FFI stays in L1. Some relative paths still say `kovanica` instead of `kovanica-l1`.
+Current state: Android (wallet, comms, chain, node), iOS light client, desktop / console-desktop / node-desktop (Tauri), wallet-web. FFI stays in L1.
 
-| ID | Item | Notes |
-|----|------|-------|
-| P9-1 | Fix sibling paths to `KovanicaDAG/kovanica-l1` | Docs or build config only |
-| P9-2 | Android-node: confirm testnet chain 2 + network tag | No consensus code |
-| P9-3 | Wallet-web: consume current SDK (read-only first) | |
-| P9-4 | node-desktop: document pointing at a self-built `kovanica-node` | Already partially done |
-| P9-5 | Do not move light-ffi into this repo | |
+| ID | Item | Status / Notes |
+|----|------|----------------|
+| P9-1 | Fix sibling paths to `KovanicaDAG/kovanica-l1` | Done (`#22` `92f2d904`, `#23` `86ad7d89`) |
+| P9-2 | Android-node: confirm testnet chain 2 + network tag | Done (`#21` `6ba74fb1`, PoC) |
+| P9-3 | Wallet-web: consume current SDK (read-only first) | Open |
+| P9-4 | node-desktop: document pointing at a self-built `kovanica-node` | Done (`#19`, `#20` `37ec0290`) |
+| P9-5 | Do not move light-ffi into this repo | Active boundary |
 
 ## Explicit non-goals
 
