@@ -56,9 +56,17 @@ fn test_published_hd_vector_3007() {
     let addr = Address::from_public_key(&pk);
     let pro21 = addr.encode();
 
+    assert_eq!(
+        hex::encode(pk.0),
+        "862f70cfafc9b581699f8d67598eac699cbc92bdfc940e95ed7ee1e8d8100e7e"
+    );
     assert_eq!(pro21.len(), 64);
     assert!(pro21.starts_with("kvnc"));
     assert!(pro21.ends_with("dag"));
+    assert_eq!(
+        pro21,
+        "kvncschhpna0ex6cz6vl34n4nr4vdxwtey4alj2qa90d0ms73kqspel0nuhe8dag"
+    );
 
     // Ensure WalletAccount::from_mnemonic_hd produces the exact identical key
     let wallet_account = WalletAccount::from_mnemonic_hd(phrase, "", 0, 0, 0).unwrap();

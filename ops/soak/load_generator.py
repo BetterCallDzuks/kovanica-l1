@@ -175,8 +175,8 @@ def decode_address(address_str: str) -> bytes:
 # ---------------------------------------------------------------------------
 # Transaction Builder & Serializer (Bincode format)
 # ---------------------------------------------------------------------------
-TX_DOMAIN_TAG = b"KUNA/tx/v1".ljust(16, b"\x00")
-TX_HASH_DOMAIN = b"KUNA-TX-v1"
+TX_DOMAIN_TAG = b"KVNC/tx/v1".ljust(16, b"\x00")
+TX_HASH_DOMAIN = b"KVNC-TX-v1"
 
 
 def build_and_sign_transfer(
@@ -211,7 +211,7 @@ def build_and_sign_transfer(
 
     # Bincode serialization of Transaction struct:
     # sender (32B) || nonce (u64 LE) || kind_variant (u32 LE: 0) ||
-    # to (32B) || amount (u64 LE) || fee (u64 LE) || signature (64B) || hash (32B)
+    # to (32B) || amount (u64 LE) || fee (u64 LE) || sig_len (u64 LE: 64) || signature (64B) || hash (32B)
     raw = bytearray()
     raw.extend(sender_pubkey)
     raw.extend(struct.pack("<Q", nonce))
@@ -219,6 +219,7 @@ def build_and_sign_transfer(
     raw.extend(recipient_pubkey)
     raw.extend(struct.pack("<Q", amount_atoms))
     raw.extend(struct.pack("<Q", fee_atoms))
+    raw.extend(struct.pack("<Q", 64))  # u64 LE length prefix for serde_bytes Signature
     raw.extend(signature)
     raw.extend(tx_hash)
 
@@ -228,11 +229,19 @@ def build_and_sign_transfer(
 # ---------------------------------------------------------------------------
 # JSON-RPC Client Helpers
 # ---------------------------------------------------------------------------
+def normalize_rpc_url(url: str) -> str:
+    cleaned = url.strip().rstrip("/")
+    if not cleaned.endswith("/rpc"):
+        return f"{cleaned}/rpc"
+    return cleaned
+
+
 def rpc_call(rpc_url: str, method: str, params: list, timeout: float = 10.0) -> dict:
     """Send a JSON-RPC 2.0 request and return parsed response."""
+    endpoint = normalize_rpc_url(rpc_url)
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode("utf-8")
     req = urllib.request.Request(
-        rpc_url,
+        endpoint,
         data=payload,
         headers={"Content-Type": "application/json"},
     )
@@ -440,14 +449,34 @@ def main():
         if ok:
             current_nonce += 1
         else:
-            # On nonce errors, refresh nonce from node
-            if "nonce" in res_or_err.lower():
+            err_lower = res_or_err.lower()
+            # If transaction is already in mempool (duplicate/already exists), advance nonce
+            if "already exists" in err_lower or "alreadyexists" in err_lower:
+                current_nonce += 1
+            elif "toomanyfromsender" in err_lower or "too many" in err_lower or "capacity" in err_lower:
+                # Congestion: mempool per-sender window full (typically 64 in-flight txs).
+                # Back off briefly to allow DAG mining blocks to commit pending transactions.
+                time.sleep(0.25)
                 try:
                     refreshed = get_account_nonce(args.rpc_url, sender_addr)
                     if refreshed > current_nonce:
                         current_nonce = refreshed
                 except Exception:
                     pass
+            elif "nonce" in err_lower:
+                # Parse expected nonce if provided by MempoolError::InvalidNonce { expected, got }
+                import re
+                m = re.search(r"expected\s+(\d+)", res_or_err)
+                if m:
+                    current_nonce = max(current_nonce, int(m.group(1)))
+                else:
+                    try:
+                        refreshed = get_account_nonce(args.rpc_url, sender_addr)
+                        if refreshed > current_nonce:
+                            current_nonce = refreshed
+                    except Exception:
+                        pass
+                time.sleep(0.1)
 
         # Periodic statistics reporting
         now = time.time()
