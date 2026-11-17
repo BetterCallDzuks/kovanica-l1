@@ -2,11 +2,11 @@
 
 Historical completed items moved to `docs/dev/NOTED*` and `docs/archive/`. This file lists only remaining work as of 2026-10-31.
 
-Base tip: `e3fce499afe6637b2a594b60306aef6312ef4bbf` (main @ merge #252, 2026-11-16; deployed to `seed1` `kovanica-testnet` chain ID 2 with re-genesis and faucet rotation; tag `v0.3.0-node` still pending; prior base tip `d951da451c9982fc8924c4c7f2ec08e06f549d64`). Full prior checklist: `docs/archive/TASKLIST-pre-baf41511.md`.
+Base tip: `47738498349e545f5953bd09e0b86a3529f19ba8` (main @ merge #301, 2026-11-17; live deploy `9758ffe0` on seed1 kovanica-testnet chain ID 2; tag `v0.3.0-node` stays on `e3fce499`). Full prior checklist: `docs/archive/TASKLIST-pre-baf41511.md`.
 
 ## Protocol / consensus
 
-- [x] **MIN_DELEGATION** — **50_000 KVNC** (`MIN_DELEGATION = 50_000 * ONE_KUNA`) wired in `kovanica-params`, enforced in `kovanica-staking::StakingState::delegate` and `kovanica-execution`.
+- [x] **MIN_DELEGATION** — **50_000 KVNC** (`MIN_DELEGATION = 50_000 * ONE_KVNC`) wired in `kovanica-params`, enforced in `kovanica-staking::StakingState::delegate` and `kovanica-execution`.
 - [x] **Vote signature v2** — `KUNA/vote/v2` + `genesis_hash` in preimage (106 B; retired 74 B v1) across `kovanica-types`, `kovanica-crypto`, `kovanica-consensus`, `kovanica-network`, and `kovanica-node`.
 - [x] **PRO-40 follow-up** — deterministic late leader past `T_skip`: skip-cert quorum or union-quorum with non-overlapping timeout stake above the skip-complement floor (`votes > total_stake - quorum_threshold`); cluster green (`docs/dev/NOTED-pro-40-late-vote.md`).
 - [x] **Fork handling** — documented in docs/FORK-POLICY.md with adversarial test pack.
