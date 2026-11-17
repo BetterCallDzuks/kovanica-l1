@@ -4,7 +4,7 @@
 **Date:** 2026-11-17  
 **Codebase:** `kovanica` (Hybrid PoW + GHOSTDAG, account-based, Wasmi execution)  
 **Repository:** `https://github.com/KovanicaDAG/kovanica-l1`  
-**Pinned Commit (`main`):** `e15b20a1dbdc97fc7ebecb78a9c2ce0320490eb7`  
+**Pinned Commit (`main`):** `91701aed142a514d455d36cfae8bf6605a968fd9`  
 **License:** GPL-3.0-or-later  
 **Native Coin:** **KVNC** (9 decimals; `ONE_KVNC = 10^9`)  
 

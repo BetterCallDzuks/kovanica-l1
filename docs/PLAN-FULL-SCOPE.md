@@ -3,7 +3,7 @@
 **Companion to `docs/AGENT-RULES.md` and `docs/PLAN-2026-11.md`.**
 This is the full-scope plan across all public product repos. Frozen values stay frozen. Consensus changes need an activation plan and Toni’s OK before deploy.
 
-Snapshot: 2026-11-17 (L1 `main` at `e15b20a`, post-#308–#312; cross-repo `main` tips: `kovanica-sdk#17` `83a6495` (v0.3.0), `kovanica-playground#22` `391dd88`, `kovanica-web#23` `057e4eb`, `kovanica-apps#36` `633f130`).
+Snapshot: 2026-11-17 (L1 `main` at `91701ae`, post-#308–#313; cross-repo `main` tips: `kovanica-sdk#17` `83a6495` (v0.3.0), `kovanica-playground#22` `391dd88`, `kovanica-web#24` `772ccbb`, `kovanica-apps#36` `633f130`).
 Live L1: `seed1` (`kovanica-testnet`, chain ID 2, tag `2-24cdb5fadd98b207`) live at `9758ffe0` with `#259` non-compounding LWMA DAA active; release tag `v0.3.0-node` stays on `e3fce499` with `kovanica-testnet-genesis.tar.gz` attached (`#283`/`#287`). Mainnet (`kovanica-mainnet`, chain ID 1) genesis ceremony executed in `#290` with frozen network tag `1-f35df34c92001436` and bundle `kovanica-mainnet-genesis.tar.gz` (`sha256: 75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e`).
 
 ## Repos in scope

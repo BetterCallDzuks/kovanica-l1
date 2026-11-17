@@ -3,7 +3,7 @@
 **Audit Team:** Kovanica Core Security & Protocol Engineering (Internal Pre-Audit Handoff)  
 **Audit Period:** 2026-11-05 – 2026-11-17  
 **Report Date:** 2026-11-17  
-**Codebase Commit (`origin/main`):** `e15b20a1dbdc97fc7ebecb78a9c2ce0320490eb7` (code tip post-`#308`–`#312`)  
+**Codebase Commit (`origin/main`):** `91701aed142a514d455d36cfae8bf6605a968fd9` (code tip post-`#308`–`#313`)  
 **Scope Document:** [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) v2.0  
 **Checklist Document:** [`docs/AUDIT-CHECKLIST.md`](AUDIT-CHECKLIST.md)  
 **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, network tag `2-24cdb5fadd98b207`)  

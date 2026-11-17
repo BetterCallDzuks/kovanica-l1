@@ -1,6 +1,6 @@
 # External Audit / Seed / DNS — Checklist
 
-Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, Wasmi execution, KVNC tokenomics, PRO-21 address requirements, 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#284`), canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`), genesis-active hardening gates (`#288`), automated fuzz smoke runner (`#309`/`#310`), peer reputation and IP ban scoring subsystem (`#312`), and pinned `main` commit `e15b20a1dbdc97fc7ebecb78a9c2ce0320490eb7`.
+Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, Wasmi execution, KVNC tokenomics, PRO-21 address requirements, 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#284`), canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`), genesis-active hardening gates (`#288`), automated fuzz smoke runner (`#309`/`#310`), peer reputation and IP ban scoring subsystem (`#312`), and pinned `main` commit `91701aed142a514d455d36cfae8bf6605a968fd9`.
 
 ## 1. Seed / DNS audit (gating before public launch)
 - [x] Automated DNS probe script (`scripts/check-dns-seeds.sh`) implemented and verified
@@ -10,7 +10,7 @@ Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, Kovanic
 - [ ] Publish each seed's libp2p PeerId and confirm `/p2p/` in the multiaddr matches
 - [x] Confirm `KOVANICA_BOOTNODES` defaults stay empty in code; seeds configured via env/TOML
 
-## 2. External audit scope (mandatory before mainnet $T_0$; internal code verification locked at `e15b20a`)
+## 2. External audit scope (mandatory before mainnet $T_0$; internal code verification locked at `91701ae`)
 - [ ] **Consensus (Hybrid PoW + GHOSTDAG, K=5, target 4s):**
   - [ ] Verify KovanicaHash PoW algorithm (BLAKE3 + 2 MiB memory mix scratchpad, `KOVANICA_HASH_MIX_ROUNDS = 1024`) determinism and memory-hardness (`crates/kovanica-types/src/pow.rs:59-175`)
   - [ ] Verify Difficulty Adjustment Algorithm (LWMA DAA, `TARGET_BLOCK_MS = 4000`) stability, time warp resistance, and target clamping (`crates/kovanica-consensus/src/daa.rs:204-518`, `crates/kovanica-params/src/lib.rs:37`)
