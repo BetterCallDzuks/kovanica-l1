@@ -12,7 +12,7 @@ Update this file when frozen params or open product gaps change. Point-in-time d
 - **PoW Hash:** Planned PoW hash name is **KovanicaHash** (strictly NOT KunaHash; blake3 + 2 MiB memory mix; audit required before mainnet).
 - **Consensus Defaults:** `TARGET_BLOCK_MS = 4000`, `GHOSTDAG_K = 5`.
 - **Product Ticker:** **KVNC** (renamed back from KUNA per Toni 2026-11-05).
-- **DAA (#259, non-compounding LWMA):** **LIVE on `seed1` `kovanica-testnet` (chain ID 2) since `9758ffe0`** (2026-11-16 empty-volume re-genesis, Toni-approved activation). Network tag unchanged; no height gate was needed. The 20-minute post-activation sample committed 226 leaders at 5.42 s mean interval with no stall >60 s (pre-activation the chain sat on ~55 s PoW waits and `/health` 503). Not yet live on any other chain.
+- **DAA (#259, non-compounding LWMA):** **LIVE on `seed1` `kovanica-testnet` (chain ID 2) since `9758ffe0`** (2026-11-16 empty-volume re-genesis, Toni-approved activation). Network tag unchanged; no height gate was needed. The 20-minute post-activation sample committed 226 leaders at 5.42 s mean interval with no stall >60 s (pre-activation the chain sat on ~55 s PoW waits and `/health` 503). Follow-up P3-1 read-only sample (2026-11-17T02:07Z): heights `6652..7552` (901 blocks over 5197.5 s = 1.44 h) — median 4.42 s, mean 5.78 s, max 42.86 s, 0 stalls >60 s (6 gaps >30 s), `/health` 200 (`peer_count=3`, `committed_leaders=7502`, `last_committed_round=6213`). Not yet live on any other chain.
 
 ## Canonical chains (Hybrid PoW + GHOSTDAG)
 
