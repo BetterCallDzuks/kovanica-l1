@@ -7,18 +7,26 @@ license = "MIT OR Apache-2.0"
 [[bin]]
 name = "fuzz_block"
 path = "fuzz_block.rs"
+test = false
+doc = false
 
 [[bin]]
 name = "fuzz_tx"
 path = "fuzz_tx.rs"
+test = false
+doc = false
 
 [[bin]]
 name = "fuzz_vote"
 path = "fuzz_vote.rs"
+test = false
+doc = false
 
 [[bin]]
 name = "fuzz_consensus"
 path = "fuzz_consensus.rs"
+test = false
+doc = false
 
 [dependencies]
 kovanica-types = { path = "../crates/kovanica-types" }

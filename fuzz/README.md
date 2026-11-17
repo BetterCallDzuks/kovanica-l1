@@ -1,5 +1,21 @@
 # Fuzzing
 
+## Automated Smoke Runner (Deterministic)
+
+Run the fast, deterministic fuzz smoke test suite across all parser boundaries (no nightly or libfuzzer binaries required):
+
+```bash
+bash scripts/run-fuzz-smoke.sh
+```
+
+Or run via cargo directly:
+
+```bash
+cargo test --manifest-path fuzz/Cargo.toml
+```
+
+## Continuous Fuzzing with cargo-fuzz (nightly)
+
 Run with cargo-fuzz (nightly):
 
 ```
