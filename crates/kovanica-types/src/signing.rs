@@ -2,7 +2,7 @@
 //!
 //! Every signed message (vote or transaction) commits to the network
 //! (`chain_id`). Votes also commit to `genesis_hash` and the committee `epoch`
-//! (`KUNA/vote/v2`, 106 bytes). The verifier must build the context from its
+//! (`KVNC/vote/v2`, 106 bytes). The verifier must build the context from its
 //! **own** configuration, never from a network message.
 
 use crate::hash::Hash;
@@ -51,16 +51,16 @@ pub mod chain_id {
 }
 
 /// Domain tag (16 bytes, `0x00`-padded) of vote `signature_data` v2.
-pub const VOTE_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KUNA/vote/v2");
+pub const VOTE_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KVNC/vote/v2");
 /// Domain tag (16 bytes, `0x00`-padded) of the transaction signing preimage v1.
-pub const TX_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KUNA/tx/v1");
+pub const TX_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KVNC/tx/v1");
 /// Domain tag (16 bytes, `0x00`-padded) of a post-execution commit seal.
 ///
 /// Distinct from [`VOTE_DOMAIN_TAG`]. A seal covers the executed state and
 /// the MysticGhost roots; a vote covers only the leader block hash.
-pub const COMMIT_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KUNA/commit/v1");
+pub const COMMIT_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KVNC/commit/v1");
 /// Domain tag (16 bytes, `0x00`-padded) of block `signature_data` v1 (PRO-20).
-pub const BLOCK_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KUNA/block/v1");
+pub const BLOCK_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KVNC/block/v1");
 /// Domain tag (16 bytes, `0x00`-padded) of PoW block header v1 (ADR 0003).
 pub const POW_HEADER_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KVNC-POW-HDR-v1");
 
@@ -86,7 +86,7 @@ pub struct SigningContext {
     pub chain_id: u64,
     /// Committee epoch (`0` until epochs are live). Only votes commit to it.
     pub epoch: u64,
-    /// Genesis configuration digest (`32` raw bytes). Votes commit to it in v2 (`KUNA/vote/v2`).
+    /// Genesis configuration digest (`32` raw bytes). Votes commit to it in v2 (`KVNC/vote/v2`).
     #[serde(default)]
     pub genesis_hash: Hash,
 }
@@ -121,11 +121,11 @@ mod tests {
 
     #[test]
     fn tags_are_16_bytes_zero_padded() {
-        assert_eq!(&VOTE_DOMAIN_TAG[..12], b"KUNA/vote/v2");
+        assert_eq!(&VOTE_DOMAIN_TAG[..12], b"KVNC/vote/v2");
         assert!(VOTE_DOMAIN_TAG[12..].iter().all(|b| *b == 0));
-        assert_eq!(&TX_DOMAIN_TAG[..10], b"KUNA/tx/v1");
+        assert_eq!(&TX_DOMAIN_TAG[..10], b"KVNC/tx/v1");
         assert!(TX_DOMAIN_TAG[10..].iter().all(|b| *b == 0));
-        assert_eq!(&BLOCK_DOMAIN_TAG[..13], b"KUNA/block/v1");
+        assert_eq!(&BLOCK_DOMAIN_TAG[..13], b"KVNC/block/v1");
         assert!(BLOCK_DOMAIN_TAG[13..].iter().all(|b| *b == 0));
         assert_eq!(&POW_HEADER_DOMAIN_TAG[..15], b"KVNC-POW-HDR-v1");
         assert_eq!(POW_HEADER_DOMAIN_TAG[15], 0);

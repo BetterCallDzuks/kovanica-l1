@@ -39,11 +39,11 @@ Update this file when frozen params or open product gaps change. Point-in-time d
 | Min validator stake (legacy) | `50_000` KVNC (`MIN_VALIDATOR_STAKE = 50_000 * ONE_KVNC`; legacy / non-consensus) |
 | Min delegation (legacy) | `50_000` KVNC (`MIN_DELEGATION = 50_000 * ONE_KVNC`; legacy / non-consensus) |
 | `funded_accounts.toml` / `genesis_validators.toml` | Legacy file names (accounts are mining-reward / faucet / bootstrap-seed entries, not validators). `funded_accounts.toml` allowed on every chain **except** kovanica-mainnet (chain ID 1) |
-| Hash / sig domains | `KUNA-*` / `KVNC-*` crypto context tags remain for protocol compatibility |
+| Hash / sig domains | `KVNC-*` / `KVNC/*` crypto context tags (KUNA-* retired) |
 
 Hardening gates (`*_ACTIVE_FROM_ROUND`: gas, contract, size limits, slashing) are `0` (`GENESIS_ROUND`) in tree since `P4-6` (`#288`, 2026-11-17), so fresh genesis / empty-volume re-genesis chains enforce them from round 0 (`STATE_COMMITMENT_ACTIVE_FROM_ROUND` stays `500_000`). Live seed1 (chain ID 2, deploy SHA `9758ffe0`) still runs the pre-flip build, so they remain inert there until an empty-volume re-genesis; seed1 is **not** re-deployed unless Toni orders it.
 
-- **Mainnet (chain ID 1) genesis ceremony (P4-3) executed 2026-11-17.** Network tag `1-4d827d40dd9655db`. Bundle `/tmp/kovanica-mainnet-genesis.tar.gz` sha256 `75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e` (files: `genesis_validators.toml`, `founder_premine.hex`). Public genesis files committed under `mainnet/` (5 seeds, founder `kvnc2yuz...`, treasury `kvncd2xk...`). `funded_accounts.toml` absent (forbidden on chain 1). Keystores/passphrases remain in `/tmp/mainnet-ceremony-private` (never committed).
+- **Mainnet (chain ID 1) genesis ceremony (P4-3) executed 2026-11-17.** Network tag `1-f35df34c92001436`. Bundle `/tmp/kovanica-mainnet-genesis.tar.gz` sha256 `d0ac07ba0bbe7fff87f3a7713a19239ceebb201944b4984d579a1f5f60edd7bf` (files: `genesis_validators.toml`, `founder_premine.hex`). Public genesis files committed under `mainnet/` (5 seeds, founder `kvnc2yuz...`, treasury `kvncd2xk...`). `funded_accounts.toml` absent (forbidden on chain 1). Keystores/passphrases remain in `/tmp/mainnet-ceremony-private` (never committed).
 
 ## Open product gaps (not archived noise)
 

@@ -40,7 +40,7 @@ Registry (**final**): `1` = mainnet, `2` = testnet (Hybrid PoW + GHOSTDAG), `3` 
 
 | Offset | Size | Field          | Encoding                                  |
 |-------:|-----:|----------------|-------------------------------------------|
-| 0      | 16   | domain tag     | `DomainTag16("KUNA/vote/v2")`             |
+| 0      | 16   | domain tag     | `DomainTag16("KVNC/vote/v2")`             |
 | 16     | 8    | chain_id       | u64 LE                                    |
 | 24     | 32   | genesis_hash   | raw 32 bytes                              |
 | 56     | 8    | epoch          | u64 LE (committee epoch)                  |
@@ -56,7 +56,7 @@ take chain_id, genesis_hash, or epoch from the network message.
 The API contract is `verify_vote_signature(ctx: &SigningContext, vote: &Vote, pubkey: &PublicKey) -> Result<(), SigError>`
 (`SigningContext { chain_id, epoch, genesis_hash }` lives in `kovanica_types::signing`, together with the `chain_id` registry constants).
 
-Former (v1) format, retired: `DomainTag16("KUNA/vote/v1") ‖ chain_id (8 B) ‖ epoch (8 B) ‖ voter (2 B) ‖ leader_round (8 B) ‖ leader_hash (32 B)` (74 bytes, without `genesis_hash`).
+Former (v1) format, retired: `DomainTag16("KVNC/vote/v1") ‖ chain_id (8 B) ‖ epoch (8 B) ‖ voter (2 B) ‖ leader_round (8 B) ‖ leader_hash (32 B)` (74 bytes, without `genesis_hash`).
 Former (pre-v1) PROVISIONAL format, for reference: `leader_round u64 LE ‖ leader_hash` (40 bytes).
 
 ## 2. Transaction signing hash v1
@@ -65,7 +65,7 @@ Preimage:
 
 | Size | Field        | Encoding                                       |
 |-----:|--------------|------------------------------------------------|
-| 16   | domain tag   | `DomainTag16("KUNA/tx/v1")`                    |
+| 16   | domain tag   | `DomainTag16("KVNC/tx/v1")`                    |
 | 8    | chain_id     | u64 LE                                         |
 | 32   | sender       | `Address.0` (raw pubkey)                        |
 | 8    | nonce        | u64 LE                                         |
@@ -92,12 +92,11 @@ Preimage:
 | Evidence       | 12     | two headers × (`author` 32 B, `round` u64 LE, `digest` 32 B, `signature` 64 B) |
 
 ```
-signing_hash = BLAKE3_keyed(key = pad32("KUNA-TX-v1"), preimage)   // = Hash::new_keyed(b"KUNA-TX-v1", preimage)
+signing_hash = BLAKE3_keyed(key = pad32("KVNC-TX-v1"), preimage)   // = Hash::new_keyed(b"KVNC-TX-v1", preimage)
 signature    = Ed25519.sign(sk_sender, signing_hash)                // 32-byte message
 ```
 
-The keyed-hash key changes from the PROVISIONAL `Hash::DOMAIN_TX = "KVNC-TX-v1"` to **`"KUNA-TX-v1"`** (ticker
-rename KVNC → KUNA). The migration must update `Hash::DOMAIN_TX`. The in-preimage tag `KUNA/tx/v1` versions the
+`Hash::DOMAIN_TX` is now **`"KVNC-TX-v1"`**. The in-preimage tag `KVNC/tx/v1` versions the
 *layout*, so a future v2 changes the tag without touching the hashing primitives. `Transaction.hash`
 stays equal to `signing_hash` (checked in `kovanica-dag/src/block_manager.rs:358`).
 
@@ -108,7 +107,7 @@ and without `Call.value`. In v1 `kind` is byte-identical to PROVISIONAL **except
 
 | Offset | Size | Field          | Encoding                                  |
 |-------:|-----:|----------------|-------------------------------------------|
-| 0      | 16   | domain tag     | `DomainTag16("KUNA/block/v1")`            |
+| 0      | 16   | domain tag     | `DomainTag16("KVNC/block/v1")`            |
 | 16     | 8    | chain_id       | u64 LE                                    |
 | 24     | 32   | digest         | raw 32 bytes (`block.digest`)             |
 
@@ -146,25 +145,25 @@ sig      = c84668f3c6a1773677388514b797e32a930e617d36e97bca3a9de428e87553ecd6db0
 ### T1: Transfer (chain_id=2, nonce=5, to=`22`×32, amount=1000000, fee=1000)
 ```
 len          = 113
-preimage     = 4b554e412f74782f76310000000000000200000000000000ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c050000000000000000222222222222222222222222222222222222222222222222222222222222222240420f0000000000e803000000000000
-signing_hash = 4acde0e0a120d6c03eaa197c082238fefadaf36f4f40bc1364ae8b3faa067798
-sig          = 2413f8c3a1508e2b1b2809c5cc9cc74982118d47e8a8e9afaab2d2719349724265b8f80d67359b579001b9c4845723edb9530372a79da9f4093d2f7228820d0e
+preimage     = 4b564e432f74782f76310000000000000200000000000000ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c050000000000000000222222222222222222222222222222222222222222222222222222222222222240420f0000000000e803000000000000
+signing_hash = 0aae8c1832e09bf7da6f897d20b8bc6a017aaeefd50ea10015218a5c4a54c21d
+sig          = c24cd02ec98045a34e4b3102a1cafe70883a83763d5915528554b54797b139df1768cad71220e78bcb6702b109f37bb79513c1f768bacab4bf6e96f4e16cdf06
 ```
 
 ### T2: Call, value=0 (chain_id=2, nonce=6, contract=`33`×32, value=0, method="transfer", args=010203, gas_limit=100000, fee=10)
 ```
 len          = 148
-preimage     = 4b554e412f74782f76310000000000000200000000000000ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c0600000000000000043333333333333333333333333333333333333333333333333333333333333333000000000000000008000000000000007472616e736665720300000000000000010203a0860100000000000a00000000000000
-signing_hash = 439e1830573896f46dc642cedb37605c1e478880f417f0cfae5126eaca48026a
-sig          = 0ff9438c1ea9e8a70e3b491d873c712e8e7d0339b637b00def16d42eea4eed3301454ef10f61b958bf37c95351a89f01270fe194ab8fa046b45373ee54e47f07
+preimage     = 4b564e432f74782f76310000000000000200000000000000ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c0600000000000000043333333333333333333333333333333333333333333333333333333333333333000000000000000008000000000000007472616e736665720300000000000000010203a0860100000000000a00000000000000
+signing_hash = e6ee05c494bc9197cdbf32f02558a36c0bf9f9ce92d7aceff99b65fa7ee3df92
+sig          = 938f46f0d12493a4a9f6b12b6b2270d519b3704006db70f1406f844d51d79a9e89169816863e2c9d3a86680a01ca09593ca63d53c350b133156e3c5a73f2b904
 ```
 
 ### T3: Call, value=500 (otherwise identical to T2)
 ```
 len          = 148
-preimage     = 4b554e412f74782f76310000000000000200000000000000ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c0600000000000000043333333333333333333333333333333333333333333333333333333333333333f40100000000000008000000000000007472616e736665720300000000000000010203a0860100000000000a00000000000000
-signing_hash = 9b76e7fc940641c6e11226b537841ace9ceb000a3943f6b3923b3cf2c6f4f794
-sig          = ce4e4d5dcc49159d2b6f72faa3210fe4db5b040e93eadbe315a159afe61f32ff66fc0abf9591c902500a1ce4e02d3816dbae80b8f1721725f03ed52b119f6608
+preimage     = 4b564e432f74782f76310000000000000200000000000000ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c0600000000000000043333333333333333333333333333333333333333333333333333333333333333f40100000000000008000000000000007472616e736665720300000000000000010203a0860100000000000a00000000000000
+signing_hash = 616a96c5e4568b1e165670cd9c4afb4c8d2dd603dbf5b61142f7187a93d29df7
+sig          = 48b532f19c6867e21907f829614864ca5cc54baf0177eab1dc4bbbc48b192d48507acdbd97731621c76498e33fb68ccfc37979cd0f17a959a14b94d159606c0b
 ```
 
 ### B1: Block v1 (chain_id=1, digest=`11`×32)
@@ -182,7 +181,7 @@ This is a hard fork of the signed bytes. Every node must switch at the same rele
 window (accepting both formats would bring back the cross-chain replay that v1 removes).
 These changed **in the same release** (done, see status above):
 
-- **kovanica-types** (Foundation): `Vote::signature_data(ctx)`, `Transaction::signing_hash(ctx)`, `StatementBlock::signature_data(chain_id)`, `block_signature_data(chain_id, digest)`, `BLOCK_DOMAIN_TAG = "KUNA/block/v1"`, `SigningContext { chain_id, epoch }`, `Hash::DOMAIN_TX` → `"KUNA-TX-v1"`, golden vectors. `TransactionKind::Call.value: u64`.
+- **kovanica-types** (Foundation): `Vote::signature_data(ctx)`, `Transaction::signing_hash(ctx)`, `StatementBlock::signature_data(chain_id)`, `block_signature_data(chain_id, digest)`, `BLOCK_DOMAIN_TAG = "KVNC/block/v1"`, `SigningContext { chain_id, epoch }`, `Hash::DOMAIN_TX` → `"KVNC-TX-v1"`, golden vectors. `TransactionKind::Call.value: u64`.
 - **kovanica-crypto** (Foundation): `verify_vote_signature(ctx, vote, pubkey)`, `verify_block_signature(chain_id, pubkey, digest, signature)`, `verify_batch(chain_id, blocks)`.
 - **kovanica-consensus** (Consensus): `engine.rs:510` signs `vote.signature_data()`. `engine.rs:532` has a **duplicate** `vote_signature_data(leader_round, leader_hash)` helper with the old encoding. It must be deleted, not updated, so there is only one encoder. Vote and block verification must use the kovanica-crypto API with verifier-owned context/chain_id.
 - **kovanica-execution** (Execution): signing-hash callers (`lib.rs:904`), removal of the test-signature shortcut (`lib.rs:304-307`), and `Call.value` semantics (transfer `value` to the contract; insufficient balance = reject).
@@ -198,7 +197,7 @@ Implemented API (kovanica-types / kovanica-crypto): `Vote::signature_data(&ctx)`
 `Transaction::verify_signature(&ctx)`, `kovanica_crypto::verify_vote_signature(&ctx, &vote, &pubkey)`,
 `StatementBlock::signature_data(chain_id)`, `kovanica_crypto::verify_block_signature(chain_id, &pk, &digest, &sig)`,
 `kovanica_crypto::verify_batch(chain_id, &blocks)`,
-`TransactionKind::Call { contract, value, method, args, gas_limit }`, `Hash::DOMAIN_TX = "KUNA-TX-v1"`, `BLOCK_DOMAIN_TAG = "KUNA/block/v1"`.
+`TransactionKind::Call { contract, value, method, args, gas_limit }`, `Hash::DOMAIN_TX = "KVNC-TX-v1"`, `BLOCK_DOMAIN_TAG = "KVNC/block/v1"`.
 `SigningContext::new(chain_id).with_epoch(epoch)` builds a context; the verifier must create it from its **own**
 config and epoch. `kovanica-cli` and `kovanica-faucet` need `--chain-id` (no default).
 Line numbers are historical (against `main` at the time of the migration PR); every row below is done.
@@ -214,4 +213,4 @@ Line numbers are historical (against `main` at the time of the migration PR); ev
 | Network | `kovanica-rpc/src/chain_methods.rs:173,814` | `Call.value` field; `signing_hash(&ctx)` | done |
 | Network | `kovanica-mempool/src/lib.rs:272,282,682,723`, `kovanica-dag/src/block_manager.rs:358` | `signing_hash(&ctx)` / `verify_signature(&ctx)` | done |
 | Execution | `kovanica-execution/src/lib.rs:381,904` | `Call.value` semantics; `signing_hash(&ctx)` | done |
-| Foundation | `kovanica-types` / `kovanica-crypto` | PRO-20: block signature binds `KUNA/block/v1` + `chain_id` | done |
+| Foundation | `kovanica-types` / `kovanica-crypto` | PRO-20: block signature binds `KVNC/block/v1` + `chain_id` | done |

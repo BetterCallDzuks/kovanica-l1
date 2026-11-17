@@ -3,8 +3,8 @@ import { getPublicKey, sign } from "@noble/ed25519";
 
 import { concat, u32le, u64le } from "./bytes.js";
 
-const TX_DOMAIN = asciiPad("KUNA/tx/v1", 16);
-const TX_KEY = asciiPad("KUNA-TX-v1", 32);
+const TX_DOMAIN = asciiPad("KVNC/tx/v1", 16);
+const TX_KEY = asciiPad("KVNC-TX-v1", 32);
 
 /**
  * Transaction kinds the console can sign.
@@ -101,7 +101,7 @@ function signingKind(kind: TxKind): Uint8Array {
 }
 
 /**
- * BLAKE3 keyed with `KUNA-TX-v1` over the v1 preimage.
+ * BLAKE3 keyed with `KVNC-TX-v1` over the v1 preimage.
  * `chainId` is the selected network. Epoch is not part of a transaction.
  */
 export function signingHash(tx: UnsignedTx, chainId: number): Uint8Array {

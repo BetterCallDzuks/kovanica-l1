@@ -20,7 +20,7 @@ use crate::{epoch_for_round, AuthorityIndex, Round};
 use serde::{Deserialize, Serialize};
 
 /// Domain tag (16 bytes, `0x00`-padded) of the timeout preimage.
-pub const TIMEOUT_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KUNA/timeout/v1");
+pub const TIMEOUT_DOMAIN_TAG: [u8; 16] = domain_tag16(b"KVNC/timeout/v1");
 
 /// A validator's signed statement that it gave up waiting for leader slot
 /// `round` without voting for it.
@@ -40,7 +40,7 @@ impl Timeout {
     pub const SIGNATURE_DATA_LEN: usize = 16 + 8 + 32 + 8 + 2 + 8;
 
     /// Canonical signed bytes:
-    /// `KUNA/timeout/v1 ‖ chain_id ‖ genesis_hash ‖ epoch(round) ‖ voter ‖ round`,
+    /// `KVNC/timeout/v1 ‖ chain_id ‖ genesis_hash ‖ epoch(round) ‖ voter ‖ round`,
     /// integers little-endian. The epoch is the pure function of the round.
     #[must_use]
     pub fn signature_data(&self, chain_id: u64, genesis_hash: &Hash) -> Vec<u8> {
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn domain_tag_and_preimage_layout() {
-        assert_eq!(&TIMEOUT_DOMAIN_TAG[..15], b"KUNA/timeout/v1");
+        assert_eq!(&TIMEOUT_DOMAIN_TAG[..15], b"KVNC/timeout/v1");
         assert_eq!(TIMEOUT_DOMAIN_TAG[15], 0);
         let t = Timeout {
             round: 7_203,

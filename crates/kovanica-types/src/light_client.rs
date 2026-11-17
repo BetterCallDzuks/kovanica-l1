@@ -94,7 +94,7 @@ impl LeaderHeader {
 
     /// Bytes a validator signs for this header on `chain_id`.
     ///
-    /// Layout: `KUNA/commit/v1` (16 bytes) || `chain_id` u64 LE || header hash.
+    /// Layout: `KVNC/commit/v1` (16 bytes) || `chain_id` u64 LE || header hash.
     /// The epoch is inside the header hash. `chain_id` is outside it so a
     /// seal cannot move to another network. Vote bytes are not used.
     pub fn seal_message(&self, chain_id: u64) -> Vec<u8> {
@@ -513,11 +513,11 @@ impl StateProof {
 }
 
 /// Domain for the light-node lottery. Not a vote tag and not a transaction tag.
-pub const LIGHT_VRF_DOMAIN: &[u8] = b"KUNA/light-vrf/v1";
+pub const LIGHT_VRF_DOMAIN: &[u8] = b"KVNC/light-vrf/v1";
 
 /// VRF input for one light-node epoch.
 ///
-/// Layout: `KUNA/light-vrf/v1` || `chain_id` u64 LE || `epoch` u64 LE || beacon.
+/// Layout: `KVNC/light-vrf/v1` || `chain_id` u64 LE || `epoch` u64 LE || beacon.
 /// `beacon` is the epoch-opening committed leader block digest.
 pub fn light_vrf_input(chain_id: u64, epoch: u64, beacon: &Hash) -> Vec<u8> {
     let mut data = Vec::with_capacity(LIGHT_VRF_DOMAIN.len() + 8 + 8 + 32);

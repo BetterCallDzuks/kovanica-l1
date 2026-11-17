@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
-pub const P2P_IDENTITY_DOMAIN: &[u8] = b"KUNA/p2p-identity/v1";
+pub const P2P_IDENTITY_DOMAIN: &[u8] = b"KVNC/p2p-identity/v1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PeerIdentityClaim {

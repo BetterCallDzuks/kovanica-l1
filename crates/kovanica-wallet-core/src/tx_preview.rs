@@ -63,7 +63,7 @@ impl TxPreview {
     /// Construct the deterministic v1 little-endian signing preimage.
     ///
     /// Layout:
-    /// - `DomainTag16("KUNA/tx/v1")` (16 bytes)
+    /// - `DomainTag16("KVNC/tx/v1")` (16 bytes)
     /// - `chain_id` (8 bytes LE)
     /// - `sender` pubkey (32 bytes)
     /// - `nonce` (8 bytes LE)
@@ -83,7 +83,7 @@ impl TxPreview {
         data
     }
 
-    /// Compute the 32-byte signing hash using BLAKE3 keyed with `pad32("KUNA-TX-v1")`.
+    /// Compute the 32-byte signing hash using BLAKE3 keyed with `pad32("KVNC-TX-v1")`.
     pub fn signing_hash(&self) -> Hash {
         Hash::new_keyed(Hash::DOMAIN_TX, self.signing_preimage())
     }
@@ -180,7 +180,7 @@ mod tests {
         // raw seed 07×32, not HD
         // chain 2, nonce 5, to 22×32, amount 1000000, fee 1000
         // sender ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c
-        // hash 4acde0e0a120d6c03eaa197c082238fefadaf36f4f40bc1364ae8b3faa067798
+        // hash 0aae8c1832e09bf7da6f897d20b8bc6a017aaeefd50ea10015218a5c4a54c21d
         let seed = [0x07u8; 32];
         let sk = SigningKey::from_bytes(&seed);
         let pk = PublicKey::from_bytes(sk.verifying_key().to_bytes());
@@ -194,7 +194,7 @@ mod tests {
         let sighash = preview.signing_hash();
         assert_eq!(
             hex::encode(sighash.0),
-            "4acde0e0a120d6c03eaa197c082238fefadaf36f4f40bc1364ae8b3faa067798"
+            "0aae8c1832e09bf7da6f897d20b8bc6a017aaeefd50ea10015218a5c4a54c21d"
         );
 
         let (tx, raw_hex) = preview.sign(&sk).expect("signing succeeds");

@@ -80,7 +80,7 @@ fn network_tag_cli_matches_the_node_and_changes_when_a_bundle_file_changes() {
     let tag = network_tag(&config);
     // Same fixture and treasury as `sync_status_network_tag_equals_the_startup_log`,
     // which locks this string to the startup log and `kovanica_syncStatus`.
-    assert_eq!(tag, "3-3de28e32a6991d94");
+    assert_eq!(tag, "3-9c7843c3c1e9a75f");
 
     std::fs::write(data.join("founder_premine.hex"), "66".repeat(32)).unwrap();
     let changed = network_tag(&config);

@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 
 /// Magic prefix of the VRF blob carried in [`StatementBlock::statements`].
 /// The one definition; every encoder, decoder and digest check uses it.
-pub const VRF_STATEMENT_MAGIC: &[u8; 9] = b"KUNA-VRF1";
+pub const VRF_STATEMENT_MAGIC: &[u8; 9] = b"KVNC-VRF1";
 
 /// Length of the VRF blob: magic (9) ‖ output hash (32) ‖ proof (96).
 pub const VRF_STATEMENT_LEN: usize = 137;
 
-/// Domain prefix of the VRF *input* (`KUNA-VRF1-v1:<chain_id>:<round>:<author>:0`).
-pub const VRF_INPUT_DOMAIN: &str = "KUNA-VRF1-v1";
+/// Domain prefix of the VRF *input* (`KVNC-VRF1-v1:<chain_id>:<round>:<author>:0`).
+pub const VRF_INPUT_DOMAIN: &str = "KVNC-VRF1-v1";
 
 /// VRF input for `author`'s block at `round` on `chain_id`.
 #[must_use]
@@ -100,7 +100,7 @@ pub fn decode_pow_statement(
     Some((timestamp, target_bits, nonce, pow_hash, payout))
 }
 
-/// Length in bytes of the block signature preimage (`KUNA/block/v1` 16 B ‖ chain_id 8 B ‖ digest 32 B).
+/// Length in bytes of the block signature preimage (`KVNC/block/v1` 16 B ‖ chain_id 8 B ‖ digest 32 B).
 pub const BLOCK_SIGNATURE_DATA_LEN: usize = 56;
 
 /// Domain tag for PoW block header preimage hashing (ADR 0003).
@@ -109,7 +109,7 @@ pub const DOMAIN_POW_HEADER: &[u8] = Hash::DOMAIN_POW_HEADER;
 /// Canonical bytes signed for a block (signature format v1, 56 bytes).
 ///
 /// Layout (PRO-20):
-/// `DomainTag16("KUNA/block/v1")` (16 bytes) || `chain_id` u64 LE (8 bytes) || `digest` (32 bytes).
+/// `DomainTag16("KVNC/block/v1")` (16 bytes) || `chain_id` u64 LE (8 bytes) || `digest` (32 bytes).
 #[must_use]
 pub fn block_signature_data(chain_id: u64, digest: &Hash) -> [u8; BLOCK_SIGNATURE_DATA_LEN] {
     let mut data = [0u8; BLOCK_SIGNATURE_DATA_LEN];
@@ -186,7 +186,7 @@ impl StatementBlock {
             data.extend_from_slice(&tx.hash().0);
         }
         // The digest covers `statements` ONLY when they carry the VRF blob
-        // (`is_vrf_statement`: `KUNA-VRF1` magic and at least 137 bytes).
+        // (`is_vrf_statement`: `KVNC-VRF1` magic and at least 137 bytes).
         // Any other statements content is outside the digest, so it is not
         // authenticated by the block signature and must never be interpreted.
         if let Some(s) = statements {
@@ -853,7 +853,7 @@ mod tests {
         let data = block_signature_data(chain_id, &digest);
         assert_eq!(
             hex::encode(data),
-            "4b554e412f626c6f636b2f763100000001000000000000001111111111111111111111111111111111111111111111111111111111111111"
+            "4b564e432f626c6f636b2f763100000001000000000000001111111111111111111111111111111111111111111111111111111111111111"
         );
 
         let sig: Signature = sk.sign(&data).into();
@@ -870,7 +870,7 @@ mod tests {
 
         assert_eq!(
             sig_hex,
-            "68c9290f99c396e18e2f65abb9d6b925de87a576d5fdef8a1c3e0c05dc9b23f7254deddbfd4dba99c6c3a30f30e59a9484920eb96b1ad40e6a40087228f02703"
+            "41e638121d214dfea67ea86a095a00ca6b6e2e78d89098da9a689e916ca92c883fb0aacd5cf8a72b985fa15c8b306d10e48d51424e033966e9da125d8be55800"
         );
     }
 
@@ -965,10 +965,10 @@ mod vrf_statement_tests {
 
     #[test]
     fn vrf_framing_constants() {
-        assert_eq!(VRF_STATEMENT_MAGIC, b"KUNA-VRF1");
+        assert_eq!(VRF_STATEMENT_MAGIC, b"KVNC-VRF1");
         assert_eq!(VRF_STATEMENT_LEN, 9 + 32 + 96);
-        assert_eq!(VRF_INPUT_DOMAIN, "KUNA-VRF1-v1");
-        assert_eq!(vrf_input(4, 12, 3), "KUNA-VRF1-v1:4:12:3:0");
+        assert_eq!(VRF_INPUT_DOMAIN, "KVNC-VRF1-v1");
+        assert_eq!(vrf_input(4, 12, 3), "KVNC-VRF1-v1:4:12:3:0");
     }
 
     /// The digest covers `statements` only when they are a VRF blob
@@ -983,7 +983,7 @@ mod vrf_statement_tests {
         let mut wrong = blob.clone();
         wrong[0] = b'X';
         assert!(!is_vrf_statement(&wrong));
-        let mut legacy = b"KVNC-VRF1".to_vec();
+        let mut legacy = b"KUNA-VRF1".to_vec();
         legacy.resize(VRF_STATEMENT_LEN, 7);
         assert!(
             !is_vrf_statement(&legacy),

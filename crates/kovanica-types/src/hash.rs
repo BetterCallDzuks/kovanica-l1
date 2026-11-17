@@ -27,25 +27,25 @@ impl Hash {
     }
 
     /// Domain tag for block digests.
-    pub const DOMAIN_BLOCK: &'static [u8] = b"KUNA-BLOCK-v1";
+    pub const DOMAIN_BLOCK: &'static [u8] = b"KVNC-BLOCK-v1";
     /// Domain tag for transactions.
-    pub const DOMAIN_TX: &'static [u8] = b"KUNA-TX-v1";
+    pub const DOMAIN_TX: &'static [u8] = b"KVNC-TX-v1";
     /// Domain tag for digest/merkle pairing.
-    pub const DOMAIN_DIGEST: &'static [u8] = b"KUNA-DIGEST-v1";
+    pub const DOMAIN_DIGEST: &'static [u8] = b"KVNC-DIGEST-v1";
     /// Domain tag for merkle tree pairing.
-    pub const DOMAIN_MERKLE: &'static [u8] = b"KUNA-MERKLE-v1";
+    pub const DOMAIN_MERKLE: &'static [u8] = b"KVNC-MERKLE-v1";
     /// Domain tag for a committed-leader header.
-    pub const DOMAIN_HEADER: &'static [u8] = b"KUNA-HEADER-v1";
+    pub const DOMAIN_HEADER: &'static [u8] = b"KVNC-HEADER-v1";
     /// Domain tag for an account-tree leaf.
-    pub const DOMAIN_ACCOUNT: &'static [u8] = b"KUNA-ACCOUNT-v1";
+    pub const DOMAIN_ACCOUNT: &'static [u8] = b"KVNC-ACCOUNT-v1";
     /// Domain tag for an empty account-tree subtree.
-    pub const DOMAIN_ACCOUNT_EMPTY: &'static [u8] = b"KUNA-ACCT-EMPTY";
+    pub const DOMAIN_ACCOUNT_EMPTY: &'static [u8] = b"KVNC-ACCT-EMPTY";
     /// Domain tag for an account-tree internal node.
-    pub const DOMAIN_SMT: &'static [u8] = b"KUNA-SMT-v1";
+    pub const DOMAIN_SMT: &'static [u8] = b"KVNC-SMT-v1";
     /// Domain tag for the committee bound into a commit seal.
-    pub const DOMAIN_COMMITTEE: &'static [u8] = b"KUNA-COMMITTEE-v1";
+    pub const DOMAIN_COMMITTEE: &'static [u8] = b"KVNC-COMMITTEE-v1";
     /// Domain tag for an equivocation-evidence id.
-    pub const DOMAIN_EVIDENCE: &'static [u8] = b"KUNA-EVIDENCE-v1";
+    pub const DOMAIN_EVIDENCE: &'static [u8] = b"KVNC-EVIDENCE-v1";
     /// Domain tag for PoW block header preimage hashing (ADR 0003).
     pub const DOMAIN_POW_HEADER: &'static [u8] = b"KVNC-POW-HDR-v1";
 
@@ -82,7 +82,7 @@ impl AsRef<[u8]> for Hash {
 mod domain_tests {
     use super::Hash;
 
-    /// Toni's 2026-10-19 decision: every hash domain is `KUNA-*` (chain 4
+    /// Toni's 2026-10-19 decision: every hash domain is `KVNC-*` (chain 4
     /// reset). The tags must also stay pairwise distinct so no two hash uses
     /// can collide.
     #[test]
@@ -101,8 +101,8 @@ mod domain_tests {
         ];
         for (i, d) in domains.iter().enumerate() {
             assert!(
-                d.starts_with(b"KUNA-"),
-                "domain {} is not KUNA-*",
+                d.starts_with(b"KVNC-"),
+                "domain {} is not KVNC-*",
                 String::from_utf8_lossy(d)
             );
             for other in &domains[i + 1..] {
@@ -141,49 +141,49 @@ mod domain_tests {
     /// change to a tag or to the keying shows up here.
     #[test]
     fn hash_domain_known_answers() {
-        let cases: [(&[u8], &str); 10] = [
+        let expected: [(&[u8], &str); 10] = [
             (
                 Hash::DOMAIN_BLOCK,
-                "a29004f9acd71f82fbac7162cbad0cda4e3ef6c8d8f2717dd2c91bce7a7a650f",
+                "0c95c748046c836ddc3a4006613272825aa9c874e056609bb472e5fecc79920e",
             ),
             (
                 Hash::DOMAIN_TX,
-                "59fc894f29e7e64f83760f04f8a522fa3bb22a10c592ad3a51928d0cc70b8c5d",
+                "70f2f9e8b8d2f541a523323664634b1ce048bbe7c38a2b6151fa7ab51bfd1c9b",
             ),
             (
                 Hash::DOMAIN_DIGEST,
-                "89803e36915e574052298400377ae4c79e493756ba23828bb186146e76c6e612",
+                "7c83348e9b054cb909c0a0526560cb361ba5bdfaf1a2f67ed368e36fbb3c50d4",
             ),
             (
                 Hash::DOMAIN_MERKLE,
-                "f57fb2d2c1a213fcddd4f61ab2925b963f7d8541e43b0e01adcf74379ca7e251",
+                "199ed6659628074389904b2826c52debbf3b3da89d61382c83de131f0ef94ee4",
             ),
             (
                 Hash::DOMAIN_HEADER,
-                "a2abb5e9b5ae67a2b5c55573ebc35eab86e3fad707c59c67de29abe8f342cf20",
+                "7614d740c40436dd2e6367af3ace8eb124d385dfb93539f5c6310f40fccba6bd",
             ),
             (
                 Hash::DOMAIN_ACCOUNT,
-                "cad10474fa0dae6e2fb200f5bce4400853e82da907bda26ae86013352c024889",
+                "93b22b52d3d86edd9e100b6d17461eb534ff4d5c5903e8c51434f5805e7c0c6f",
             ),
             (
                 Hash::DOMAIN_ACCOUNT_EMPTY,
-                "9694849c8c5b7de5bbd0b6d510442c90381a493e78ad19ce677241cfa476614f",
+                "c03604e800110c65997a843fa3ce781f74d47e85e1e13691a431785d523eed39",
             ),
             (
                 Hash::DOMAIN_SMT,
-                "2ff0c13806b0dcc20b792799fb7b5de2a44f223b24dd14edb72d29923cf1ae7b",
+                "9a7b04a92fcf99c2ff7bc7b2e17d146a97e3b0aba8520e5cd435138541b31558",
             ),
             (
                 Hash::DOMAIN_COMMITTEE,
-                "8d0f7b7c55d1245f87ef605d186925aaa807e4b07abc996567b0fcc9b8b3f2a8",
+                "a71c6b5f54fbf08d42a7f9951112604d0880b431310226322725dc1af2e749f6",
             ),
             (
                 Hash::DOMAIN_EVIDENCE,
-                "e53ec284e86d16e720e16f0d5b80d7916853b9a7d71b15b24b40f44f31b47678",
+                "47f083ca243ef4277b41352ea5f1f93a0a4b64b13fa308d66bae383a4f08417a",
             ),
         ];
-        for (domain, hex) in cases {
+        for (domain, hex) in expected {
             assert_eq!(
                 Hash::new_keyed(domain, b"kovanica-kat").to_hex(),
                 hex,

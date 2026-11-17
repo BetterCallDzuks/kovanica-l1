@@ -4,8 +4,6 @@ export { encodeAddress, decodeAddress, parseAddress } from "./address.js";
 export {
   KVNC_DECIMALS,
   ATOMS_PER_KVNC,
-  KUNA_DECIMALS,
-  ATOMA_PER_KUNA,
   parseKvnc,
   formatKvnc,
   parseKuna,

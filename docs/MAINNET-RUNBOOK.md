@@ -66,7 +66,7 @@ Launch waits on [`KEY-CEREMONY.md`](KEY-CEREMONY.md). Until these are real, keep
 | Founder PRO-21 address | **OPEN** |
 | Treasury PRO-21 address | **OPEN** |
 | Bootstrap seeds (address + 32-byte public key, count 1..=20, recommend 3–5) | **OPEN** |
-| Mainnet network tag `1-<16 hex chars>` | **`1-4d827d40dd9655db`** (ceremony executed 2026-11-17; bundle `/tmp/kovanica-mainnet-genesis.tar.gz` sha256 `75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e`) |
+| Mainnet network tag `1-<16 hex chars>` | **`1-f35df34c92001436`** (ceremony executed 2026-11-17; bundle `/tmp/kovanica-mainnet-genesis.tar.gz` sha256 `d0ac07ba0bbe7fff87f3a7713a19239ceebb201944b4984d579a1f5f60edd7bf`) |
 | DNS A/AAAA for `mainnet.kovanica.online` | **OPEN** (name and port are frozen; the host record is not published here) |
 | Extra seed DNS names | **OPEN** |
 | Public RPC hostname | **OPEN** |

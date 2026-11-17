@@ -189,7 +189,7 @@ pub trait DagStoreTrait: Send + Sync {
     ) -> Result<Vec<kovanica_types::Vote>, kovanica_dag::DagStoreError> {
         Ok(Vec::new())
     }
-    /// Leader round certified by a quorum of `KUNA/commit/v1` commit seals or
+    /// Leader round certified by a quorum of `KVNC/commit/v1` commit seals or
     /// by a verified state-sync checkpoint.
     ///
     /// `None` (the default) means this store has no certified point. The
@@ -1730,7 +1730,7 @@ where
         Ok(())
     }
 
-    /// Signing context for votes (v2, domain tag `KUNA/vote/v2`).
+    /// Signing context for votes (v2, domain tag `KVNC/vote/v2`).
     ///
     /// Built ONLY from local state: the node's configured `chain_id`,
     /// `genesis_hash`, and the epoch derived from the voted `leader_round`

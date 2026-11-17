@@ -1817,7 +1817,7 @@ mod tests {
     }
 
     /// Reference copy of the skeleton's `treasury_vested(h)`:
-    /// linear 1M KUNA/year over 8 years, measured from height 0.
+    /// linear 1M KVNC/year over 8 years, measured from height 0.
     fn skeleton_treasury_vested(committed_leader_height: u64) -> u64 {
         let years = committed_leader_height / BLOCKS_PER_YEAR;
         let vested = years.saturating_mul(TREASURY_ANNUAL);

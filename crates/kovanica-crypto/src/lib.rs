@@ -121,7 +121,7 @@ pub enum SigError {
 /// Verify one post-execution commit seal.
 ///
 /// The message is [`kovanica_types::LeaderHeader::seal_message`]: domain
-/// `KUNA/commit/v1`, the caller's `chain_id`, and the header hash. The
+/// `KVNC/commit/v1`, the caller's `chain_id`, and the header hash. The
 /// header hash covers the state root and the MysticGhost blue / non-blue
 /// roots. This does not check stake quorum; [`verify_commit_seals`] does.
 pub fn verify_commit_seal(
@@ -185,7 +185,7 @@ pub enum CommitSealError {
 ///
 /// API contract (owned by Exec-Foundation, spec `docs/SIGNATURE_FORMAT.md` §1):
 /// - The message is exactly [`Vote::signature_data(ctx)`](kovanica_types::Vote::signature_data):
-///   the 106-byte v2 encoding with domain tag `KUNA/vote/v2`, `chain_id`,
+///   the 106-byte v2 encoding with domain tag `KVNC/vote/v2`, `chain_id`,
 ///   `genesis_hash`, `epoch`, `voter`, `leader_round` and `leader_hash`. The
 ///   producer passes the same bytes to [`sign`].
 /// - `ctx` MUST be built by the verifier from its **own** configured
@@ -478,8 +478,8 @@ mod vote_sig_tests {
     fn v1_74_byte_vote_signature_rejected() {
         let (sk, pk) = generate_keypair();
         let mut vote = signed_vote(&sk);
-        // Construct legacy 74-byte v1 preimage ("KUNA/vote/v1" without genesis_hash).
-        let mut legacy = kovanica_types::signing::domain_tag16(b"KUNA/vote/v1").to_vec();
+        // Construct legacy 74-byte v1 preimage ("KVNC/vote/v1" without genesis_hash).
+        let mut legacy = kovanica_types::signing::domain_tag16(b"KVNC/vote/v1").to_vec();
         legacy.extend_from_slice(&CTX.chain_id.to_le_bytes());
         legacy.extend_from_slice(&CTX.epoch.to_le_bytes());
         legacy.extend_from_slice(&vote.voter.to_le_bytes());
@@ -519,7 +519,7 @@ mod vote_sig_tests {
         vote.signature = sign(&sk, &vote.signature_data(&CTX));
         assert_eq!(
             hex::encode(vote.signature.0),
-            "c84668f3c6a1773677388514b797e32a930e617d36e97bca3a9de428e87553ecd6db02841bb4404182abbf76a51d5639b6dbea44f621a9ece3e7901ada40250d"
+            "6c041a6884a30bcfc3c4ccd7815246b7c729da10838066c7a3077e8ba77aaa711001ec3012d4106fdd73dfff4f49f26eccbb88a07813dc0c7b0131f89763120f"
         );
         assert_eq!(verify_vote_signature(&CTX, &vote, &pk), Ok(()));
     }

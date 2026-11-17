@@ -1473,6 +1473,11 @@ pub async fn handle_get_stake(params: Value, state: RpcState) -> Result<Value, R
 
 /// `kovanica_getRewards(address)` — cumulative rewards for an address.
 pub async fn handle_get_rewards(params: Value, state: RpcState) -> Result<Value, RpcError> {
+    reject_on_hybrid(
+        &state,
+        "kovanica_getRewards",
+        "staking rewards are not used on hybrid networks",
+    )?;
     let args = params_vec(&params);
     let address = parse_address(
         required(&args, 0, "address")?,
@@ -3642,6 +3647,10 @@ mod tests {
             ));
             assert!(matches!(
                 handle_get_stake(json!([Address([0x11; 32]).to_string()]), state.clone()).await,
+                Err(RpcError::InvalidRequest(_))
+            ));
+            assert!(matches!(
+                handle_get_rewards(json!([Address([0x11; 32]).to_string()]), state.clone()).await,
                 Err(RpcError::InvalidRequest(_))
             ));
             assert!(matches!(

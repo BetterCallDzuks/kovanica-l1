@@ -100,7 +100,7 @@ pub const SNAPSHOT_VERSION: u32 = 1;
 pub const AUX_STATE_LEAF_ADDRESS: [u8; 32] = [0xff; 32];
 
 /// Domain tag for [`aux_state_leaf`].
-const AUX_STATE_DOMAIN: &[u8] = b"KUNA/aux-state/v1";
+const AUX_STATE_DOMAIN: &[u8] = b"KVNC/aux-state/v1";
 
 /// Digest of the full state as the `(balance, nonce)` pair stored at
 /// [`AUX_STATE_LEAF_ADDRESS`].

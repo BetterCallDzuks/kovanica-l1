@@ -602,7 +602,7 @@ impl UniversalCommitter {
     /// otherwise hold a record for every leader slot from the cursor up
     /// ([`Self::try_commit_with_leader`]), and those blocks are gone, so it
     /// can never commit again. The anchor is a leader round a quorum of
-    /// `KUNA/commit/v1` seals or a verified state-sync checkpoint has already
+    /// `KVNC/commit/v1` seals or a verified state-sync checkpoint has already
     /// committed. Slots at or below it are not walked.
     ///
     /// The cursor only moves forward. A round that is not a leader slot is

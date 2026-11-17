@@ -2325,7 +2325,7 @@ const GENESIS_JSON_FILE: &str = "genesis.json";
 
 /// Domain separator for the persisted genesis digest. Bump only alongside a
 /// deliberate genesis-format change.
-const GENESIS_DIGEST_DOMAIN: &[u8] = b"KUNA-GENESIS-v1";
+const GENESIS_DIGEST_DOMAIN: &[u8] = b"KVNC-GENESIS-v1";
 
 /// Row `(address, stake, public_key, vrf_public_key)` used to order genesis
 /// validators deterministically in [`genesis_config_digest`].
@@ -2494,7 +2494,7 @@ fn genesis_config_digest(config: &NodeConfig) -> Result<Hash> {
 ///   `init_genesis` writes the digest in the same transaction as the genesis
 ///   state, so chain state without a digest comes from a data dir created
 ///   before the digest existed, i.e. before the chain-4 format change
-///   (KUNA-* hash domains, #81). Writing the fresh digest over it would bless
+///   (KVNC-* hash domains, #81). Writing the fresh digest over it would bless
 ///   state built under the old format.
 fn verify_persisted_genesis_digest(
     state_storage: &Storage,
@@ -2520,7 +2520,7 @@ fn verify_persisted_genesis_digest(
                         "genesis digest mismatch: this data dir belongs to genesis {} but this \
                          build and config give {}; refusing to start to avoid mixing chains. \
                          Either the data dir was created by a build before the chain-4 format \
-                         change (KUNA-* hash domains, #81), or the genesis files / treasury / \
+                         change (KVNC-* hash domains, #81), or the genesis files / treasury / \
                          chain_id differ from the ones it was created with. The fix is a wipe, \
                          not {ALLOW_GENESIS_MISMATCH_ENV} (a dev-only override): stop the node, \
                          move the data dir away and start from the published chain genesis \
@@ -2533,7 +2533,7 @@ fn verify_persisted_genesis_digest(
                     "genesis digest mismatch: this data dir belongs to genesis {} but this \
                      build and config give {}; refusing to start to avoid mixing chains. \
                      Either the data dir was created by a build before the chain-4 format \
-                     change (KUNA-* hash domains, #81), or the genesis files / treasury / \
+                     change (KVNC-* hash domains, #81), or the genesis files / treasury / \
                      chain_id differ from the ones it was created with. The fix is a wipe: \
                      stop the node, move the data dir away and start from the published \
                      chain genesis bundle (docs/TESTNET-RESET.md)",
@@ -2551,7 +2551,7 @@ fn verify_persisted_genesis_digest(
         None => {
             anyhow::bail!(
                 "data dir has chain state but no genesis digest: it was created by a build \
-                 before the chain-4 format change (KUNA-* hash domains, #81) and \
+                 before the chain-4 format change (KVNC-* hash domains, #81) and \
                  cannot be migrated; stop the node, move the data dir away and \
                  start from the chain-4 genesis (configured genesis digest {})",
                 fresh.to_hex(),
@@ -6514,15 +6514,15 @@ mod tests {
         );
     }
 
-    /// The genesis digest domain is KUNA-*, fits the 32-byte BLAKE3 key, and
+    /// The genesis digest domain is KVNC-*, fits the 32-byte BLAKE3 key, and
     /// has a known answer computed independently (Python `blake3`).
     #[test]
-    fn genesis_digest_domain_is_kuna_with_a_known_answer() {
-        assert_eq!(GENESIS_DIGEST_DOMAIN, b"KUNA-GENESIS-v1");
+    fn genesis_digest_domain_is_kvnc_with_a_known_answer() {
+        assert_eq!(GENESIS_DIGEST_DOMAIN, b"KVNC-GENESIS-v1");
         assert!(GENESIS_DIGEST_DOMAIN.len() <= 32);
         assert_eq!(
             Hash::new_keyed(GENESIS_DIGEST_DOMAIN, b"kovanica-kat").to_hex(),
-            "79dd91af609f2f8264b2f8a0a17c5dc46b7cea995e4fafd912a5b6623d588704"
+            "98fcac715e48ab1987b83fc4308a89cb04f2af611351d1ad652a70b023683288"
         );
     }
 
@@ -7068,7 +7068,7 @@ mod tests {
         assert_eq!(offline, logged);
         // Known answer for this fixture (devnet 3, treasury 0x55.., the four
         // bundle files). The offline CLI test locks the same string.
-        assert_eq!(logged, "3-3de28e32a6991d94");
+        assert_eq!(logged, "3-9c7843c3c1e9a75f");
         assert_eq!(offline, net.network_id.tag());
 
         let status = SyncStatus {
@@ -13896,8 +13896,8 @@ mod b1_epoch_restart_repro {
             .expect("must load testnet/chain2 config");
         let tag = network_tag_from_config(&config).expect("must compute testnet network tag");
         assert_eq!(
-            tag, "2-acfdf6a6c80fd28a",
-            "kovanica-testnet network tag must be byte-identical to published tag 2-acfdf6a6c80fd28a"
+            tag, "2-24cdb5fadd98b207",
+            "kovanica-testnet network tag must be byte-identical to the tag computed from the committed testnet/chain2 genesis under the KVNC-* domain"
         );
     }
 

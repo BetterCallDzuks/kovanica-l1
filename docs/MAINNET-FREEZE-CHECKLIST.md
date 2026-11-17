@@ -203,7 +203,7 @@ The genesis ceremony establishes the cryptographic trust root of the network and
   ```bash
   sha256sum -c SHA256SUMS
   ```
-- [x] **Network Tag Derived:** Network Tag matches `1-4d827d40dd9655db` (`1-<16 hex chars>`) identically across all operators (`#290`).
+- [x] **Network Tag Derived:** Network Tag matches `1-f35df34c92001436` (`1-<16 hex chars>`) identically across all operators (updated for KVNC-* domain rename).
 - [ ] **Data Directory Lock:** `KOVANICA_DATA_DIR` populated; policy established that data directories are never wiped post-genesis.
 
 ---

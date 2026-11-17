@@ -97,11 +97,11 @@ describe("signature format v1", () => {
   it("reproduces the spec transfer, call, and valued-call vectors", async () => {
     const transfer = unsigned("transfer");
     expect(bytesToHex(signingHash(transfer, 2))).toBe(
-      "4acde0e0a120d6c03eaa197c082238fefadaf36f4f40bc1364ae8b3faa067798",
+      "0aae8c1832e09bf7da6f897d20b8bc6a017aaeefd50ea10015218a5c4a54c21d",
     );
     const signed = await signTransaction(transfer, 2, seed);
     expect(bytesToHex(signed.signature)).toBe(
-      "2413f8c3a1508e2b1b2809c5cc9cc74982118d47e8a8e9afaab2d2719349724265b8f80d67359b579001b9c4845723edb9530372a79da9f4093d2f7228820d0e",
+      "c24cd02ec98045a34e4b3102a1cafe70883a83763d5915528554b54797b139df1768cad71220e78bcb6702b109f37bb79513c1f768bacab4bf6e96f4e16cdf06",
     );
 
     const call = {
@@ -118,10 +118,10 @@ describe("signature format v1", () => {
       },
     };
     expect(bytesToHex(signingHash(call, 2))).toBe(
-      "439e1830573896f46dc642cedb37605c1e478880f417f0cfae5126eaca48026a",
+      "e6ee05c494bc9197cdbf32f02558a36c0bf9f9ce92d7aceff99b65fa7ee3df92",
     );
     expect(bytesToHex((await signTransaction(call, 2, seed)).signature)).toBe(
-      "0ff9438c1ea9e8a70e3b491d873c712e8e7d0339b637b00def16d42eea4eed3301454ef10f61b958bf37c95351a89f01270fe194ab8fa046b45373ee54e47f07",
+      "938f46f0d12493a4a9f6b12b6b2270d519b3704006db70f1406f844d51d79a9e89169816863e2c9d3a86680a01ca09593ca63d53c350b133156e3c5a73f2b904",
     );
 
     const valued = {
@@ -129,10 +129,10 @@ describe("signature format v1", () => {
       kind: { ...call.kind, value: 500n },
     };
     expect(bytesToHex(signingHash(valued, 2))).toBe(
-      "9b76e7fc940641c6e11226b537841ace9ceb000a3943f6b3923b3cf2c6f4f794",
+      "616a96c5e4568b1e165670cd9c4afb4c8d2dd603dbf5b61142f7187a93d29df7",
     );
     expect(bytesToHex((await signTransaction(valued, 2, seed)).signature)).toBe(
-      "ce4e4d5dcc49159d2b6f72faa3210fe4db5b040e93eadbe315a159afe61f32ff66fc0abf9591c902500a1ce4e02d3816dbae80b8f1721725f03ed52b119f6608",
+      "48b532f19c6867e21907f829614864ca5cc54baf0177eab1dc4bbbc48b192d48507acdbd97731621c76498e33fb68ccfc37979cd0f17a959a14b94d159606c0b",
     );
   });
 

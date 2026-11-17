@@ -11,7 +11,7 @@
 //! and an honest validator signs a vote **or** a timeout for a slot, never
 //! both (see `ConsensusEngine::vote_for_leader` / `sign_timeout`).
 //!
-//! Signatures cover `KUNA/timeout/v1 ‖ chain_id ‖ genesis_hash ‖ epoch(R) ‖
+//! Signatures cover `KVNC/timeout/v1 ‖ chain_id ‖ genesis_hash ‖ epoch(R) ‖
 //! voter ‖ R` ([`Timeout::signature_data`]); a timeout from another chain, a
 //! reset of the same chain, or another epoch never verifies.
 

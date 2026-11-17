@@ -1,9 +1,6 @@
 export const KVNC_DECIMALS = 9;
 export const ATOMS_PER_KVNC = 1_000_000_000n;
 
-/** Legacy aliases retained for backward compatibility. */
-export const KUNA_DECIMALS = KVNC_DECIMALS;
-export const ATOMA_PER_KUNA = ATOMS_PER_KVNC;
 
 const DECIMALS = KVNC_DECIMALS;
 const ATOM = ATOMS_PER_KVNC;

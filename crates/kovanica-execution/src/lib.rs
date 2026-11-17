@@ -249,7 +249,7 @@ impl ExecutionContext {
     }
 
     /// Execution context verifying transaction signatures (format v1,
-    /// `KUNA/tx/v1` domain tag) against `ctx.chain_id`. `ctx` must come from
+    /// `KVNC/tx/v1` domain tag) against `ctx.chain_id`. `ctx` must come from
     /// the node's own configuration, never from a network message.
     pub fn with_signing_context(ctx: SigningContext) -> Self {
         Self {

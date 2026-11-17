@@ -169,7 +169,7 @@ pub trait VoteVerifier: Send + Sync {
 }
 
 /// Default verifier: Foundation's v2 `kovanica_crypto::verify_vote_signature`
-/// (domain tag `KUNA/vote/v2`, chain id, genesis_hash, epoch, voter; Ed25519 strict).
+/// (domain tag `KVNC/vote/v2`, chain id, genesis_hash, epoch, voter; Ed25519 strict).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Ed25519VoteVerifier;
 
@@ -312,7 +312,7 @@ pub fn verify_block_with_clock(
 /// Until keys are configured nothing can be authenticated, so votes and
 /// blocks are neither delivered nor forwarded (fail closed).
 /// Verify a leader-slot timeout under `keys` (PRO-40 (b)): committee member
-/// and a signature over `KUNA/timeout/v1 ‖ chain_id ‖ genesis_hash ‖
+/// and a signature over `KVNC/timeout/v1 ‖ chain_id ‖ genesis_hash ‖
 /// epoch(R) ‖ voter ‖ R`.
 pub fn verify_timeout(
     keys: &AuthorityKeys,

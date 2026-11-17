@@ -669,11 +669,11 @@ mod tests {
         assert!(!call.verify_signature(&SigningContext::new(3)));
         assert_eq!(
             call.hash.to_hex(),
-            "439e1830573896f46dc642cedb37605c1e478880f417f0cfae5126eaca48026a"
+            "e6ee05c494bc9197cdbf32f02558a36c0bf9f9ce92d7aceff99b65fa7ee3df92"
         );
         assert_eq!(
             hex::encode(call.signature.0),
-            "0ff9438c1ea9e8a70e3b491d873c712e8e7d0339b637b00def16d42eea4eed3301454ef10f61b958bf37c95351a89f01270fe194ab8fa046b45373ee54e47f07"
+            "938f46f0d12493a4a9f6b12b6b2270d519b3704006db70f1406f844d51d79a9e89169816863e2c9d3a86680a01ca09593ca63d53c350b133156e3c5a73f2b904"
         );
         assert!(matches!(
             call.kind,
@@ -688,11 +688,11 @@ mod tests {
         assert!(priced.verify_signature(&ctx));
         assert_eq!(
             priced.hash.to_hex(),
-            "9b76e7fc940641c6e11226b537841ace9ceb000a3943f6b3923b3cf2c6f4f794"
+            "616a96c5e4568b1e165670cd9c4afb4c8d2dd603dbf5b61142f7187a93d29df7"
         );
         assert_eq!(
             hex::encode(priced.signature.0),
-            "ce4e4d5dcc49159d2b6f72faa3210fe4db5b040e93eadbe315a159afe61f32ff66fc0abf9591c902500a1ce4e02d3816dbae80b8f1721725f03ed52b119f6608"
+            "48b532f19c6867e21907f829614864ca5cc54baf0177eab1dc4bbbc48b192d48507acdbd97731621c76498e33fb68ccfc37979cd0f17a959a14b94d159606c0b"
         );
         assert_ne!(call.hash, priced.hash);
     }

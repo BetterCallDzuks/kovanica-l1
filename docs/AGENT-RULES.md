@@ -28,9 +28,8 @@ These are locked. Any PR that alters them without an explicit Toni decision is r
 | Fee split (devnet) | 100% burn | execution |
 | Address format | `kvnc` + 57 base32 + `dag` (64 chars) | types |
 | Chain IDs | 1 mainnet, 2 testnet, 3 devnet (1337 retired/merged into devnet per Toni 2026-11-17) | params |
-| Network tag (mainnet) | `1-4d827d40dd9655db` | genesis |
-| Network tag (testnet) | `2-acfdf6a6c80fd28a` | genesis |
-| Network tag (mainnet) | `1-4d827d40dd9655db` | genesis (#290) |
+| Network tag (mainnet) | `1-f35df34c92001436` | genesis (updated post-KVNC domain rename) |
+| Network tag (testnet) | `2-acfdf6a6c80fd28a` | genesis (A-freeze on seed1) |
 | DAA easiest (testnet/devnet) | `0x1f7f_ffff` | params |
 | DAA hardest (testnet/devnet) | `0x1e00_ffff` | params |
 | DAA easiest (mainnet) | `0x1f00_ffff` | params |

@@ -22,7 +22,7 @@
 //!    - All online nodes resume and converge on an identical sequence of committed sub-DAGs.
 //!
 //! 3. **Scenario 3 (SkipCert Domain & Preimage Verification)**:
-//!    - Verifies the exact domain tag (`KUNA/timeout/v1` with 0x00 padding, 16 bytes).
+//!    - Verifies the exact domain tag (`KVNC/timeout/v1` with 0x00 padding, 16 bytes).
 //!    - Verifies canonical preimage construction (exactly 74 bytes):
 //!      `tag (16B) ‖ chain_id (8B) ‖ genesis_hash (32B) ‖ epoch (8B) ‖ voter (2B) ‖ round (8B)`.
 //!    - Validates verification of timeouts and skip certificates against 5-node committees.
@@ -544,8 +544,8 @@ fn test_scenario3_skip_cert_domain_preimage_and_validation() {
     // 1. Domain tag check
     assert_eq!(
         &TIMEOUT_DOMAIN_TAG[..15],
-        b"KUNA/timeout/v1",
-        "domain tag must be KUNA/timeout/v1"
+        b"KVNC/timeout/v1",
+        "domain tag must be KVNC/timeout/v1"
     );
     assert_eq!(
         TIMEOUT_DOMAIN_TAG[15], 0,
