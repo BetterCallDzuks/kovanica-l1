@@ -89,32 +89,32 @@ published by accident. The output
 byte-identical across rebuilds. Attach it to the `v<version>-node` release
 next to the binaries. Details and the refusal rules: `docs/TESTNET-RESET.md`.
 
-### BLOCKED: do not cut the chain-2 bundle yet
+### Verified chain-2 (`kovanica-testnet`) genesis bundle (`P3-2` / `P4-5`)
 
-**Status: not run.** `node/scripts/install.sh` cannot complete an install for
-kovanica-testnet (chain ID 2) until this bundle is attached to a
-`v<version>-node` release, but the bundle must not be cut until the final
-production key ceremony addresses exist.
+**Status: prepared & verified (approved by Toni 2026-11-17).** The deterministic chain-2 genesis bundle has been cut from `testnet/chain2/` and verified:
 
-- **What is still missing:** the final mainnet/testnet addresses produced by the
-  production key ceremony (`ops/genesis/ceremony.sh`, see `docs/KEY-CEREMONY.md`
-  and `docs/MAINNET-RUNBOOK.md`). Until Toni supplies them, `testnet/chain2/`
-  carries placeholder/pre-ceremony content and any bundle cut from it would
-  publish the wrong genesis and the wrong network tag.
-- **Exact command to run later** (from the repo root, on the commit whose tree
-  contains the final `testnet/chain2/` file set):
+- **Command used to cut the bundle:**
 
   ```sh
-  kovanica-node genesis-bundle --chain-id 2 --source testnet/chain2
+  kovanica-node genesis-bundle --chain-id 2 --source testnet/chain2 --out /tmp/kovanica-testnet-genesis.tar.gz
   ```
 
-  Then attach `kovanica-testnet-genesis.tar.gz` to the `v<version>-node`
-  release and confirm the embedded `expected-tag` is `2-acfdf6a6c80fd28a`.
-- **Gate:** do **not** run the command, generate a bundle, or attach one to a
-  release until **Toni supplies the ceremony addresses** and the genesis file
-  set is final. Generating one now is out of scope for every agent; changing
-  `testnet/chain2/*` genesis files or the network tag is forbidden without an
-  explicit Toni decision.
+- **Verified bundle metadata:**
+  - **Archive path:** `/tmp/kovanica-testnet-genesis.tar.gz` (`6679` bytes)
+  - **Archive SHA256:** `0892ff8056b1a4d999141752d258750b02be7e141ae0e742b1721b3d2bcfd38a`
+  - **Embedded `expected-tag`:** `2-acfdf6a6c80fd28a`
+  - **Embedded `SHA256SUMS`:**
+    ```text
+    045c9dd35fe36885c8645161e66dbb7f8d2c28a0f46246a60a4d015efa005da1  founder_premine.hex
+    4539046b94ea6cab2dfabdafd1900c91474f6aa9e94353ab201fbfac74994098  funded_accounts.toml
+    db73084691683004c040897607cdb2f689aa5976ca6c09bf8226efffd87238d0  genesis_validators.toml
+    ```
+
+- **Command to attach the bundle to `v0.3.0-node`:**
+
+  ```sh
+  gh release upload v0.3.0-node /tmp/kovanica-testnet-genesis.tar.gz
+  ```
 
 ## State sync: full-state commitment is activated at round 500 000
 

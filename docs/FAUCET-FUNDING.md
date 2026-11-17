@@ -166,7 +166,59 @@ key derives to those addresses either.
   funder above and reports the `tx_hash` plus the new balance.
 - **Path B (not available):** fund from a genesis bootstrap identity. No host key
   derives to those addresses, and they hold only earned block rewards.
-- **Path C (approved for live testnet):** leave the rotated faucet at `0x0` (or rotate to a newly funded faucet when an operator supplies keys/funds out-of-band). The faucet stays healthy but dispenses nothing, and `STATE.md` gap #5 tracks the funding state.
+- **Path C (approved by Toni — rotate to a new faucet keystore & fund from a miner payout address on `seed1`):**
+  Since `ops/docker/chain2/faucet.keystore` and `ops/docker/chain2/faucet_passphrase` are now untracked and gitignored (`#285`), the operator can rotate to a fresh faucet keystore on `seed1` and fund it above the 100 KVNC floor (`--min-balance-ku 100`) from a miner payout address without touching genesis files or the network tag:
+
+  1. **Generate a fresh passphrase and encrypted v2 faucet keystore on `seed1` (never committed to git):**
+     ```sh
+     umask 077
+     openssl rand -base64 32 > ops/docker/chain2/faucet_passphrase
+     chmod 0600 ops/docker/chain2/faucet_passphrase
+
+     docker run --rm -it \
+       --user "$(id -u):$(id -g)" \
+       -v "$PWD/ops/docker/chain2:/out" \
+       --entrypoint kovanica kovanica-node:local \
+       keygen --out /out/faucet.keystore
+     chmod 0600 ops/docker/chain2/faucet.keystore
+     NEW_FAUCET_ADDR="$(jq -r .address ops/docker/chain2/faucet.keystore)"
+     echo "New faucet address: $NEW_FAUCET_ADDR"
+     ```
+     Enter the passphrase from `ops/docker/chain2/faucet_passphrase` at the `kovanica keygen` prompt, set `KOVANICA_FAUCET_PASSPHRASE` in the host compose environment file to that exact value, and recreate the faucet container:
+     ```sh
+     docker compose -f ops/docker/docker-compose.chain2.yml up -d faucet
+     ```
+
+  2. **Fund `$NEW_FAUCET_ADDR` above the 100 KVNC floor from a miner payout address on `seed1`:**
+     - **Option C1 (Direct mining payout to `$NEW_FAUCET_ADDR`):** Mine block rewards (`2.5 KVNC` per committed block) directly to `$NEW_FAUCET_ADDR` until `kovanica_getBalance` exceeds `100 KVNC` (≥ 41 committed blocks = `102.5 KVNC`):
+       ```sh
+       KOVANICA_MINER_ADDRESS="$NEW_FAUCET_ADDR" \
+         docker compose -f ops/docker/docker-compose.chain2.yml --profile miner up -d miner
+       ```
+     - **Option C2 (One-shot transfer from a funded miner payout keystore):** If block rewards were accumulated in a separate miner keystore (`/root/faucet-topup/miner.keystore` with `0600` passphrase file `/root/faucet-topup/miner.pass` and balance > 100 KVNC), run the one-shot `kovanica-faucet` sender with `--address-max-requests 1`:
+       ```sh
+       docker run --rm --name kovanica-faucet-topup \
+         --user 0:0 \
+         --network container:kovanica-chain2-node1 \
+         --env-file /root/kovanica-chain2-rpc.env \
+         -v /root/faucet-topup/miner.keystore:/keystore:ro \
+         -v /root/faucet-topup/miner.pass:/pass:ro \
+         --entrypoint kovanica-faucet kovanica-node:local \
+         --chain-id 2 \
+         --keystore /keystore \
+         --passphrase-file /pass \
+         --rpc-url http://127.0.0.1:8545/rpc \
+         --listen 127.0.0.1:18500 \
+         --address-max-requests 1 \
+         --dispense-kovanica 500
+       ```
+       Then trigger the single payout from inside the node namespace and verify `/health` and `kovanica_getBalance`:
+       ```sh
+       docker exec kovanica-chain2-node1 curl -s \
+         -X POST -H 'content-type: application/json' \
+         -d "{\"address\":\"$NEW_FAUCET_ADDR\"}" \
+         http://127.0.0.1:18500/faucet
+       ```
 
 ## Secret hygiene findings (resolved in P3-6)
 
