@@ -40,14 +40,18 @@ use tracing::{debug, info};
 pub mod call_args;
 pub mod contracts;
 pub use call_args::{
+    encode_escrow_approve, encode_escrow_create, encode_escrow_refund, encode_escrow_release,
     encode_htlc_claim, encode_htlc_create, encode_htlc_refund, encode_multisig_confirm,
-    encode_multisig_create, encode_multisig_execute, encode_multisig_propose, encode_token_approve,
-    encode_token_burn, encode_token_create, encode_token_mint, encode_token_transfer,
-    encode_token_transfer_from, encode_vault_cancel, encode_vault_claim, encode_vault_create,
+    encode_multisig_create, encode_multisig_execute, encode_multisig_propose, encode_nft_approve,
+    encode_nft_burn, encode_nft_create_collection, encode_nft_mint, encode_nft_set_base_uri,
+    encode_nft_transfer, encode_nft_transfer_from, encode_token_approve, encode_token_burn,
+    encode_token_buy, encode_token_create, encode_token_init_pool, encode_token_mint,
+    encode_token_sell, encode_token_transfer, encode_token_transfer_from, encode_vault_cancel,
+    encode_vault_claim, encode_vault_create,
 };
 pub use contracts::{
-    execute_contract_call, execute_contract_call_in_txn, is_entry_point, ContractEvent,
-    ContractHost, ContractRunner, WasmCall, ENTRY_POINTS,
+    execute_contract_call, execute_contract_call_in_txn, execute_contract_call_with_value,
+    is_entry_point, ContractEvent, ContractHost, ContractRunner, WasmCall, ENTRY_POINTS,
 };
 pub use kovanica_runtime::{ExecutionConfig, DEFAULT_CONTRACT_MEMORY_PAGES, MAX_TX_GAS_LIMIT};
 

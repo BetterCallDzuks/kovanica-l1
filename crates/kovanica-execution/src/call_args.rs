@@ -165,6 +165,91 @@ pub fn encode_token_sell(amount_in: Amount, min_out: Amount) -> Result<Vec<u8>, 
     enc(&(amount_in, min_out))
 }
 
+/// `nft_create_collection(name, symbol, base_uri)`.
+pub fn encode_nft_create_collection(
+    name: &str,
+    symbol: &str,
+    base_uri: &str,
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(name.to_string(), symbol.to_string(), base_uri.to_string()))
+}
+
+/// `nft_mint(collection, to, token_id, token_uri)`.
+pub fn encode_nft_mint(
+    collection: [u8; 32],
+    to: [u8; 32],
+    token_id: u128,
+    token_uri: &str,
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(collection, to, token_id, token_uri.to_string()))
+}
+
+/// `nft_transfer(collection, to, token_id)`.
+pub fn encode_nft_transfer(
+    collection: [u8; 32],
+    to: [u8; 32],
+    token_id: u128,
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(collection, to, token_id))
+}
+
+/// `nft_approve(collection, spender, token_id)`.
+pub fn encode_nft_approve(
+    collection: [u8; 32],
+    spender: [u8; 32],
+    token_id: u128,
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(collection, spender, token_id))
+}
+
+/// `nft_transfer_from(collection, from, to, token_id)`.
+pub fn encode_nft_transfer_from(
+    collection: [u8; 32],
+    from: [u8; 32],
+    to: [u8; 32],
+    token_id: u128,
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(collection, from, to, token_id))
+}
+
+/// `nft_set_base_uri(collection, base_uri)`.
+pub fn encode_nft_set_base_uri(
+    collection: [u8; 32],
+    base_uri: &str,
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(collection, base_uri.to_string()))
+}
+
+/// `nft_burn(collection, token_id)`.
+pub fn encode_nft_burn(collection: [u8; 32], token_id: u128) -> Result<Vec<u8>, EncodeError> {
+    enc(&(collection, token_id))
+}
+
+/// `escrow_create(parties, threshold, amount, deadline)`.
+pub fn encode_escrow_create(
+    parties: &[[u8; 32]],
+    threshold: u8,
+    amount: Amount,
+    deadline: Timestamp,
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(parties.to_vec(), threshold, amount, deadline))
+}
+
+/// `escrow_approve(id)`.
+pub fn encode_escrow_approve(id: [u8; 32]) -> Result<Vec<u8>, EncodeError> {
+    enc(&id)
+}
+
+/// `escrow_release(id, to)`.
+pub fn encode_escrow_release(id: [u8; 32], to: [u8; 32]) -> Result<Vec<u8>, EncodeError> {
+    enc(&(id, to))
+}
+
+/// `escrow_refund(id)`.
+pub fn encode_escrow_refund(id: [u8; 32]) -> Result<Vec<u8>, EncodeError> {
+    enc(&id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +391,67 @@ mod tests {
         );
         assert_eq!(
             bincode::deserialize::<[u8; 32]>(&encode_vault_cancel(id).unwrap()).unwrap(),
+            id
+        );
+
+        let nft_create = encode_nft_create_collection("Art", "ART", "https://art/").unwrap();
+        let decoded: (String, String, String) = bincode::deserialize(&nft_create).unwrap();
+        assert_eq!(decoded, ("Art".into(), "ART".into(), "https://art/".into()));
+
+        let nft_mint = encode_nft_mint(id, other, 1, "1.json").unwrap();
+        let decoded: ([u8; 32], [u8; 32], u128, String) = bincode::deserialize(&nft_mint).unwrap();
+        assert_eq!(decoded, (id, other, 1, "1.json".into()));
+
+        assert_eq!(
+            bincode::deserialize::<([u8; 32], [u8; 32], u128)>(
+                &encode_nft_transfer(id, other, 1).unwrap()
+            )
+            .unwrap(),
+            (id, other, 1)
+        );
+        assert_eq!(
+            bincode::deserialize::<([u8; 32], [u8; 32], u128)>(
+                &encode_nft_approve(id, other, 1).unwrap()
+            )
+            .unwrap(),
+            (id, other, 1)
+        );
+        assert_eq!(
+            bincode::deserialize::<([u8; 32], [u8; 32], [u8; 32], u128)>(
+                &encode_nft_transfer_from(id, other, id, 1).unwrap()
+            )
+            .unwrap(),
+            (id, other, id, 1)
+        );
+        assert_eq!(
+            bincode::deserialize::<([u8; 32], String)>(
+                &encode_nft_set_base_uri(id, "ipfs://").unwrap()
+            )
+            .unwrap(),
+            (id, "ipfs://".to_string())
+        );
+        assert_eq!(
+            bincode::deserialize::<([u8; 32], u128)>(&encode_nft_burn(id, 1).unwrap()).unwrap(),
+            (id, 1)
+        );
+
+        let escrow_create = encode_escrow_create(&[other, id], 2, 500, 1_000).unwrap();
+        let decoded: (Vec<[u8; 32]>, u8, Amount, Timestamp) =
+            bincode::deserialize(&escrow_create).unwrap();
+        assert_eq!(decoded, (vec![other, id], 2, 500, 1_000));
+        assert_eq!(
+            bincode::deserialize::<[u8; 32]>(&encode_escrow_approve(id).unwrap()).unwrap(),
+            id
+        );
+        assert_eq!(
+            bincode::deserialize::<([u8; 32], [u8; 32])>(
+                &encode_escrow_release(id, other).unwrap()
+            )
+            .unwrap(),
+            (id, other)
+        );
+        assert_eq!(
+            bincode::deserialize::<[u8; 32]>(&encode_escrow_refund(id).unwrap()).unwrap(),
             id
         );
     }
@@ -564,5 +710,148 @@ mod tests {
             &storage,
         )
         .expect("multisig_execute");
+    }
+
+    #[test]
+    fn encoded_nft_calls_execute_on_a_local_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::new(dir.path().join("state.redb")).expect("storage");
+        let contract = addr(34);
+        let creator = addr(1);
+        let recipient = addr(2);
+        let spender = addr(3);
+        deploy(&storage, &contract);
+
+        // 1. Create collection
+        let create = encode_nft_create_collection("Art", "ART", "ipfs://base/").unwrap();
+        let out = execute_contract_call(
+            "nft_create_collection",
+            contract,
+            creator,
+            1,
+            100,
+            &create,
+            &storage,
+        )
+        .expect("nft_create_collection");
+        let collection: [u8; 32] = bincode::deserialize(&out).expect("collection id");
+
+        // 2. Mint token
+        let mint = encode_nft_mint(collection, creator.0, 42, "token42.json").unwrap();
+        execute_contract_call("nft_mint", contract, creator, 2, 101, &mint, &storage)
+            .expect("nft_mint");
+
+        // 3. Approve spender
+        let approve = encode_nft_approve(collection, spender.0, 42).unwrap();
+        execute_contract_call("nft_approve", contract, creator, 3, 102, &approve, &storage)
+            .expect("nft_approve");
+
+        // 4. Spender transfers from creator to recipient
+        let transfer_from =
+            encode_nft_transfer_from(collection, creator.0, recipient.0, 42).unwrap();
+        execute_contract_call(
+            "nft_transfer_from",
+            contract,
+            spender,
+            4,
+            103,
+            &transfer_from,
+            &storage,
+        )
+        .expect("nft_transfer_from");
+
+        // 5. Recipient transfers to creator
+        let transfer = encode_nft_transfer(collection, creator.0, 42).unwrap();
+        execute_contract_call(
+            "nft_transfer",
+            contract,
+            recipient,
+            5,
+            104,
+            &transfer,
+            &storage,
+        )
+        .expect("nft_transfer");
+
+        // 6. Set base URI
+        let base_uri = encode_nft_set_base_uri(collection, "ipfs://new-base/").unwrap();
+        execute_contract_call(
+            "nft_set_base_uri",
+            contract,
+            creator,
+            6,
+            105,
+            &base_uri,
+            &storage,
+        )
+        .expect("nft_set_base_uri");
+
+        // 7. Burn token
+        let burn = encode_nft_burn(collection, 42).unwrap();
+        execute_contract_call("nft_burn", contract, creator, 7, 106, &burn, &storage)
+            .expect("nft_burn");
+    }
+
+    #[test]
+    fn encoded_escrow_calls_execute_on_a_local_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::new(dir.path().join("state.redb")).expect("storage");
+        let contract = addr(35);
+        let party1 = addr(1);
+        let party2 = addr(2);
+        let recipient = addr(3);
+        deploy(&storage, &contract);
+        fund(&storage, &party1, 5_000);
+
+        // 1. Create escrow
+        let create = encode_escrow_create(&[party1.0, party2.0], 2, 1_000, 500).unwrap();
+        let out = execute_contract_call_with_value(
+            "escrow_create",
+            contract,
+            party1,
+            1,
+            100,
+            &create,
+            1_000,
+            &storage,
+        )
+        .expect("escrow_create");
+        let id: [u8; 32] = bincode::deserialize(&out).expect("escrow id");
+
+        // 2. Approve by party 1 and party 2
+        let approve = encode_escrow_approve(id).unwrap();
+        execute_contract_call(
+            "escrow_approve",
+            contract,
+            party1,
+            2,
+            110,
+            &approve,
+            &storage,
+        )
+        .expect("escrow_approve party1");
+        execute_contract_call(
+            "escrow_approve",
+            contract,
+            party2,
+            3,
+            120,
+            &approve,
+            &storage,
+        )
+        .expect("escrow_approve party2");
+
+        // 3. Release escrow to recipient
+        let release = encode_escrow_release(id, recipient.0).unwrap();
+        execute_contract_call(
+            "escrow_release",
+            contract,
+            party1,
+            4,
+            130,
+            &release,
+            &storage,
+        )
+        .expect("escrow_release");
     }
 }
