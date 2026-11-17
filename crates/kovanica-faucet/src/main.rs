@@ -2988,4 +2988,471 @@ mod http_tests {
             t_small
         );
     }
+
+    /// P3-3: sequential payouts under concurrent load.
+    ///
+    /// These tests drive the real HTTP handler against an in-process JSON-RPC
+    /// backend on a multi-threaded runtime, so the per-request tasks actually
+    /// run in parallel. They assert the three properties P3-3 asks for:
+    ///
+    /// 1. concurrently reserved payout nonces form a contiguous sequence with
+    ///    no duplicates and no gaps;
+    /// 2. the per-IP and per-address limiters stay fail-closed (they never
+    ///    admit more than the configured cap, even in a burst);
+    /// 3. a submit that fails mid-batch neither panics nor corrupts the nonce
+    ///    state — the faucet resyncs from the node and heals the gap.
+    mod p3_3_load_tests {
+        use super::*;
+        use std::collections::BTreeSet;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// A minimal JSON-RPC node stub for load tests.
+        ///
+        /// `accepted` is the set of nonces that actually made it into the
+        /// mempool. `committed` is the contiguous prefix of that set, which is
+        /// what a real account nonce looks like when one submission is missing.
+        #[derive(Clone)]
+        struct LoadStub {
+            balance_atoms: u64,
+            accepted: Arc<Mutex<BTreeSet<u64>>>,
+            submitted: Arc<Mutex<Vec<u64>>>,
+            fail_nonce: Arc<Mutex<Option<u64>>>,
+            /// When set, reject nonces beyond the contiguous committed prefix
+            /// (`Invalid nonce: expected N, got M`) and re-used nonces
+            /// (`nonce too low`), like a strict node.
+            strict_committed: Arc<AtomicBool>,
+            submit_delay_ms: Arc<Mutex<u64>>,
+        }
+
+        fn contiguous_committed(accepted: &BTreeSet<u64>) -> u64 {
+            let mut committed = 0;
+            while accepted.contains(&committed) {
+                committed += 1;
+            }
+            committed
+        }
+
+        async fn load_stub_rpc(
+            axum::extract::State(stub): axum::extract::State<LoadStub>,
+            Json(req): Json<Value>,
+        ) -> (StatusCode, Json<Value>) {
+            let method = req
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+
+            let result = match method {
+                "kovanica_getBalance" => json!(format!("0x{:x}", stub.balance_atoms)),
+                "kovanica_getNonce" => {
+                    let committed = contiguous_committed(&stub.accepted.lock());
+                    json!(format!("0x{:x}", committed))
+                }
+                "kovanica_sendRawTransaction" => {
+                    let raw = req
+                        .get("params")
+                        .and_then(|p| p.get(0))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let tx = match hex::decode(raw)
+                        .ok()
+                        .and_then(|bytes| bincode::deserialize::<Transaction>(&bytes).ok())
+                    {
+                        Some(tx) => tx,
+                        None => {
+                            return (
+                                StatusCode::OK,
+                                Json(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": 1,
+                                    "error": { "code": -32000, "message": "undecodable transaction" }
+                                })),
+                            );
+                        }
+                    };
+
+                    let delay = *stub.submit_delay_ms.lock();
+                    if delay > 0 {
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                    }
+                    stub.submitted.lock().push(tx.nonce);
+
+                    if *stub.fail_nonce.lock() == Some(tx.nonce) {
+                        return (
+                            StatusCode::OK,
+                            Json(json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "error": {
+                                    "code": -32000,
+                                    "message": "tx rejected by load-test stub"
+                                }
+                            })),
+                        );
+                    }
+
+                    let mut accepted = stub.accepted.lock();
+                    let committed = contiguous_committed(&accepted);
+                    if stub.strict_committed.load(Ordering::SeqCst) {
+                        if tx.nonce > committed {
+                            return (
+                                StatusCode::OK,
+                                Json(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": 1,
+                                    "error": {
+                                        "code": -32000,
+                                        "message": format!(
+                                            "Invalid nonce: expected {committed}, got {}",
+                                            tx.nonce
+                                        )
+                                    }
+                                })),
+                            );
+                        }
+                        if tx.nonce < committed || accepted.contains(&tx.nonce) {
+                            return (
+                                StatusCode::OK,
+                                Json(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": 1,
+                                    "error": {
+                                        "code": -32000,
+                                        "message": format!(
+                                            "nonce too low: expected {committed}, got {}",
+                                            tx.nonce
+                                        )
+                                    }
+                                })),
+                            );
+                        }
+                    }
+                    if !accepted.insert(tx.nonce) {
+                        return (
+                            StatusCode::OK,
+                            Json(json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "error": {
+                                    "code": -32000,
+                                    "message": format!("nonce too low: {} already used", tx.nonce)
+                                }
+                            })),
+                        );
+                    }
+                    json!("0xfeed")
+                }
+                _ => json!(null),
+            };
+            (
+                StatusCode::OK,
+                Json(json!({ "jsonrpc": "2.0", "id": 1, "result": result })),
+            )
+        }
+
+        async fn spawn_load_stub(balance_atoms: u64) -> (String, LoadStub) {
+            let stub = LoadStub {
+                balance_atoms,
+                accepted: Arc::new(Mutex::new(BTreeSet::new())),
+                submitted: Arc::new(Mutex::new(Vec::new())),
+                fail_nonce: Arc::new(Mutex::new(None)),
+                strict_committed: Arc::new(AtomicBool::new(false)),
+                submit_delay_ms: Arc::new(Mutex::new(0)),
+            };
+            let router = Router::new()
+                .route("/rpc", post(load_stub_rpc))
+                .with_state(stub.clone());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            (format!("http://{addr}/rpc"), stub)
+        }
+
+        fn accepted_sorted(stub: &LoadStub) -> Vec<u64> {
+            stub.accepted.lock().iter().copied().collect()
+        }
+
+        /// N concurrent requests, N distinct client IPs and N distinct
+        /// destination addresses: every request must be paid, and the nonces
+        /// consumed by the signed payout transactions must be exactly
+        /// `0..N` with no duplicate and no gap.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_valid_requests_assign_contiguous_nonces() {
+            const N: u8 = 32;
+
+            let (rpc, stub) = spawn_load_stub(1_000_000 * 1_000_000_000).await;
+            // Generous IP/address caps: this test is about nonce assignment,
+            // not the limiter.
+            let state = faucet_state(&rpc, 3600, 1_000, 86_400, 1_000, "", 0);
+            let app = app(state.clone());
+
+            let mut set = tokio::task::JoinSet::new();
+            for i in 0..N {
+                let app_c = app.clone();
+                let peer = format!("203.0.113.{}:5000", u32::from(i) + 1);
+                let address = canonical(i);
+                set.spawn(async move {
+                    post_faucet(&app_c, &peer, None, json!({ "address": address })).await
+                });
+            }
+
+            let mut successes = 0usize;
+            while let Some(joined) = set.join_next().await {
+                let (status, body) = joined.expect("faucet request task must not panic");
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "every valid concurrent request must be paid: {body}"
+                );
+                successes += 1;
+            }
+            assert_eq!(successes, usize::from(N));
+
+            let accepted = accepted_sorted(&stub);
+            assert_eq!(
+                accepted,
+                (0..u64::from(N)).collect::<Vec<_>>(),
+                "payout nonces must be strictly contiguous with no dupes and no gaps"
+            );
+
+            let submitted = stub.submitted.lock().clone();
+            let mut unique = submitted.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            assert_eq!(
+                submitted.len(),
+                unique.len(),
+                "no nonce may be submitted more than once in a clean run: {submitted:?}"
+            );
+
+            assert_eq!(
+                state.pending_nonce.lock().next,
+                Some(u64::from(N)),
+                "the pending nonce must advance exactly once per dispense"
+            );
+        }
+
+        /// The per-IP cap is enforced fail-closed under a burst: no more than
+        /// the configured cap may be admitted, and the rejected requests must
+        /// never reach the node.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_requests_fail_closed_on_ip_limit() {
+            const N: u8 = 24;
+            const IP_CAP: usize = 5;
+
+            let (rpc, stub) = spawn_load_stub(1_000_000 * 1_000_000_000).await;
+            // One shared IP, cap 5; each request targets a distinct address so
+            // only the IP limiter can reject.
+            let app = app(faucet_state(&rpc, 3600, IP_CAP, 86_400, 1, "", 0));
+            let peer = "198.51.100.9:5000";
+
+            let mut set = tokio::task::JoinSet::new();
+            for i in 0..N {
+                let app_c = app.clone();
+                let address = canonical(i);
+                set.spawn(async move {
+                    post_faucet(&app_c, peer, None, json!({ "address": address })).await
+                });
+            }
+
+            let mut paid = 0usize;
+            let mut limited = 0usize;
+            while let Some(joined) = set.join_next().await {
+                let (status, body) = joined.expect("faucet request task must not panic");
+                match status {
+                    StatusCode::OK => paid += 1,
+                    StatusCode::TOO_MANY_REQUESTS => {
+                        assert!(
+                            body["message"].as_str().unwrap_or_default().contains("IP"),
+                            "rejection must come from the IP limiter: {body}"
+                        );
+                        limited += 1;
+                    }
+                    other => panic!("unexpected status {other}: {body}"),
+                }
+            }
+
+            assert_eq!(paid, IP_CAP, "exactly the IP cap must be paid");
+            assert_eq!(
+                limited,
+                usize::from(N) - IP_CAP,
+                "every over-cap request must be rejected, not served"
+            );
+            assert_eq!(
+                accepted_sorted(&stub),
+                (0..IP_CAP as u64).collect::<Vec<_>>(),
+                "only admitted requests may consume nonces"
+            );
+        }
+
+        /// The per-address cap is enforced fail-closed even when every request
+        /// comes from a different IP (IP rotation must not drain one address).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_requests_fail_closed_on_address_limit() {
+            const N: u8 = 24;
+            const ADDRESS_CAP: usize = 2;
+
+            let (rpc, stub) = spawn_load_stub(1_000_000 * 1_000_000_000).await;
+            // One shared destination, cap 2; IP cap is generous so only the
+            // address limiter can reject.
+            let app = app(faucet_state(&rpc, 3600, 1_000, 86_400, ADDRESS_CAP, "", 0));
+            let victim = canonical(200);
+
+            let mut set = tokio::task::JoinSet::new();
+            for i in 0..N {
+                let app_c = app.clone();
+                let address = victim.clone();
+                let peer = format!("203.0.113.{}:5000", u32::from(i) + 1);
+                set.spawn(async move {
+                    post_faucet(&app_c, &peer, None, json!({ "address": address })).await
+                });
+            }
+
+            let mut paid = 0usize;
+            let mut limited = 0usize;
+            while let Some(joined) = set.join_next().await {
+                let (status, body) = joined.expect("faucet request task must not panic");
+                match status {
+                    StatusCode::OK => paid += 1,
+                    StatusCode::TOO_MANY_REQUESTS => {
+                        assert!(
+                            body["message"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .contains("address"),
+                            "rejection must come from the address limiter: {body}"
+                        );
+                        limited += 1;
+                    }
+                    other => panic!("unexpected status {other}: {body}"),
+                }
+            }
+
+            assert_eq!(
+                paid, ADDRESS_CAP,
+                "exactly the address cap must be paid despite IP rotation"
+            );
+            assert_eq!(
+                limited,
+                usize::from(N) - ADDRESS_CAP,
+                "every over-cap request must be rejected, not served"
+            );
+            assert_eq!(
+                accepted_sorted(&stub),
+                (0..ADDRESS_CAP as u64).collect::<Vec<_>>(),
+                "only admitted requests may consume nonces"
+            );
+        }
+
+        /// A node rejection in the middle of a batch must not panic, drop a
+        /// successful payout, or leave a duplicate nonce behind. After the
+        /// node recovers, the faucet must resync and heal the gap.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn mid_batch_submission_failure_keeps_state_consistent() {
+            const N: u8 = 16;
+            const FAIL_AT: u64 = 7;
+
+            let (rpc, stub) = spawn_load_stub(1_000_000 * 1_000_000_000).await;
+            *stub.fail_nonce.lock() = Some(FAIL_AT);
+            // Give every request time to reserve its nonce before any submit
+            // completes, so the failure genuinely happens mid-batch.
+            *stub.submit_delay_ms.lock() = 25;
+
+            let state = faucet_state(&rpc, 3600, 1_000, 86_400, 1_000, "", 0);
+            let app = app(state.clone());
+
+            let mut set = tokio::task::JoinSet::new();
+            for i in 0..N {
+                let app_c = app.clone();
+                let peer = format!("203.0.113.{}:5000", u32::from(i) + 1);
+                let address = canonical(i);
+                set.spawn(async move {
+                    post_faucet(&app_c, &peer, None, json!({ "address": address })).await
+                });
+            }
+
+            let mut paid = 0usize;
+            let mut failed = 0usize;
+            while let Some(joined) = set.join_next().await {
+                let (status, body) = joined.expect("faucet request task must not panic");
+                match status {
+                    StatusCode::OK => paid += 1,
+                    StatusCode::INTERNAL_SERVER_ERROR => failed += 1,
+                    other => panic!("unexpected status {other} after mid-batch failure: {body}"),
+                }
+            }
+
+            assert_eq!(failed, 1, "exactly the injected submission must fail");
+            assert_eq!(
+                paid,
+                usize::from(N) - 1,
+                "a single node rejection must not drop other payouts"
+            );
+
+            // No duplicate nonce ever reached the mempool, and every successful
+            // payout is present (a set guarantees uniqueness).
+            let accepted_before = accepted_sorted(&stub);
+            assert_eq!(
+                accepted_before.len(),
+                paid,
+                "one accepted nonce per successful payout, no duplicates: {accepted_before:?}"
+            );
+            assert!(
+                accepted_before.iter().all(|n| *n < u64::from(N)),
+                "no nonce outside the reserved range may be accepted: {accepted_before:?}"
+            );
+
+            // Node recovers and starts enforcing contiguous committed nonces:
+            // the faucet must resync to the gap, not reuse or skip it.
+            *stub.fail_nonce.lock() = None;
+            stub.strict_committed.store(true, Ordering::SeqCst);
+
+            let (status, body) = post_faucet(
+                &app,
+                "203.0.113.250:5000",
+                None,
+                json!({ "address": canonical(250) }),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "faucet must recover after a mid-batch submit failure: {body}"
+            );
+
+            let accepted_after = accepted_sorted(&stub);
+            assert_eq!(
+                accepted_after,
+                (0..accepted_after.len() as u64).collect::<Vec<_>>(),
+                "the nonce sequence must be gap-free and duplicate-free after recovery: {accepted_after:?}"
+            );
+            assert!(
+                accepted_after.len() >= usize::from(N),
+                "recovery must not lose an accepted payout: {accepted_after:?}"
+            );
+
+            // The queue must stay serviceable: another fresh request after the
+            // recovery must also be paid without reusing or skipping a nonce.
+            let (status, body) = post_faucet(
+                &app,
+                "203.0.113.251:5000",
+                None,
+                json!({ "address": canonical(251) }),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "faucet must keep serving after recovering from a mid-batch failure: {body}"
+            );
+
+            let accepted_final = accepted_sorted(&stub);
+            assert_eq!(
+                accepted_final,
+                (0..accepted_final.len() as u64).collect::<Vec<_>>(),
+                "sustained recovery must keep the nonce sequence contiguous: {accepted_final:?}"
+            );
+        }
+    }
 }
