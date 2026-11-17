@@ -23,6 +23,7 @@
 #   --expected-tag <t>     published tag <chain-id>-<16 hex>
 #                          (default: the `expected-tag` file inside the bundle)
 #   --prefix <dir>    install prefix                (default /usr/local, root)
+#   --target-dir <dir> binary install directory      (default <prefix>/bin)
 #   --home <dir>      config directory              (default /etc/kovanica, root)
 #   --data-dir <dir>  chain data directory          (default /var/lib/kovanica, root)
 #   --no-service      do not create/enable a systemd unit
@@ -58,6 +59,8 @@ EXPECTED_TAG="${KOVANICA_EXPECTED_TAG:-}"
 
 SERVICE_NAME="kovanica-node"
 SERVICE_USER="kovanica"
+
+TARGET_DIR="${KOVANICA_TARGET_DIR:-}"
 
 AS_ROOT=0
 if [ "$(id -u)" = "0" ]; then AS_ROOT=1; fi
@@ -101,6 +104,7 @@ while [ $# -gt 0 ]; do
         --bundle-asset) [ $# -ge 2 ] || die "--bundle-asset needs a value"; BUNDLE_ASSET="$2"; shift 2 ;;
         --expected-tag) [ $# -ge 2 ] || die "--expected-tag needs a value"; EXPECTED_TAG="$2"; shift 2 ;;
         --prefix)      [ $# -ge 2 ] || die "--prefix needs a value"; PREFIX="$2"; shift 2 ;;
+        --target-dir)  [ $# -ge 2 ] || die "--target-dir needs a value"; TARGET_DIR="$2"; shift 2 ;;
         --home)        [ $# -ge 2 ] || die "--home needs a value"; CONF_DIR="$2"; shift 2 ;;
         --data-dir)    [ $# -ge 2 ] || die "--data-dir needs a value"; DATA_DIR="$2"; shift 2 ;;
         --no-service)  WANT_SERVICE=0; shift ;;
@@ -176,7 +180,12 @@ if [ "$CHAIN_ID" = "2" ] && [ -z "$EXPECTED_TAG" ]; then
     say "kovanica-testnet network tag pin ${EXPECTED_TAG}"
 fi
 
-BIN_PATH="${PREFIX}/bin/kovanica-node"
+if [ -n "$TARGET_DIR" ]; then
+    BIN_DIR="$TARGET_DIR"
+else
+    BIN_DIR="${PREFIX}/bin"
+fi
+BIN_PATH="${BIN_DIR}/kovanica-node"
 CONF_PATH="${CONF_DIR}/kovanica.toml"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 
@@ -288,7 +297,7 @@ verify "${TMPDIR_INSTALL}/${ARCHIVE}" "${ARCHIVE}"
 mkdir -p "${TMPDIR_INSTALL}/extract"
 tar -xzf "${TMPDIR_INSTALL}/${ARCHIVE}" -C "${TMPDIR_INSTALL}/extract"
 [ -f "${TMPDIR_INSTALL}/extract/kovanica-node" ] || die "${ARCHIVE} does not contain kovanica-node"
-run install -d "${PREFIX}/bin"
+run install -d "${BIN_DIR}"
 run install -m 0755 "${TMPDIR_INSTALL}/extract/kovanica-node" "$BIN_PATH"
 say "installed ${BIN_PATH}"
 
