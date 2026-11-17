@@ -1,0 +1,21 @@
+{
+  "task": "SIM-1",
+  "elapsed_seconds": 0.2816,
+  "submitted": 2003,
+  "success": 2003,
+  "failed": 0,
+  "throughput_tps": 7113.13,
+  "latency_ms": {
+    "min": 10.2106,
+    "avg": 125.2965,
+    "max": 270.0751,
+    "p50": 125.7442,
+    "p95": 243.3377,
+    "p99": 264.7103
+  },
+  "peak_rss_mib": 13.59,
+  "vps_memory_threshold_pass": true,
+  "zero_panic_verified": true,
+  "out_of_gas_rollback_pass": true,
+  "peer_reputation_scoring_pass": true
+}
