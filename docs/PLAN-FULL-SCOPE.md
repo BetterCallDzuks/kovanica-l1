@@ -3,7 +3,7 @@
 **Companion to `docs/AGENT-RULES.md` and `docs/PLAN-2026-11.md`.**
 This is the full-scope plan across all public product repos. Frozen values stay frozen. Consensus changes need an activation plan and Toni’s OK before deploy.
 
-Snapshot: 2026-11-17 (L1 `main` at `d2239fd` / `d2239fd8314a0c6edb08d54724738d662d406a32`, post-#272–#291; cross-repo `main` tips: `kovanica-sdk#11` `b534224`, `kovanica-playground#12` `e620025` & `#13` `0dd469d`, `kovanica-web#17` `b2fe0be`, `kovanica-apps#24` `67dc47f`, `#25` `305df94` & `#26` `be4baae`).
+Snapshot: 2026-11-17 (L1 `main` at `db4d110`, post-#308, #309; cross-repo `main` tips: `kovanica-sdk#16` `76cbd85`, `kovanica-playground#21` `a8909db`, `kovanica-web#22` `13ee461`, `kovanica-apps#35` `fdeea5c`).
 Live L1: `seed1` (`kovanica-testnet`, chain ID 2, tag `2-24cdb5fadd98b207`) live at `9758ffe0` with `#259` non-compounding LWMA DAA active; release tag `v0.3.0-node` stays on `e3fce499` with `kovanica-testnet-genesis.tar.gz` attached (`#283`/`#287`). Mainnet (`kovanica-mainnet`, chain ID 1) genesis ceremony executed in `#290` with frozen network tag `1-f35df34c92001436` and bundle `kovanica-mainnet-genesis.tar.gz` (`sha256: 75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e`).
 
 ## Repos in scope
@@ -56,7 +56,7 @@ Out of this plan: `kovanica-vault` (separate private tool).
 
 | ID | Item | Repo | Notes |
 |----|------|------|-------|
-| P3-1 | Multi-hour height watch after any future deploy | ops | **Done (#277)** — 2026-11-17 sample `6652..7552` (901 blocks / 1.44 h), median 4.42 s, mean 5.78 s, max 42.86 s, 0 gaps >60 s |
+| P3-1 | Multi-hour height watch & multi-node soak test | ops | **Done (#277, soak verified)** — 10m multi-node cluster soak (`ops/soak/run-soak.sh --duration 10m`) passed: heights advancing in lockstep across 3 peered nodes (3 -> 138, 3 -> 140, 3 -> 141; +138 blocks), 0 container OOM kills (`oom_killed == false`), peak RSS 22.67 MiB per node (budget 2048 MiB), avg tx latency 1.37 ms (p95 2.37 ms, p99 5.33 ms); 2026-11-17 sample `6652..7552` (901 blocks / 1.44 h), 0 gaps >60 s |
 | P3-2 | Genesis bundle (`kovanica-testnet-genesis.tar.gz`) on a node release for `install.sh` | l1 | **Done (#283, #287, Toni OK)** — `/tmp/kovanica-testnet-genesis.tar.gz` (`sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, `expected-tag: 2-24cdb5fadd98b207`) attached to release `v0.3.0-node` |
 | P3-3 | Faucet stays sequential under load | l1 | **Done (#279)** — concurrent nonce serialization & fail-closed IP/address limit tests |
 | P3-4 | Safe nginx Authorization check (from #257) | ops | Docs already merged |
@@ -86,7 +86,7 @@ Out of this plan: `kovanica-vault` (separate private tool).
 
 ## P6 — SDK (kovanica-sdk)
 
-Current state: read-only preview (`main` at `b534224`, PR `#11` merged after `#10` `9a8a2045`). Verified against L1 `de641f6`/`496f874`; enforces canonical 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#11`) and documents `-32600` (`InvalidRequest`) rejection of legacy staking RPCs (`kovanica_getValidators`, `kovanica_getStake`, `kovanica_getLeaderSchedule`) on hybrid chains 1 and 2. No key derivation, no signing, no mining submit.
+Current state: TypeScript SDK client (`main` at `76cbd85`, post-#16). Verified against L1 `de641f6`/`496f874`; enforces canonical 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#11`) and documents `-32600` (`InvalidRequest`) rejection of legacy staking RPCs (`kovanica_getValidators`, `kovanica_getStake`, `kovanica_getLeaderSchedule`) on hybrid chains 1 and 2. Includes native canonical Wasmi contract call builders for Name Registry, HTLC, NFT, and Escrow (#16).
 
 | ID | Item | Status / Notes |
 |----|------|----------------|
@@ -98,17 +98,17 @@ Current state: read-only preview (`main` at `b534224`, PR `#11` merged after `#1
 
 ## P7 — Playground (kovanica-playground)
 
-Current state: `main` at `0dd469d` (PR `#13` merged, pins `kovanica-sdk` `b534224a` and asserts `1337` rejection; PR `#12` `e620025` retired chain `1337`; PR `#11` `9aabda4` & `#10` `f7b2892`). Read-only, no keys, no faucet, no mining submit.
+Current state: `main` at `a8909db` (PR `#21` merged, expands Wasmi contract builders and interactive console for Name Registry, HTLC, NFT, and Escrow; pins `kovanica-sdk` `76cbd85`). Read-only, no keys, no faucet, no mining submit.
 
 | ID | Item | Status / Notes |
 |----|------|----------------|
-| P7-1 | After SDK update, bump the pinned SHA and re-run CI | Done (`#9`, `#10` `f7b2892`, `#11` `9aabda4`, `#12` `e620025`, `#13` `0dd469d` pinning `b534224a`) |
+| P7-1 | After SDK update, bump the pinned SHA and re-run CI | Done (`#9`, `#10` `f7b2892`, `#11` `9aabda4`, `#12` `e620025`, `#13` `0dd469d`, `#21` `a8909db`) |
 | P7-2 | Point default testnet endpoint at public testnet only if CORS and auth are confirmed | Open (no seed1 docker changes) |
 | P7-3 | Keep zero-key boundary | Active boundary |
 
 ## P8 — Web (kovanica-web)
 
-Current state: TanStack Start site for kovanica.online (`main` at `b2fe0be`; PR `#17` `b2fe0be` retired chain `1337` and consolidated on devnet `3`; PR `#16` `66d2c0a` and PR `#15` `b5ddb18` merged). Vendored `@kovanica/sdk-wasm`. Env-driven config; no secrets in repo.
+Current state: TanStack Start site for kovanica.online (`main` at `13ee461`, PR `#22` merged). Vendored `@kovanica/sdk-wasm`. Env-driven config; no secrets in repo.
 
 | ID | Item | Status / Notes |
 |----|------|----------------|
@@ -119,7 +119,7 @@ Current state: TanStack Start site for kovanica.online (`main` at `b2fe0be`; PR 
 
 ## P9 — Apps (kovanica-apps)
 
-Current state: Android (wallet, comms, chain, node), iOS light client, desktop / console-desktop / node-desktop (Tauri), wallet-web (`main` at `be4baae`; PR `#24` `67dc47f` aligned apps with L1 `main`, PR `#25` `305df94` added ESLint 9 flat config, and PR `#26` `be4baae` retired chain `1337` and consolidated on devnet `3`). FFI stays in L1.
+Current state: Android (wallet, comms, chain, node), iOS light client, desktop / console-desktop / node-desktop (Tauri), wallet-web (`main` at `fdeea5c`, PR `#35` merged). FFI stays in L1.
 
 | ID | Item | Status / Notes |
 |----|------|----------------|

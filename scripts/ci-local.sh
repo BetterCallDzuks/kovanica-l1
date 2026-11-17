@@ -5,12 +5,13 @@
 #   bash scripts/ci-local.sh clippy   # cargo clippy --workspace --all-targets --locked -D warnings
 #   bash scripts/ci-local.sh test     # cargo test --workspace --locked, minus the
 #                                     # multi-process cluster tests (see gate_test)
+#   bash scripts/ci-local.sh fuzz     # scripts/run-fuzz-smoke.sh (deterministic fuzz smoke)
 #   bash scripts/ci-local.sh cluster  # the cluster tests the gate leaves out
 #   bash scripts/ci-local.sh scripts  # node/scripts/install.test.sh (installer)
 #   bash scripts/ci-local.sh audit    # cargo audit against .cargo/audit.toml
 #   bash scripts/ci-local.sh licenses # cargo deny check licenses against deny.toml
 #   bash scripts/ci-local.sh secrets  # gitleaks over the whole git history
-#   bash scripts/ci-local.sh all      # fmt, scripts, clippy, test, licenses, secrets
+#   bash scripts/ci-local.sh all      # fmt, scripts, clippy, fuzz, test, licenses, secrets
 #
 # .github/workflows/ci.yml runs these exact subcommands, so a green local run
 # means a green CI run (same toolchain from rust-toolchain.toml, same flags).
@@ -159,10 +160,17 @@ function gate_scripts() {
     bash node/scripts/install.test.sh
 }
 
+function gate_fuzz() {
+    need bash
+    echo "== fuzz: bash scripts/run-fuzz-smoke.sh"
+    bash scripts/run-fuzz-smoke.sh
+}
+
 case "${1:-all}" in
     fmt) gate_fmt ;;
     clippy) gate_clippy ;;
     test) gate_test ;;
+    fuzz) gate_fuzz ;;
     cluster) gate_cluster ;;
     audit) gate_audit ;;
     licenses) gate_licenses ;;
@@ -172,13 +180,14 @@ case "${1:-all}" in
         gate_fmt
         gate_scripts
         gate_clippy
+        gate_fuzz
         gate_test
         gate_licenses
         gate_secrets
         echo "== gate passed"
         ;;
     *)
-        echo "usage: bash scripts/ci-local.sh [fmt|clippy|test|cluster|audit|licenses|secrets|scripts|all]" >&2
+        echo "usage: bash scripts/ci-local.sh [fmt|clippy|test|fuzz|cluster|audit|licenses|secrets|scripts|all]" >&2
         exit 2
         ;;
 esac

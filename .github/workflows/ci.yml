@@ -66,6 +66,9 @@ jobs:
       - name: Clippy (deny warnings)
         run: bash scripts/ci-local.sh clippy
 
+      - name: Fuzz smoke suite
+        run: bash scripts/ci-local.sh fuzz
+
       - name: Tests
         # `scripts/ci-local.sh test` skips the four tests that spawn real nodes
         # on localhost and assert on wall-clock liveness; they need an idle
