@@ -85,7 +85,7 @@ Both web packages are built using Node.js, TypeScript, and Vite.
 5. Verify build artifacts:
    ```bash
    ls -la dist/
-   # Output should contain index.html, assets/*.js, assets/*.css, kuna-logo-128.png
+   # Output should contain index.html, assets/*.js, assets/*.css, kvnc-logo-128.png
    ```
 
 ### 2.3 Building the Console (`packages/console`)
@@ -423,7 +423,7 @@ Exposing a public blockchain RPC endpoint requires robust rate limiting to guard
 |---|---|---|---|
 | `/assets/*.js`, `/assets/*.css` | `public, max-age=31536000, immutable` | 1 Year | Hashed bundle filenames change on every build. |
 | `/index.html` | `no-cache, no-store, must-revalidate` | 0 Seconds | Guarantees users immediately receive new SPA release versions. |
-| `/kuna-logo-128.png`, `/favicon.ico` | `public, max-age=86400` | 24 Hours | Static branding assets. |
+| `/kvnc-logo-128.png`, `/favicon.ico` | `public, max-age=86400` | 24 Hours | Static branding assets. |
 | `/rpc` (Finalized Block / Receipt Queries) | Optional micro-cache: `max-age=5` | 5 Seconds | Finalized blocks are immutable; relieves database read load. |
 | `/rpc` (Mempool / Head Queries) | `no-store` | 0 Seconds | Must always return real-time head state. |
 

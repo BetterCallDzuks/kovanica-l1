@@ -15,7 +15,7 @@ export function Navbar({ items }: NavbarProps) {
     <nav className="navbar" role="navigation" aria-label="Main navigation">
       <Link to="/" className="navbar-brand">
         <img
-          src="/kuna-logo-128.png"
+          src="/kvnc-logo-128.png"
           alt=""
           className="navbar-logo"
           width={28}

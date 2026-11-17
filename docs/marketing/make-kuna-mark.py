@@ -4,7 +4,7 @@
     pip install pillow
     python docs/marketing/make-kuna-mark.py
 
-Input:  brand-assets/kuna-logo.jpg - the official artwork, a dark coin with a
+Input:  brand-assets/kvnc-logo.jpg - the official artwork, a dark coin with a
         gold rim and a gold emblem on a light grey backdrop with a soft drop
         shadow.
 Output: apps/android-wallet/app/src/main/assets/kuna-logo.webp  (the coin
@@ -34,7 +34,7 @@ from collections import deque
 from PIL import Image, ImageFilter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SRC = os.path.join(ROOT, "brand-assets", "kuna-logo.jpg")
+SRC = os.path.join(ROOT, "brand-assets", "kvnc-logo.jpg")
 MARK = [
     os.path.join(ROOT, "apps", "android-wallet", "app", "src", "main", "assets", "kuna-logo.webp"),
     os.path.join(ROOT, "apps", "android", "app", "src", "main", "assets", "kuna-logo.webp"),
