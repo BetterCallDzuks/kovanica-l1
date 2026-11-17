@@ -36,9 +36,22 @@ pub struct MinerRunArgs {
     #[arg(long, short)]
     pub threads: Option<usize>,
 
-    /// Polling interval in milliseconds for candidate block templates.
+    /// Polling interval in milliseconds for candidate block templates (HTTP solo mining).
     #[arg(long, default_value = "1000")]
     pub poll_interval_ms: u64,
+
+    /// Optional Stratum V1 TCP endpoint to mine through (e.g. `127.0.0.1:3333` or `stratum+tcp://pool.kovanica.online:3333`).
+    /// When specified, connects via the Stratum V1 line protocol instead of polling HTTP JSON-RPC.
+    #[arg(long)]
+    pub stratum: Option<String>,
+
+    /// Worker name for pool reporting when connecting via Stratum (e.g. `rig1`).
+    #[arg(long, default_value = "default")]
+    pub worker: String,
+
+    /// Password for Stratum authentication.
+    #[arg(long, default_value = "x")]
+    pub password: String,
 }
 
 /// Arguments for `kovanica miner bench`.
@@ -611,6 +624,18 @@ pub async fn run_miner(
             .unwrap_or(1)
     });
 
+    if let Some(stratum_endpoint) = &args.stratum {
+        let stratum_miner = crate::stratum_client::StratumMiner::new(
+            stratum_endpoint.clone(),
+            args.address,
+            args.worker,
+            args.password,
+            chain_id,
+            threads,
+        );
+        return stratum_miner.run().await;
+    }
+
     let miner = SoloMiner::new(
         client.clone(),
         args.address,
@@ -643,6 +668,9 @@ pub struct MinerBenchResult {
     pub per_thread_hps: f64,
     /// Hashes computed by each individual worker thread.
     pub thread_hashes: Vec<u64>,
+    /// Total memory allocated for KovanicaHash scratchpads across all threads in MiB (2 MiB per thread).
+    #[serde(default)]
+    pub scratchpad_memory_mib: usize,
 }
 
 /// Execute a multithreaded KovanicaHash benchmark for the specified duration.
@@ -773,6 +801,7 @@ pub fn benchmark_kovanica_hash(threads: usize, duration: Duration) -> Result<Min
         hashrate_formatted,
         per_thread_hps,
         thread_hashes: per_thread_counts,
+        scratchpad_memory_mib: threads * 2,
     })
 }
 
@@ -805,6 +834,10 @@ pub fn run_miner_bench(args: MinerBenchArgs, json: bool) -> Result<MinerBenchRes
         println!("            KovanicaHash PoW Benchmark Results             ");
         println!("============================================================");
         println!(" Algorithm:          {}", result.algorithm);
+        println!(
+            " Scratchpad Memory:  {} MiB (2 MiB per thread)",
+            result.scratchpad_memory_mib
+        );
         println!(" Worker Threads:     {}", result.threads);
         println!(" Target Duration:    {} s", result.target_duration_secs);
         println!(" Elapsed Time:       {:.3} s", result.elapsed_secs);

@@ -134,6 +134,7 @@ Output:
  Total Hashes:       6280
  Total Hashrate:     1.26 kH/s (1255.50 H/s)
  Per-Thread Rate:    313.87 H/s
+ Scratchpad Memory:  8 MiB (4 threads x 2 MiB)
 ============================================================
 ```
 
@@ -155,6 +156,7 @@ kovanica --json miner bench --threads 2 --duration 3
   "hashrate_hps": 630.46,
   "hashrate_formatted": "630.46 H/s",
   "per_thread_hps": 315.23,
+  "scratchpad_memory_mib": 4,
   "thread_hashes": [
     946,
     946
@@ -208,6 +210,18 @@ kovanica miner run \
   --rpc-url http://127.0.0.1:8545
 ```
 
+##### Command-Line Options
+
+| Flag | Short | Default | Description |
+|---|---|---|---|
+| `--address <ADDR>` | `-a` | *Required* | Canonical PRO-21 miner payout address (`kvnc...dag`). |
+| `--threads <N>` | `-t` | Logical CPU cores | Worker thread count (1–256). |
+| `--poll-interval-ms <MS>` | | `1000` | RPC work polling interval in milliseconds. |
+| `--rpc-url <URL>` | | `http://127.0.0.1:8545` | Kovanica node JSON-RPC endpoint. |
+| `--stratum <HOST:PORT>` | | `None` | Connect to Stratum V1 mining pool instead of direct HTTP RPC. |
+| `--worker <NAME>` | | `worker1` | Worker name for Stratum pool authentication. |
+| `--password <PWD>` | | `x` | Worker password for Stratum pool authorization. |
+
 Terminal Output:
 
 ```text
@@ -228,6 +242,28 @@ Terminal Output:
 ```
 
 Press `Ctrl-C` at any time to shut down the worker gracefully; aggregate hash counts, runtime duration, and acceptance statistics will be summarized upon exit.
+
+##### Production Solo Mining Runner Script (`scripts/mining/run-solo-miner.sh`)
+
+For production Linux deployments, unattended VPS nodes, or systemd services, Kovanica provides an automated runner harness:
+
+```bash
+# Basic run with auto-detected CPU cores
+./scripts/mining/run-solo-miner.sh --address kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag
+
+# Customized production run
+./scripts/mining/run-solo-miner.sh \
+  --address kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag \
+  --threads 8 \
+  --rpc http://seed1.kovanica.online:8545 \
+  --log-file /var/log/kovanica/miner.log
+```
+
+Key features of the production runner:
+- **Topology Autodetection:** Automatically detects physical and logical CPU cores (`nproc`) if `--threads` is omitted.
+- **Address Validation:** Pre-validates canonical PRO-21 address syntax (`kvnc...dag`, 64 characters) prior to spawning miner threads.
+- **Release Compilation Check:** Auto-detects `target/release/kovanica` or falls back to `cargo build --release -p kovanica-cli` if binaries are missing.
+- **Signal Forwarding:** Trap-handles `SIGINT` and `SIGTERM` to perform zero-loss graceful miner shutdown.
 
 #### Mode B: In-Node Built-in Miner
 
@@ -377,6 +413,39 @@ When a worker finds a nonce meeting the assigned pool share target, it submits:
    The pool reconstructs the header preimage using the worker's `extranonce1 + extranonce2 + nonce`, computes `KovanicaHash`, and verifies that the resulting hash satisfies the worker's assigned share difficulty. Valid shares are recorded for miner reward accounting (PPLNS or PPS).
 2. **Network Solution Check:**
    If the solution hash additionally satisfies the full network target (`check_pow_hash_meets_target(&hash, target_bits) == true`), the pool immediately packages the header and submits it to the local node via `kovanica_submitWork`.
+
+### Mining via CLI with Stratum Client
+
+Miners can connect directly to any Kovanica Stratum V1 pool endpoint using the built-in Stratum client:
+
+```bash
+kovanica miner run \
+  --stratum pool.kovanica.online:3333 \
+  --address kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag \
+  --worker rig01 \
+  --password x \
+  --threads 8
+```
+
+Terminal Output:
+
+```text
+============================================================
+   Kovanica Stratum V1 CPU Miner (kovanica-testnet)
+============================================================
+ Stratum Endpoint: pool.kovanica.online:3333
+ Worker Identity:  kvnca0b1c2d3...dag.rig01
+ Worker Threads:   8
+ PoW Hash:         KovanicaHash (BLAKE3 + 2 MiB mix)
+ Press Ctrl-C to stop mining gracefully.
+============================================================
+[INFO] Connected to Stratum pool at pool.kovanica.online:3333
+[INFO] Subscribed: extranonce1=01a4b8, extranonce2_size=4
+[INFO] Authorized worker kvnca0b1c2d3...dag.rig01
+[INFO] Set difficulty target: 0.05
+[INFO] Received new job: job_42a (clean: true)
+[INFO] Share accepted by pool! (Total accepted: 1, rejected: 0)
+```
 
 ---
 

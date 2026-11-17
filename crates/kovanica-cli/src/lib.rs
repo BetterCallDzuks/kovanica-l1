@@ -12,6 +12,7 @@ pub mod node;
 pub mod output;
 pub mod rpc;
 pub mod stake;
+pub mod stratum_client;
 pub mod tui;
 pub mod tx;
 pub mod wallet;
