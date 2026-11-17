@@ -16,6 +16,7 @@ mod block_sync;
 mod error;
 pub mod identity;
 pub mod network_id;
+pub mod peer_scorer;
 pub mod scoring;
 pub mod seeder;
 mod service;
@@ -38,6 +39,10 @@ pub const IDENTIFY_VERSION: &str = "1.0.0";
 /// Peers speaking another chain's id are ignored by the DHT.
 pub const KAD_PROTOCOL: &str = "kad/1.0.0";
 pub use error::NetworkError;
+pub use peer_scorer::{
+    extract_ip, extract_socket_addr, BannedPeerError, InboundGate, PeerReputation, PeerScorer,
+    PeerScorerConfig, PenaltyReason, BAN_SCORE_THRESHOLD, DEFAULT_BAN_DURATION,
+};
 pub use scoring::PeerScoringConfig;
 pub use seeder::{
     filter_healthy_seeds, generate_zone_file, DnsSeedCrawler, DnsSeedCrawlerConfig, DnsSeedEntry,
@@ -175,6 +180,8 @@ pub struct NetworkConfig {
     pub peer_scoring: PeerScoringConfig,
     /// Chain id + genesis digest bound into every protocol id and topic.
     pub network_id: NetworkId,
+    /// Peer reputation and IP ban scoring subsystem configuration.
+    pub peer_scorer: PeerScorerConfig,
 }
 
 impl Default for NetworkConfig {
@@ -194,6 +201,7 @@ impl Default for NetworkConfig {
             node_key_path: None,
             peer_scoring: PeerScoringConfig::default(),
             network_id: NetworkId::default(),
+            peer_scorer: PeerScorerConfig::default(),
         }
     }
 }

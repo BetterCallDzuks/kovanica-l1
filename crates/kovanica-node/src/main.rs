@@ -5953,6 +5953,7 @@ fn build_network_config(config: &NodeConfig) -> Result<NetworkConfig> {
         ping_interval: Duration::from_secs(10),
         node_key_path: Some(config.data_dir.join(NODE_IDENTITY_FILE)),
         peer_scoring: config.peer_scoring.clone(),
+        peer_scorer: kovanica_network::PeerScorerConfig::default(),
         // Chain separation: every libp2p protocol id and gossip topic carries
         // the chain id and the genesis digest this data dir is bound to.
         network_id: kovanica_network::NetworkId::new(

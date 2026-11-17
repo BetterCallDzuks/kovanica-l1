@@ -6,7 +6,7 @@ use libp2p::{
     request_response::ProtocolSupport, swarm::behaviour::toggle::Toggle, swarm::NetworkBehaviour,
     tcp, upnp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
-use std::{error::Error, time::Duration};
+use std::{error::Error, sync::Arc, time::Duration};
 
 /// Maximum gossip frame size: large enough for a full block, small enough to
 /// keep a hostile peer from forcing us to buffer an unbounded message.
@@ -31,6 +31,8 @@ pub(crate) struct Behaviour {
     pub(crate) autonat: autonat::Behaviour,
     /// UPnP port mapping for automatic port forwarding through routers (active within Tokio runtime).
     pub(crate) upnp: Toggle<upnp::tokio::Behaviour>,
+    /// Inbound connection gate enforcing IP bans before frame buffers are allocated.
+    pub(crate) inbound_gate: crate::peer_scorer::InboundGate,
 }
 
 /// Deterministic message id: BLAKE3 of the payload.
@@ -86,7 +88,21 @@ pub(crate) fn split_peer_suffix(
 ///
 /// Bootstrap addresses that carry `/p2p/<id>` are pre-loaded into the Kademlia
 /// routing table so the first `bootstrap()` query has somewhere to go.
+#[allow(dead_code)]
 pub(crate) fn build_swarm(config: &NetworkConfig) -> Result<Swarm<Behaviour>, NetworkError> {
+    build_swarm_with_scorer(
+        config,
+        Arc::new(crate::peer_scorer::PeerScorer::new(
+            config.peer_scorer.clone(),
+        )),
+    )
+}
+
+/// Build the swarm with an explicit [`PeerScorer`].
+pub(crate) fn build_swarm_with_scorer(
+    config: &NetworkConfig,
+    peer_scorer: Arc<crate::peer_scorer::PeerScorer>,
+) -> Result<Swarm<Behaviour>, NetworkError> {
     let mut bootstrap_peers = Vec::new();
     for addr in &config.bootstrap_nodes {
         if let Some(entry) = split_peer_suffix(addr)? {
@@ -109,6 +125,7 @@ pub(crate) fn build_swarm(config: &NetworkConfig) -> Result<Swarm<Behaviour>, Ne
         None => libp2p::identity::Keypair::generate_ed25519(),
     };
 
+    let inbound_scorer = peer_scorer.clone();
     let swarm = SwarmBuilder::with_existing_identity(identity)
         .with_tokio()
         .with_tcp(
@@ -119,76 +136,81 @@ pub(crate) fn build_swarm(config: &NetworkConfig) -> Result<Swarm<Behaviour>, Ne
         .map_err(|err| NetworkError::Transport(err.to_string()))?
         .with_dns()
         .map_err(|err| NetworkError::Transport(err.to_string()))?
-        .with_behaviour(|key| -> Result<Behaviour, Box<dyn Error + Send + Sync>> {
-            let local_peer_id = key.public().to_peer_id();
+        .with_behaviour(
+            move |key| -> Result<Behaviour, Box<dyn Error + Send + Sync>> {
+                let local_peer_id = key.public().to_peer_id();
 
-            let mut gossipsub = gossipsub::Behaviour::new(
-                gossipsub::MessageAuthenticity::Signed(key.clone()),
-                gossipsub_config()?,
-            )
-            .map_err(|err| NetworkError::Gossipsub(err.to_string()))?;
-            if scoring.enabled {
-                gossipsub
-                    .with_peer_score(scoring.params(&network), scoring.thresholds())
-                    .map_err(NetworkError::Gossipsub)?;
-            }
-            for name in topics::ALL {
-                gossipsub
-                    .subscribe(&topics::ident(&network, name))
-                    .map_err(|err| NetworkError::Gossipsub(err.to_string()))?;
-            }
+                let mut gossipsub = gossipsub::Behaviour::new(
+                    gossipsub::MessageAuthenticity::Signed(key.clone()),
+                    gossipsub_config()?,
+                )
+                .map_err(|err| NetworkError::Gossipsub(err.to_string()))?;
+                if scoring.enabled {
+                    gossipsub
+                        .with_peer_score(scoring.params(&network), scoring.thresholds())
+                        .map_err(NetworkError::Gossipsub)?;
+                }
+                for name in topics::ALL {
+                    gossipsub
+                        .subscribe(&topics::ident(&network, name))
+                        .map_err(|err| NetworkError::Gossipsub(err.to_string()))?;
+                }
 
-            let mut kad = kad::Behaviour::with_config(
-                local_peer_id,
-                MemoryStore::new(local_peer_id),
-                kad::Config::new(network.protocol(crate::KAD_PROTOCOL)),
-            );
-            for (peer, addr) in &bootstrap_peers {
-                kad.add_address(peer, addr.clone());
-            }
+                let mut kad = kad::Behaviour::with_config(
+                    local_peer_id,
+                    MemoryStore::new(local_peer_id),
+                    kad::Config::new(network.protocol(crate::KAD_PROTOCOL)),
+                );
+                for (peer, addr) in &bootstrap_peers {
+                    kad.add_address(peer, addr.clone());
+                }
 
-            let ping = ping::Behaviour::new(ping::Config::new().with_interval(ping_interval));
-            let identify = identify::Behaviour::new(identify::Config::new(
-                network.identify_version(),
-                key.public(),
-            ));
+                let ping = ping::Behaviour::new(ping::Config::new().with_interval(ping_interval));
+                let identify = identify::Behaviour::new(identify::Config::new(
+                    network.identify_version(),
+                    key.public(),
+                ));
 
-            // Block sync request-response: only this chain's 1.1.0 id.
-            let block_sync = request_response::Behaviour::new(
-                block_sync::block_sync_protocols(&network),
-                block_sync::block_sync_protocol(),
-            );
+                // Block sync request-response: only this chain's 1.1.0 id.
+                let block_sync = request_response::Behaviour::new(
+                    block_sync::block_sync_protocols(&network),
+                    block_sync::block_sync_protocol(),
+                );
 
-            // State sync request-response protocol (fast sync)
-            let state_sync = request_response::Behaviour::new(
-                [(
-                    network.protocol(state_sync::STATE_SYNC_PROTOCOL),
-                    ProtocolSupport::Full,
-                )],
-                state_sync::state_sync_protocol(),
-            );
+                // State sync request-response protocol (fast sync)
+                let state_sync = request_response::Behaviour::new(
+                    [(
+                        network.protocol(state_sync::STATE_SYNC_PROTOCOL),
+                        ProtocolSupport::Full,
+                    )],
+                    state_sync::state_sync_protocol(),
+                );
 
-            // AutoNAT: detect public reachability and NAT traversal.
-            let autonat = autonat::Behaviour::new(local_peer_id, autonat::Config::default());
+                // AutoNAT: detect public reachability and NAT traversal.
+                let autonat = autonat::Behaviour::new(local_peer_id, autonat::Config::default());
 
-            // UPnP: automatically map ports on IGD routers if running in an active Tokio reactor.
-            let upnp = if tokio::runtime::Handle::try_current().is_ok() {
-                Toggle::from(Some(upnp::tokio::Behaviour::default()))
-            } else {
-                Toggle::from(None)
-            };
+                // UPnP: automatically map ports on IGD routers if running in an active Tokio reactor.
+                let upnp = if tokio::runtime::Handle::try_current().is_ok() {
+                    Toggle::from(Some(upnp::tokio::Behaviour::default()))
+                } else {
+                    Toggle::from(None)
+                };
 
-            Ok(Behaviour {
-                gossipsub,
-                kad,
-                ping,
-                identify,
-                block_sync,
-                state_sync,
-                autonat,
-                upnp,
-            })
-        })
+                let inbound_gate = crate::peer_scorer::InboundGate::new(inbound_scorer.clone());
+
+                Ok(Behaviour {
+                    gossipsub,
+                    kad,
+                    ping,
+                    identify,
+                    block_sync,
+                    state_sync,
+                    autonat,
+                    upnp,
+                    inbound_gate,
+                })
+            },
+        )
         .map_err(|err| NetworkError::Swarm(err.to_string()))?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(idle_timeout))
         .build();

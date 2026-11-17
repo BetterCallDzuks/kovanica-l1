@@ -141,6 +141,8 @@ pub struct NetworkService {
     /// ([`NetworkConfig::max_peers`]) and its entry is dropped on disconnect
     /// and on ban.
     reported_tip: Mutex<HashMap<PeerId, u64>>,
+    /// Peer reputation and IP ban scoring subsystem.
+    peer_scorer: Arc<crate::peer_scorer::PeerScorer>,
 }
 
 /// Peer identity integration for the libp2p swarm.
@@ -442,7 +444,10 @@ impl NetworkService {
         mempool: Arc<Mempool>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<NetworkEvent>), NetworkError> {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let swarm = behaviour::build_swarm(&config)?;
+        let peer_scorer = Arc::new(crate::peer_scorer::PeerScorer::new(
+            config.peer_scorer.clone(),
+        ));
+        let swarm = behaviour::build_swarm_with_scorer(&config, peer_scorer.clone())?;
         let bootstrap =
             BootstrapMaintenance::new(&config.bootstrap_nodes, config.max_peers, Instant::now());
         info!(peer_id = %swarm.local_peer_id(), "network swarm created");
@@ -469,6 +474,7 @@ impl NetworkService {
                 timeout_genesis: Mutex::new(None),
                 state_snapshot_cache: Mutex::new(None),
                 reported_tip: Mutex::new(HashMap::new()),
+                peer_scorer,
             },
             event_rx,
         ))
@@ -504,6 +510,7 @@ impl NetworkService {
             "network service started"
         );
 
+        let mut purge_timer = tokio::time::interval(Duration::from_secs(30));
         loop {
             let event = match self.next_bootstrap_deadline() {
                 Some(deadline) => {
@@ -513,9 +520,21 @@ impl NetworkService {
                             self.dial_due_bootstrap();
                             continue;
                         }
+                        _ = purge_timer.tick() => {
+                            self.peer_scorer.purge_expired_bans();
+                            continue;
+                        }
                     }
                 }
-                None => self.next_swarm_event().await,
+                None => {
+                    tokio::select! {
+                        event = self.next_swarm_event() => event,
+                        _ = purge_timer.tick() => {
+                            self.peer_scorer.purge_expired_bans();
+                            continue;
+                        }
+                    }
+                }
             };
             let Some(event) = event else {
                 return Err(NetworkError::Swarm(
@@ -620,6 +639,11 @@ impl NetworkService {
     pub fn set_vote_source(&self, source: Arc<dyn VoteSource>) {
         *lock(&self.vote_source) = Some(source);
         info!("vote source installed");
+    }
+
+    /// Access the P2P peer reputation and IP ban scorer.
+    pub fn peer_scorer(&self) -> &Arc<crate::peer_scorer::PeerScorer> {
+        &self.peer_scorer
     }
 
     /// Our libp2p peer id (transport identity, not the validator key).
@@ -902,6 +926,7 @@ impl NetworkService {
             BehaviourEvent::StateSync(event) => self.handle_state_sync_event(event),
             BehaviourEvent::Autonat(event) => self.handle_autonat_event(event),
             BehaviourEvent::Upnp(event) => self.handle_upnp_event(event),
+            BehaviourEvent::InboundGate(_) => Ok(()),
         }
     }
 
@@ -1882,6 +1907,12 @@ impl NetworkService {
         let mut swarm = self.swarm();
         if swarm.disconnect_peer_id(peer).is_err() {
             debug!(%peer, "peer was already disconnected");
+        }
+        for addr in &known {
+            if let Some(ip) = crate::peer_scorer::extract_ip(addr) {
+                self.peer_scorer
+                    .ban(ip, self.config.peer_scorer.ban_duration);
+            }
         }
         let kad = &mut swarm.behaviour_mut().kad;
         if known.is_empty() {
