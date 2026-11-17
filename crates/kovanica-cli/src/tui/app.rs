@@ -1511,17 +1511,12 @@ impl App {
     }
 }
 
-/// Move through local, devnet, testnet, and mainnet.
+/// Move through devnet, testnet, and mainnet.
 ///
-/// From an unset chain, either arrow selects local. The list does not wrap, so
+/// From an unset chain, either arrow selects devnet. The list does not wrap, so
 /// mainnet is reached only by moving right from testnet.
 pub(crate) fn step_chain(current: Option<u64>, right: bool) -> Option<u64> {
-    const ORDER: [u64; 4] = [
-        chain_id::LOCAL,
-        chain_id::DEVNET,
-        chain_id::TESTNET,
-        chain_id::MAINNET,
-    ];
+    const ORDER: [u64; 3] = [chain_id::DEVNET, chain_id::TESTNET, chain_id::MAINNET];
     let Some(id) = current else {
         return Some(ORDER[0]);
     };
@@ -1538,7 +1533,6 @@ pub(crate) fn step_chain(current: Option<u64>, right: bool) -> Option<u64> {
 
 pub(crate) fn chain_name(id: u64) -> &'static str {
     match id {
-        chain_id::LOCAL => "local",
         chain_id::DEVNET => "devnet",
         chain_id::TESTNET => "testnet",
         chain_id::MAINNET => "mainnet",
@@ -1563,7 +1557,7 @@ pub(crate) fn ensure_chain(id: Option<u64>) -> Result<u64, String> {
                     .to_string(),
             ),
             Some(id) => Err(format!(
-                "Chain {id} is not registered. Choose local (1337), devnet (3), testnet (2), or mainnet (1)."
+                "Chain {id} is not registered. Choose devnet (3), testnet (2), or mainnet (1)."
             )),
         },
     }
@@ -1810,16 +1804,16 @@ mod tests {
     }
 
     #[test]
-    fn arrows_from_an_unset_chain_select_local_not_mainnet() {
-        assert_eq!(step_chain(None, true), Some(chain_id::LOCAL));
-        assert_eq!(step_chain(None, false), Some(chain_id::LOCAL));
+    fn arrows_from_an_unset_chain_select_devnet_not_mainnet() {
+        assert_eq!(step_chain(None, true), Some(chain_id::DEVNET));
+        assert_eq!(step_chain(None, false), Some(chain_id::DEVNET));
         assert_eq!(
-            step_chain(Some(chain_id::LOCAL), false),
-            Some(chain_id::LOCAL)
+            step_chain(Some(chain_id::DEVNET), false),
+            Some(chain_id::DEVNET)
         );
         assert_eq!(
-            step_chain(Some(chain_id::LOCAL), true),
-            Some(chain_id::DEVNET)
+            step_chain(Some(chain_id::DEVNET), true),
+            Some(chain_id::TESTNET)
         );
         assert_eq!(
             step_chain(Some(chain_id::TESTNET), true),
@@ -1833,10 +1827,10 @@ mod tests {
             step_chain(Some(chain_id::MAINNET), false),
             Some(chain_id::TESTNET)
         );
-        assert_eq!(step_chain(Some(99), true), Some(chain_id::LOCAL));
+        assert_eq!(step_chain(Some(99), true), Some(chain_id::DEVNET));
         assert!(ensure_chain(None).unwrap_err().contains("no default"));
         assert_eq!(ensure_chain(Some(3)).unwrap(), 3);
-        assert_eq!(ensure_chain(Some(chain_id::LOCAL)).unwrap(), 1337);
+        assert_eq!(ensure_chain(Some(chain_id::DEVNET)).unwrap(), 3);
         assert_eq!(chain_title(Some(chain_id::MAINNET)), "MAINNET (chain 1)");
     }
 
@@ -1950,7 +1944,7 @@ mod tests {
     fn transfer_review_uses_kuna_decimals_and_rejects_a_zero_fee() {
         let mut app = test_app();
         unlock_session(&mut app);
-        app.chain_id = Some(chain_id::LOCAL);
+        app.chain_id = Some(chain_id::DEVNET);
         app.screen = Screen::Form {
             kind: FormKind::Transfer,
             focus: FormFocus::Fee,
@@ -2013,7 +2007,7 @@ mod tests {
         assert!(app.job.is_none());
         assert!(app.notice.as_ref().unwrap().text.contains("no default"));
 
-        app.chain_id = Some(chain_id::LOCAL);
+        app.chain_id = Some(chain_id::DEVNET);
         app.handle(Input::Char('y'));
         assert!(matches!(app.job, Some(Job::Submit)));
     }

@@ -123,7 +123,7 @@ helm install kovanica-rpc deploy/helm/kovanica \
 |---|---|---|
 | `image.repository` | `kovanica/kovanica-node` | Docker image repository |
 | `image.tag` | `v0.3.0` | Node software version tag |
-| `node.chainId` | `1` | Chain ID: `1` (kovanica-mainnet), `2` (kovanica-testnet), `3` (kovanica-devnet), `1337` (local) |
+| `node.chainId` | `1` | Chain ID: `1` (kovanica-mainnet), `2` (kovanica-testnet), `3` (kovanica-devnet) |
 | `node.role` | `validator` | Node role: `validator` (= PoW block author on chains 1/2), `seed`, or `rpc` |
 | `node.targetBlockMs` | `4000` | Target block time in milliseconds (4 s) |
 | `node.maxPeers` | `50` | Maximum connected libp2p peers |

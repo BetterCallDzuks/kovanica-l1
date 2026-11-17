@@ -141,7 +141,6 @@ impl EquivocationEvidence {
             crate::signing::chain_id::MAINNET,
             crate::signing::chain_id::TESTNET,
             crate::signing::chain_id::DEVNET,
-            crate::signing::chain_id::LOCAL,
         ] {
             if a.verify_chain(chain_id) && b.verify_chain(chain_id) {
                 return Ok(a.author);

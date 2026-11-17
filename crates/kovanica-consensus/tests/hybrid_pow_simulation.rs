@@ -520,7 +520,7 @@ fn test_required_target_bits_on_testnet_never_leaves_bounds() {
 }
 
 #[test]
-fn test_devnet_and_local_daa_config_bounds() {
+fn test_devnet_daa_config_bounds() {
     let devnet_config = DaaConfig::for_chain(kovanica_params::CHAIN_ID_DEVNET);
     assert_eq!(
         devnet_config.max_target_bits,
@@ -532,18 +532,6 @@ fn test_devnet_and_local_daa_config_bounds() {
         kovanica_params::DAA_MIN_TARGET_BITS_DEVNET
     );
     assert_eq!(devnet_config.min_target_bits, 0x1e00_ffff);
-
-    let local_config = DaaConfig::for_chain(kovanica_params::CHAIN_ID_LOCAL);
-    assert_eq!(
-        local_config.max_target_bits,
-        kovanica_params::DAA_MAX_TARGET_BITS_DEVNET
-    );
-    assert_eq!(local_config.max_target_bits, 0x1f7f_ffff);
-    assert_eq!(
-        local_config.min_target_bits,
-        kovanica_params::DAA_MIN_TARGET_BITS_DEVNET
-    );
-    assert_eq!(local_config.min_target_bits, 0x1e00_ffff);
 }
 
 #[test]

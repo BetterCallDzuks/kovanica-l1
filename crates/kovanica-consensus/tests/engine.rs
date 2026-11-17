@@ -276,7 +276,7 @@ async fn test_engine_round_loop_advances_proposes_and_stops() {
         .expect("local validator is in committee")
         .public_key;
     kovanica_crypto::verify_block_signature(
-        kovanica_types::signing::chain_id::LOCAL,
+        kovanica_types::signing::chain_id::DEVNET,
         &public_key,
         &proposal.digest,
         &proposal.signature,
@@ -284,7 +284,7 @@ async fn test_engine_round_loop_advances_proposes_and_stops() {
     .expect("startup installed the explicitly configured validator key");
     assert!(
         kovanica_crypto::verify_block_signature(
-            kovanica_types::signing::chain_id::LOCAL + 1,
+            kovanica_types::signing::chain_id::DEVNET + 1,
             &public_key,
             &proposal.digest,
             &proposal.signature,

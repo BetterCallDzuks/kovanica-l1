@@ -29,13 +29,9 @@ describe("console addresses follow the chain", () => {
     }
   });
 
-  it("accepts the wire.json legacy recipient only on chains 3 and 1337", () => {
-    for (const chainId of [3, 1337]) {
-      expect(bytesToHex(transferRecipient(fixture.recipientAddressLegacy, chainId))).toBe(
-        recipientKey,
-      );
-    }
-    for (const chainId of [1, 2, 4, 0, 42]) {
+  it("accepts the wire.json legacy recipient only on chain 3", () => {
+    expect(bytesToHex(transferRecipient(fixture.recipientAddressLegacy, 3))).toBe(recipientKey);
+    for (const chainId of [1, 2, 4, 1337, 0, 42]) {
       expect(() => transferRecipient(fixture.recipientAddressLegacy, chainId)).toThrow(
         /legacy hex addresses are not accepted/,
       );

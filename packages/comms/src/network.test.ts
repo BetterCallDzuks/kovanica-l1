@@ -13,13 +13,13 @@ describe("comms network presets", () => {
     expect(TESTNET_RPC_URL).toBe("https://rpc-testnet.kovanica.online/rpc");
   });
 
-  it("keeps the loopback node for development", () => {
+  it("keeps the loopback devnet node for development", () => {
     const local = NETWORK_PRESETS.find((preset) => preset.id === "local");
-    expect(local?.chainId).toBe(1337);
+    expect(local?.chainId).toBe(3);
     expect(local?.rpcUrl).toBe(LOCAL_RPC_URL);
   });
 
   it("uses chain ids the node accepts", () => {
-    expect(NETWORK_PRESETS.map((preset) => preset.chainId)).toEqual([2, 1337]);
+    expect(NETWORK_PRESETS.map((preset) => preset.chainId)).toEqual([2, 3]);
   });
 });

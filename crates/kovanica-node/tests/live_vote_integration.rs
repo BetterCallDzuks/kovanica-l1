@@ -31,7 +31,7 @@ use tracing::info;
 
 const NODES: usize = 2;
 const ROUND_DURATION_MS: u64 = 1000;
-const CHAIN_ID: u64 = chain_id::LOCAL;
+const CHAIN_ID: u64 = chain_id::DEVNET;
 const RPC_READY_TIMEOUT_SECS: u64 = 60;
 const PEER_TIMEOUT_SECS: u64 = 90;
 const COMMIT_TIMEOUT_SECS: u64 = 90;

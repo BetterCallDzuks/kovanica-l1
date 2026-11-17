@@ -4,7 +4,6 @@
 #   kovanica-mainnet (chain ID 1)   hybrid PoW + GHOSTDAG, no-stake-82m
 #   kovanica-testnet (chain ID 2)   hybrid PoW + GHOSTDAG, no-stake-82m
 #   kovanica-devnet  (chain ID 3)   legacy policy, dev overrides
-#   local            (chain ID 1337) legacy policy, dev overrides
 #
 # DRAFT tooling: the procedure is documented in docs/GENESIS-CEREMONY.md. It
 # produces the genesis file set a node needs (genesis.json preview,
@@ -32,7 +31,7 @@ die() {
 
 usage() {
     cat <<'EOF'
-Usage: ops/genesis/ceremony.sh --network <mainnet|testnet|devnet|local> [OPTIONS]
+Usage: ops/genesis/ceremony.sh --network <mainnet|testnet|devnet> [OPTIONS]
 
 Required for every network:
   --treasury-address <address>  Real treasury address (owner-supplied).
@@ -41,7 +40,7 @@ Required for every network:
 Options:
   --validators <file.json>      Input validator set (default: <network>/validators/validators.json)
   --output <dir>                Output directory (default: ./genesis-out)
-  --chain-id <id>               Override the network's chain id (1, 2, 3, 1337)
+  --chain-id <id>               Override the network's chain id (1, 2, 3)
   --generate-keys               Write throwaway validator keys under <output>/keys (refused on kovanica-mainnet)
   --force                       Overwrite files inside <output>
   -h, --help                    This message
@@ -74,15 +73,14 @@ if [[ -z "$CHAIN_ID" ]]; then
         testnet|kovanica-testnet) CHAIN_ID=2 ;;
         hybrid-testnet|hybrid_testnet) CHAIN_ID=2 ;;
         devnet|kovanica-devnet) CHAIN_ID=3 ;;
-        local) CHAIN_ID=1337 ;;
-        *) die "unknown --network '$NETWORK'; use mainnet, testnet, devnet or local" ;;
+        *) die "unknown --network '$NETWORK'; use mainnet, testnet or devnet" ;;
     esac
 fi
 
 case "$CHAIN_ID" in
     1|2) HYBRID=true ;;
-    3|1337) HYBRID=false ;;
-    *) die "chain id $CHAIN_ID is not a canonical chain; use 1 (kovanica-mainnet), 2 (kovanica-testnet), 3 (kovanica-devnet) or 1337 (local)" ;;
+    3) HYBRID=false ;;
+    *) die "chain id $CHAIN_ID is not a canonical chain; use 1 (kovanica-mainnet), 2 (kovanica-testnet) or 3 (kovanica-devnet)" ;;
 esac
 
 if [[ "$CHAIN_ID" -eq 1 ]] && $GENERATE_KEYS; then

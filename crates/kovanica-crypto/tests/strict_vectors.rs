@@ -40,7 +40,7 @@ fn check_block_vector(sig_hex: &str) {
     let bad_vk = VerifyingKey::from_bytes(&b32(SMALL_ORDER_PK)).unwrap();
     kovanica_crypto::set_validator_keys(vec![good_sk.verifying_key(), bad_vk]);
 
-    let chain_id = 1337;
+    let chain_id = 3;
     let digest = StatementBlock::compute_digest(0, 1, &[], &[]);
     let msg = kovanica_types::block::block_signature_data(chain_id, &digest);
     let n0 = block(0, digest, sign(&good_sk, &msg));

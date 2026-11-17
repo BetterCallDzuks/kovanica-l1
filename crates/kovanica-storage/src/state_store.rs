@@ -2637,7 +2637,7 @@ mod snapshot_tests {
     }
 
     /// Chain id the test seals are signed for and the importer is told it runs on.
-    const TEST_CHAIN: u64 = 1337;
+    const TEST_CHAIN: u64 = 3;
 
     /// Like [`seeded_storage`], optionally with a persisted staking state and
     /// a deployed contract row, so a forged copy of them is observable.
@@ -2706,7 +2706,7 @@ mod snapshot_tests {
             };
             let seal = kovanica_types::CommitSeal {
                 authority_index: 0,
-                signature: kovanica_crypto::sign(&key, &header.seal_message(1337)),
+                signature: kovanica_crypto::sign(&key, &header.seal_message(3)),
             };
             storage.state().save_leader_header(&txn, &header).unwrap();
             storage.state().save_commit_seal(&txn, h, &seal).unwrap();
@@ -3143,7 +3143,7 @@ mod snapshot_tests {
 
         let (_dst_dir, dst) = seeded_storage("dst.redb", None);
         let txn = dst.begin_write().unwrap();
-        // The snapshot was signed for TEST_CHAIN (1337). Importing on chain 1 or 4 must fail.
+        // The snapshot was signed for TEST_CHAIN (3). Importing on chain 1 must fail.
         let err = dst
             .state()
             .import_verified_snapshot(&txn, &bytes, 0, 1)

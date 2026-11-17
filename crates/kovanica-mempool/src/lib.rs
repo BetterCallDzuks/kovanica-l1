@@ -927,7 +927,7 @@ pub enum MempoolError {
 mod tests {
     use super::*;
     const TEST_CTX: kovanica_types::SigningContext =
-        kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL);
+        kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
 
     use kovanica_storage::state_store::Account;
     use kovanica_storage::Storage;
@@ -1766,7 +1766,7 @@ mod tests {
     // ---- bucket D: hybrid chains refuse staking at admission -----------
 
     /// Sign `tx` under an arbitrary chain context (the default helper is
-    /// hard-wired to `TEST_CTX`/LOCAL).
+    /// hard-wired to `TEST_CTX`/DEVNET).
     fn build_signed_tx_with_ctx(
         sender: Address,
         nonce: u64,
@@ -1849,58 +1849,57 @@ mod tests {
     fn non_hybrid_chains_keep_stake_admission_and_fee_rules() {
         use kovanica_types::signing::chain_id;
 
-        for chain in [chain_id::DEVNET, chain_id::LOCAL] {
-            let fx = Fixture::new();
-            let (sk, sender) = fx.funded(1_000_000, 0);
-            let ctx = kovanica_types::SigningContext::new(chain);
-            let pool = Mempool::new(MempoolConfig::default(), fx.storage.clone(), ctx);
+        let chain = chain_id::DEVNET;
+        let fx = Fixture::new();
+        let (sk, sender) = fx.funded(1_000_000, 0);
+        let ctx = kovanica_types::SigningContext::new(chain);
+        let pool = Mempool::new(MempoolConfig::default(), fx.storage.clone(), ctx);
 
-            // Stake and Delegate stay fee-free and admitted, as on the base.
-            let stake = build_signed_tx_with_ctx(
-                sender,
-                0,
-                TransactionKind::Stake { amount: 1 },
-                0,
-                &sk,
-                &ctx,
-            );
-            pool.add_transaction(stake)
-                .expect("zero-fee stake admitted on a non-hybrid chain");
-            let delegate = build_signed_tx_with_ctx(
-                sender,
-                1,
-                TransactionKind::Delegate {
-                    validator: Address([3u8; 32]),
-                    amount: 1,
-                },
-                0,
-                &sk,
-                &ctx,
-            );
-            pool.add_transaction(delegate)
-                .expect("zero-fee delegate admitted on a non-hybrid chain");
+        // Stake and Delegate stay fee-free and admitted, as on the base.
+        let stake = build_signed_tx_with_ctx(
+            sender,
+            0,
+            TransactionKind::Stake { amount: 1 },
+            0,
+            &sk,
+            &ctx,
+        );
+        pool.add_transaction(stake)
+            .expect("zero-fee stake admitted on a non-hybrid chain");
+        let delegate = build_signed_tx_with_ctx(
+            sender,
+            1,
+            TransactionKind::Delegate {
+                validator: Address([3u8; 32]),
+                amount: 1,
+            },
+            0,
+            &sk,
+            &ctx,
+        );
+        pool.add_transaction(delegate)
+            .expect("zero-fee delegate admitted on a non-hybrid chain");
 
-            // Fee-paying staking kinds keep the ordinary fee rule.
-            let unstake = build_signed_tx_with_ctx(
-                sender,
-                2,
-                TransactionKind::Unstake { amount: 1 },
-                0,
-                &sk,
-                &ctx,
-            );
-            assert!(matches!(
-                pool.add_transaction(unstake),
-                Err(MempoolError::ZeroFee)
-            ));
-        }
+        // Fee-paying staking kinds keep the ordinary fee rule.
+        let unstake = build_signed_tx_with_ctx(
+            sender,
+            2,
+            TransactionKind::Unstake { amount: 1 },
+            0,
+            &sk,
+            &ctx,
+        );
+        assert!(matches!(
+            pool.add_transaction(unstake),
+            Err(MempoolError::ZeroFee)
+        ));
     }
 
     #[tokio::test]
     async fn notified_wakes_when_transaction_admitted() {
         let fx = Fixture::new();
         let (sk, sender) = fx.funded(10_000_000, 0);
-        let ctx = kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL);
+        let ctx = kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
         let pool = Arc::new(Mempool::new(
             MempoolConfig::default(),
             fx.storage.clone(),

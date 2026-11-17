@@ -3,7 +3,7 @@
 **Replaces Gazda for day-to-day agent work.**
 Read this before any change. If a rule here conflicts with a prompt, stop and ask Toni.
 
-Last updated: 2026-11-16 (main protected on all five repos; #259 activated on seed1 at `9758ffe0`).
+Last updated: 2026-11-17 (chain ID 1337 retired and merged into devnet 3 per Toni; main protected on all five repos; #259 activated on seed1 at `9758ffe0`).
 
 ## 1. Frozen values — do not change, do not remove
 
@@ -25,9 +25,9 @@ These are locked. Any PR that alters them without an explicit Toni decision is r
 | Subsidy era (NoStake82M) | 8 200 000 rewarded blocks | params |
 | Decay | × 3/4 per era | params |
 | Fee split (mainnet + testnet) | 3/4 burn, 1/4 miner | execution |
-| Fee split (devnet + local) | 100% burn | execution |
+| Fee split (devnet) | 100% burn | execution |
 | Address format | `kvnc` + 57 base32 + `dag` (64 chars) | types |
-| Chain IDs | 1 mainnet, 2 testnet, 3 devnet, 1337 local | params |
+| Chain IDs | 1 mainnet, 2 testnet, 3 devnet (1337 retired/merged into devnet per Toni 2026-11-17) | params |
 | Network tag (testnet) | `2-acfdf6a6c80fd28a` | genesis |
 | DAA easiest (testnet/devnet) | `0x1f7f_ffff` | params |
 | DAA hardest (testnet/devnet) | `0x1e00_ffff` | params |

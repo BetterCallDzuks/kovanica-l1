@@ -21,12 +21,10 @@ export const ChainId = {
   TESTNET: 2,
   DEVNET: 3,
   HYBRID_TESTNET: 2,
-  LOCAL: 1337,
   Mainnet: 1,
   Testnet: 2,
   Devnet: 3,
   HybridTestnet: 2,
-  Local: 1337,
 } as const;
 
 export type ChainId = (typeof ChainId)[keyof typeof ChainId];

@@ -161,16 +161,15 @@ describe("addresses and amounts", () => {
     expect(() => decodeAddress(`kvnx${fixture.senderAddress.slice(4)}`)).toThrow(/start with kvnc/);
   });
 
-  it("accepts legacy hex on dev chains (3, 1337), and refuses it elsewhere (PRO-21)", () => {
+  it("accepts legacy hex on the devnet (3), and refuses it elsewhere (PRO-21)", () => {
     expect(encodeLegacyAddress(sender)).toBe(fixture.senderAddressLegacy);
     expect(encodeLegacyAddress(recipient)).toBe(fixture.recipientAddressLegacy);
     for (const legacy of [fixture.senderAddressLegacy, fixture.publicKeyHex, `0x${fixture.publicKeyHex}`]) {
-      for (const chain of [3, 1337]) {
-        expect(bytesToHex(parseAddress(legacy, chain))).toBe(fixture.publicKeyHex);
-      }
+      expect(bytesToHex(parseAddress(legacy, 3))).toBe(fixture.publicKeyHex);
       expect(() => parseAddress(legacy)).toThrow(/chain id is omitted/);
       expect(() => parseAddress(legacy, 1)).toThrow(/not accepted on chain 1/);
       expect(() => parseAddress(legacy, 2)).toThrow(/not accepted on chain 2/);
+      expect(() => parseAddress(legacy, 1337)).toThrow(/not accepted on chain 1337/);
       expect(() => parseAddress(legacy, 99)).toThrow(/not accepted on chain 99/);
     }
     for (const chain of [1, 2, 3, 1337]) {
@@ -182,7 +181,8 @@ describe("addresses and amounts", () => {
     const upperHex = fixture.publicKeyHex.toUpperCase();
     expect(bytesToHex(parseAddress(upperHex, 3))).toBe(fixture.publicKeyHex);
     expect(() => parseAddress(upperHex, 2)).toThrow(/not accepted on chain 2/);
-    expect(bytesToHex(parseAddress(`0x${upperHex}`, 1337))).toBe(fixture.publicKeyHex);
+    expect(bytesToHex(parseAddress(`0x${upperHex}`, 3))).toBe(fixture.publicKeyHex);
+    expect(() => parseAddress(`0x${upperHex}`, 1337)).toThrow(/not accepted on chain 1337/);
     const legacy = fixture.senderAddressLegacy;
     const upperLegacy = `kvnc${legacy.slice(4, -3).toUpperCase()}dag`;
     expect(bytesToHex(parseAddress(upperLegacy, 3))).toBe(fixture.publicKeyHex);

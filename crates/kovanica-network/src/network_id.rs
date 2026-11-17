@@ -35,9 +35,9 @@ pub struct NetworkId {
 }
 
 impl Default for NetworkId {
-    /// Local/test network with an all-zero genesis digest.
+    /// Devnet network with an all-zero genesis digest.
     fn default() -> Self {
-        Self::new(kovanica_types::signing::chain_id::LOCAL, Hash([0u8; 32]))
+        Self::new(kovanica_types::signing::chain_id::DEVNET, Hash([0u8; 32]))
     }
 }
 

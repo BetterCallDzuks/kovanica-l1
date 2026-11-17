@@ -70,7 +70,7 @@ impl DaaConfig {
     /// - `kovanica-mainnet` (Chain ID 1): canonical mainnet parameters via [`Self::hybrid_default`].
     /// - `kovanica-testnet` (Chain ID 2): bounded between difficulty floor (`DAA_MAX_TARGET_BITS_TESTNET` = 0x1f7f_ffff)
     ///   and difficulty ceiling (`DAA_MIN_TARGET_BITS_TESTNET` = 0x1e00_ffff).
-    /// - `kovanica-devnet` (Chain ID 3) and `local` (Chain ID 1337): uses kovanica-devnet difficulty bounds.
+    /// - `kovanica-devnet` (Chain ID 3, also local single-node testing): uses kovanica-devnet difficulty bounds.
     /// - Any other chain: fallback to [`Self::hybrid_default`].
     #[must_use]
     pub const fn for_chain(chain_id: u64) -> Self {
@@ -82,7 +82,7 @@ impl DaaConfig {
                 min_target_bits: kovanica_params::DAA_MIN_TARGET_BITS_TESTNET,
                 max_adjustment_factor: 4,
             },
-            kovanica_params::CHAIN_ID_DEVNET | kovanica_params::CHAIN_ID_LOCAL => Self {
+            kovanica_params::CHAIN_ID_DEVNET => Self {
                 target_block_time_ms: kovanica_params::TARGET_BLOCK_MS,
                 window_size: kovanica_params::DAA_WINDOW_BLOCKS,
                 max_target_bits: kovanica_params::DAA_MAX_TARGET_BITS_DEVNET,

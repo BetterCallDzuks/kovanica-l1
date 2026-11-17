@@ -289,7 +289,7 @@ fn a_non_pro21_recorded_treasury_is_refused() {
     );
 }
 
-/// Chains 3 and 1337 keep the zero-treasury default when the file records no
+/// Chain 3 (devnet) keeps the zero-treasury default when the file records no
 /// treasury; the fail-closed rule is for the canonical hybrid chains only.
 #[test]
 fn a_chain3_source_may_omit_the_recorded_treasury() {

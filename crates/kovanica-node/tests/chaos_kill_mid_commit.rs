@@ -434,7 +434,7 @@ fn stable_log_dir() -> PathBuf {
 
 /// Build the shared genesis validator set (all four members, equal stake).
 fn build_genesis_toml(validators: &[(SigningKey, PublicKey, Address)]) -> String {
-    let mut out = String::from("chain_id = 1337\n\n");
+    let mut out = String::from("chain_id = 3\n\n");
     for (_, pk, addr) in validators {
         out.push_str("[[validator]]\n");
         out.push_str(&format!("address = \"{}\"\n", hex::encode(addr.0)));

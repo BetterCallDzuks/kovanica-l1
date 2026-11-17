@@ -46,7 +46,8 @@ export interface NetworkPreset {
 /** Built-in endpoints, live testnet first (mirrors `packages/console/src/network.ts`). */
 export const NETWORK_PRESETS: readonly NetworkPreset[] = [
   { id: "testnet", label: "Testnet (Chain 2)", chainId: 2, rpcUrl: TESTNET_RPC_URL },
-  { id: "local", label: "Local", chainId: 1337, rpcUrl: LOCAL_RPC_URL },
+  // The loopback endpoint runs the devnet chain (3); chain 1337 is retired.
+  { id: "local", label: "Local (Devnet)", chainId: 3, rpcUrl: LOCAL_RPC_URL },
 ];
 
 /** Subscription names accepted by the node (see `subscriptions.rs`). */

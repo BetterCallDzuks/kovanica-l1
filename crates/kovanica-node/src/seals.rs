@@ -343,7 +343,7 @@ mod tests {
 
     fn context(signer: Option<(u16, SigningKey)>) -> SealContext {
         SealContext {
-            chain_id: 1337,
+            chain_id: 3,
             signer,
             mysticghost: false,
         }
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(announcement.header.blue_root, Hash::zero());
         assert!(announcement.header.colouring_roots_match_flag());
         kovanica_crypto::verify_commit_seal(
-            1337,
+            3,
             &announcement.header,
             &announcement.seal,
             &kovanica_types::PublicKey::from(key.verifying_key()),
@@ -429,17 +429,17 @@ mod tests {
     #[test]
     fn certified_leader_round_follows_a_quorum_seal() {
         let (storage, key) = storage_with_validator();
-        assert!(certified_leader_round(&storage, 1337).unwrap().is_none());
+        assert!(certified_leader_round(&storage, 3).unwrap().is_none());
 
         let ctx = context(Some((0, key)));
         publish_local_seal(&storage, &ctx, &subdag(3), 0, Hash::new([1u8])).unwrap();
-        assert_eq!(certified_leader_round(&storage, 1337).unwrap(), Some(3));
+        assert_eq!(certified_leader_round(&storage, 3).unwrap(), Some(3));
         // A seal for another network is not a certificate on this chain.
         assert!(certified_leader_round(&storage, 1).unwrap().is_none());
 
         publish_local_seal(&storage, &ctx, &subdag(6), 1, Hash::new([2u8])).unwrap();
         assert_eq!(
-            certified_leader_round(&storage, 1337).unwrap(),
+            certified_leader_round(&storage, 3).unwrap(),
             Some(6),
             "the latest verified header is the anchor"
         );
@@ -530,7 +530,7 @@ mod tests {
         txn.commit().unwrap();
 
         let ctx = SealContext {
-            chain_id: 1337, // non-hybrid local
+            chain_id: 3, // non-hybrid devnet
             signer: None,
             mysticghost: false,
         };

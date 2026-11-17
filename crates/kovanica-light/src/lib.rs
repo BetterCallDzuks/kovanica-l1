@@ -469,7 +469,7 @@ fn keystore_failure(err: impl std::fmt::Display) -> LightError {
 /// `sender` accepts the canonical 64-character base32 form on every chain.
 /// Legacy hex (bare, lowercase `0x`, or `kvnc<hex>dag`) is accepted only where
 /// [`kovanica_types::address::legacy_address_allowed`] is true for `chain_id`
-/// (devnet 3, local 1337). Returns the bare 64-hex contract address.
+/// (devnet 3). Returns the bare 64-hex contract address.
 pub fn contract_address_for(sender: &str, nonce: u64, chain_id: u64) -> Result<String, LightError> {
     let sender = Address::parse_for_chain(sender, chain_id)
         .map_err(|e| LightError::InvalidAddress(e.to_string()))?;
@@ -566,20 +566,20 @@ mod tests {
     fn three_of_four_seals_pass_and_a_bad_seal_fails() {
         let (signers, committee) = keys(4);
         let header = header_for(&committee, 0, Hash::zero(), Hash::new([4u8]));
-        let ok = seals_for(&signers, &header, 1337, 3);
-        assert!(verify_sealed_header(1337, &committee, &header, &ok, None).is_ok());
-        let short = seals_for(&signers, &header, 1337, 2);
-        assert!(verify_sealed_header(1337, &committee, &header, &short, None).is_err());
+        let ok = seals_for(&signers, &header, 3, 3);
+        assert!(verify_sealed_header(3, &committee, &header, &ok, None).is_ok());
+        let short = seals_for(&signers, &header, 3, 2);
+        assert!(verify_sealed_header(3, &committee, &header, &short, None).is_err());
         let mut bad = ok.clone();
         bad[0].signature = Signature([9u8; 64]);
         assert!(matches!(
-            verify_sealed_header(1337, &committee, &header, &bad, None),
+            verify_sealed_header(3, &committee, &header, &bad, None),
             Err(LightError::Seals(_))
         ));
         let mut timed = header.clone();
         timed.timestamp = 1;
         assert_eq!(
-            verify_sealed_header(1337, &committee, &timed, &ok, None).unwrap_err(),
+            verify_sealed_header(3, &committee, &timed, &ok, None).unwrap_err(),
             LightError::Timestamp
         );
     }
@@ -589,13 +589,12 @@ mod tests {
         let (signers, committee) = keys(4);
         let first = header_for(&committee, 0, Hash::zero(), Hash::zero());
         let second = header_for(&committee, 1, first.leader_digest, Hash::new([2u8]));
-        let seals = seals_for(&signers, &second, 1337, 3);
-        assert!(verify_sealed_header(1337, &committee, &second, &seals, Some(&first)).is_ok());
+        let seals = seals_for(&signers, &second, 3, 3);
+        assert!(verify_sealed_header(3, &committee, &second, &seals, Some(&first)).is_ok());
         let broken = header_for(&committee, 1, Hash::new([9u8]), Hash::new([2u8]));
-        let broken_seals = seals_for(&signers, &broken, 1337, 3);
+        let broken_seals = seals_for(&signers, &broken, 3, 3);
         assert_eq!(
-            verify_sealed_header(1337, &committee, &broken, &broken_seals, Some(&first))
-                .unwrap_err(),
+            verify_sealed_header(3, &committee, &broken, &broken_seals, Some(&first)).unwrap_err(),
             LightError::Parent
         );
     }
@@ -627,8 +626,8 @@ mod tests {
         let signer = SigningKey::from_bytes(&[9u8; 32]);
         let sender = Address::from_public_key(&PublicKey::from(signer.verifying_key()));
         let to = Address([3u8; 32]);
-        let tx = sign_transfer(1337, &signer, sender, to, 10, 1, 1);
-        assert!(tx.verify_signature(&SigningContext::new(1337)));
+        let tx = sign_transfer(3, &signer, sender, to, 10, 1, 1);
+        assert!(tx.verify_signature(&SigningContext::new(3)));
         assert!(!tx.verify_signature(&SigningContext::new(2)));
         let leaf = tx.hash;
         let proof = merkle::proof(&[leaf], 0).unwrap();
@@ -702,8 +701,8 @@ mod tests {
     fn a_signed_deploy_round_trips() {
         let signer = SigningKey::from_bytes(&[9u8; 32]);
         let sender = Address::from_public_key(&PublicKey::from(signer.verifying_key()));
-        let ctx = SigningContext::new(1337);
-        let deploy = sign_deploy(1337, &signer, sender, 3, 1, vec![0u8, 1, 2, 3]);
+        let ctx = SigningContext::new(3);
+        let deploy = sign_deploy(3, &signer, sender, 3, 1, vec![0u8, 1, 2, 3]);
         assert!(deploy.verify_signature(&ctx));
         assert!(!deploy.verify_signature(&SigningContext::new(2)));
         assert!(matches!(
@@ -716,11 +715,11 @@ mod tests {
     fn light_node_transactions_verify_under_the_configured_chain_id() {
         let signer = SigningKey::from_bytes(&[4u8; 32]);
         let sender = Address::from_public_key(&PublicKey::from(signer.verifying_key()));
-        let ctx = SigningContext::new(1337);
+        let ctx = SigningContext::new(3);
         let register =
-            sign_register_light_node(1337, &signer, sender, PublicKey([8u8; 32]), 100, 0, 1);
-        let exit = sign_exit_light_node(1337, &signer, sender, 1, 1);
-        let witness = sign_light_witness(1337, &signer, sender, 3, [2u8; 32], [5u8; 96], 2, 1);
+            sign_register_light_node(3, &signer, sender, PublicKey([8u8; 32]), 100, 0, 1);
+        let exit = sign_exit_light_node(3, &signer, sender, 1, 1);
+        let witness = sign_light_witness(3, &signer, sender, 3, [2u8; 32], [5u8; 96], 2, 1);
         assert!(register.verify_signature(&ctx));
         assert!(exit.verify_signature(&ctx));
         assert!(witness.verify_signature(&ctx));

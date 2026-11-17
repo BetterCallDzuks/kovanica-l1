@@ -28,7 +28,7 @@ use crate::rpc::RpcClient;
 /// Arguments for `kovanica miner run`.
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct MinerRunArgs {
-    /// Payout address for mining rewards (canonical PRO-21 base32 `kvnc...dag` required on Chains 1 & 2; legacy hex accepted only on chains 3 & 1337).
+    /// Payout address for mining rewards (canonical PRO-21 base32 `kvnc...dag` required on Chains 1 & 2; legacy hex accepted only on chain 3, devnet).
     #[arg(long, short)]
     pub address: String,
 
@@ -66,7 +66,7 @@ pub enum MinerCommand {
 ///
 /// On Chains 1 (`MAINNET`) and 2 (`TESTNET` / `HYBRID_TESTNET`), canonical PRO-21
 /// base32 (`kvnc...dag`) is strictly required; legacy hex is only accepted on
-/// dev chains 3 (`DEVNET`) and 1337 (`LOCAL`).
+/// the dev chain 3 (`DEVNET`).
 pub fn validate_payout_address(address_str: &str, chain_id: u64) -> Result<Address> {
     Address::parse_for_chain(address_str.trim(), chain_id)
         .with_context(|| format!("invalid payout address '{address_str}' for chain {chain_id}"))

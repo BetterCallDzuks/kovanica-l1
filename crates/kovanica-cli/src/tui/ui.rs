@@ -422,7 +422,7 @@ mod tests {
     fn test_app() -> App {
         App::new(TuiConfig {
             rpc_url: "http://127.0.0.1:8545".to_string(),
-            chain_id: Some(chain_id::LOCAL),
+            chain_id: Some(chain_id::DEVNET),
             keystore: std::path::PathBuf::from("/no/such/kovanica-keystore.json"),
         })
     }

@@ -123,7 +123,7 @@ Vite statically inlines environment variables prefixed with `VITE_` during build
 |---|---|---|---|---|
 | `VITE_RPC_URL` | JSON-RPC HTTP endpoint URL | `https://rpc-testnet.kovanica.online` | Hardcoded multi-network | `https://rpc.kovanica.online/rpc` (or `/rpc`) |
 | `VITE_WS_URL` | JSON-RPC WebSocket endpoint URL | (Derived from RPC URL) | Hardcoded multi-network | `wss://rpc.kovanica.online/ws` (or `/ws`) |
-| `VITE_CHAIN_ID` | Network Chain ID (`1` = Mainnet, `4` = Testnet v2, `1337` = Local) | `4` | `1` (Mainnet) | `1` |
+| `VITE_CHAIN_ID` | Network Chain ID (`1` = Mainnet, `2` = Testnet, `3` = Devnet) | `2` | `1` (Mainnet) | `1` |
 | `VITE_INDEXER_HTTP_URL`| Optional kovanica-indexer HTTP base URL | `http://127.0.0.1:8787` | `null` | `https://indexer.kovanica.online` |
 | `VITE_INDEXER_WS_URL` | Optional kovanica-indexer WebSocket URL | `ws://127.0.0.1:8787/ws` | `null` | `wss://indexer.kovanica.online/ws` |
 

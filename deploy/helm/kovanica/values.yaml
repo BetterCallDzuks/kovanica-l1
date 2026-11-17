@@ -10,7 +10,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 node:
-  # 1 for Mainnet, 2 for Testnet, 3 for Devnet, 1337 for Local
+  # 1 for Mainnet, 2 for Testnet, 3 for Devnet
   chainId: 1
   emissionPolicy: "no-stake-82m"
   # Role: validator, seed, rpc

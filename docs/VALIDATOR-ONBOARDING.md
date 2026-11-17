@@ -22,7 +22,7 @@ there is no validator committee, no VRF leader selection and no stake requiremen
 | **Software** | Docker 24+ **or** Rust 1.90+ toolchain |
 | **Keys** | Ed25519 validator key + VRF key pair (generated below) |
 
-> **Note**: Testnet uses chain ID `2`. Local devnet uses `1337`. Mainnet will use `1`.
+> **Note**: Testnet uses chain ID `2`. Local single-node testing uses kovanica-devnet (chain ID `3`). Mainnet will use `1`.
 
 ---
 
@@ -444,4 +444,4 @@ journalctl -u kovanica -f
 
 ---
 
-*Last updated: 2026-10-28 for testnet chain ID 4*
+*Last updated: 2026-10-28 for testnet chain ID 2*

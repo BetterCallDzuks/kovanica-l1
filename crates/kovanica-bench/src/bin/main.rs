@@ -36,7 +36,7 @@ struct HealthArgs {
 struct TransferLoadArgs {
     #[arg(long, default_value = "http://127.0.0.1:8545")]
     rpc_url: String,
-    #[arg(long, default_value_t = 1337)]
+    #[arg(long, default_value_t = 3)]
     chain_id: u64,
     #[arg(long, default_value_t = 0)]
     epoch: u64,

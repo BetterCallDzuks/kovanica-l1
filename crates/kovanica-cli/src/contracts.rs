@@ -2006,7 +2006,7 @@ mod tests {
         let from_hex = address_param(
             &address.to_hex(),
             "addr",
-            Some(kovanica_types::signing::chain_id::LOCAL),
+            Some(kovanica_types::signing::chain_id::DEVNET),
         )
         .unwrap();
         let decoded_hex: Address = serde_json::from_value(from_hex).unwrap();

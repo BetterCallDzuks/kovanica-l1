@@ -26,8 +26,8 @@ use zeroize::Zeroize;
 
 uniffi::setup_scaffolding!("kovanica_light");
 
-/// Local development chain id.
-pub const LOCAL_CHAIN_ID: u64 = chain_id::LOCAL;
+/// Devnet chain id, also used for local single-node testing (chain 3).
+pub const DEVNET_CHAIN_ID: u64 = chain_id::DEVNET;
 /// Public hybrid testnet chain id (chain 2).
 pub const TESTNET_CHAIN_ID: u64 = chain_id::HYBRID_TESTNET;
 
@@ -379,14 +379,12 @@ pub fn wallet_address(keystore_json: String) -> Result<String, LightFfiError> {
 
 /// True when the app may show the testnet faucet.
 ///
-/// Allowed on public testnet (chain 2, [`TESTNET_CHAIN_ID`]), devnet (3), and
-/// local (1337). Strictly refused on mainnet (1) and unknown chains.
+/// Allowed on public testnet (chain 2, [`TESTNET_CHAIN_ID`]) and devnet
+/// (chain 3, [`DEVNET_CHAIN_ID`]). Strictly refused on mainnet (1), the retired
+/// `local` id (1337), and unknown chains.
 #[uniffi::export]
 pub fn faucet_allowed(chain_id: u64) -> bool {
-    matches!(
-        chain_id,
-        chain_id::TESTNET | chain_id::DEVNET | chain_id::LOCAL
-    )
+    matches!(chain_id, chain_id::TESTNET | chain_id::DEVNET)
 }
 
 /// Verify one sealed header.
@@ -2116,7 +2114,7 @@ pub fn change_passphrase_raw(
 /// Derive the address a `Deploy` transaction will create on-chain, off-node.
 ///
 /// `sender_hex` is the `kvnc…dag` address, or a legacy hex form where
-/// `chain_id` allows it (devnet 3, local 1337). `nonce` is the
+/// `chain_id` allows it (devnet 3). `nonce` is the
 /// sender's account nonce **as it stands while the `Deploy` tx is being
 /// signed** (i.e. the `tx.nonce`); the `+1` the node bakes into the address is
 /// applied inside. Returns the bare 64-hex contract address.
@@ -2490,7 +2488,7 @@ mod tests {
             .map(|index| {
                 let signature = sign(
                     &signers[index as usize],
-                    &header.seal_message(LOCAL_CHAIN_ID),
+                    &header.seal_message(DEVNET_CHAIN_ID),
                 );
                 serde_json::json!({
                     "authorityIndex": index,
@@ -2511,16 +2509,15 @@ mod tests {
         assert!(!faucet_allowed(chain_id::MAINNET));
         assert!(faucet_allowed(3));
         assert!(faucet_allowed(chain_id::DEVNET));
-        assert!(faucet_allowed(1337));
-        assert!(faucet_allowed(chain_id::LOCAL));
-        assert!(faucet_allowed(LOCAL_CHAIN_ID));
+        assert!(faucet_allowed(DEVNET_CHAIN_ID));
+        assert!(!faucet_allowed(1337));
         assert!(!faucet_allowed(0));
         assert!(!faucet_allowed(4));
         let (signers, committee) = keys(4);
         let (header_json, header) = header_json(0, Hash::zero(), Hash::new([4u8]), &committee);
         let seals = seals_json(&signers, &header, 3);
         let verified = verify_header(
-            LOCAL_CHAIN_ID,
+            DEVNET_CHAIN_ID,
             0,
             committee,
             header_json,
@@ -2538,7 +2535,7 @@ mod tests {
         let (header_json, header) = header_json(1, Hash::zero(), Hash::zero(), &committee);
         let seals = seals_json(&signers, &header, 2);
         assert!(verify_header(
-            LOCAL_CHAIN_ID,
+            DEVNET_CHAIN_ID,
             0,
             committee,
             header_json,
@@ -2810,7 +2807,7 @@ mod tests {
         let raw = sign_call_raw(
             created.keystore_json.clone(),
             "pw".to_string(),
-            LOCAL_CHAIN_ID,
+            DEVNET_CHAIN_ID,
             contract,
             500,
             "transfer".to_string(),
@@ -2823,7 +2820,7 @@ mod tests {
         assert!(raw.starts_with("0x"));
         let bytes = hex::decode(raw.strip_prefix("0x").unwrap()).unwrap();
         let tx: Transaction = bincode::deserialize(&bytes).unwrap();
-        assert!(tx.verify_signature(&kovanica_types::SigningContext::new(LOCAL_CHAIN_ID)));
+        assert!(tx.verify_signature(&kovanica_types::SigningContext::new(DEVNET_CHAIN_ID)));
         assert!(!tx.verify_signature(&kovanica_types::SigningContext::new(2)));
         assert!(matches!(
             tx.kind,
@@ -2840,7 +2837,7 @@ mod tests {
         let raw_deploy = sign_deploy_raw(
             created.keystore_json,
             "pw".to_string(),
-            LOCAL_CHAIN_ID,
+            DEVNET_CHAIN_ID,
             "00ff".to_string(),
             7,
             10,
@@ -2848,7 +2845,7 @@ mod tests {
         .unwrap();
         let bytes = hex::decode(raw_deploy.strip_prefix("0x").unwrap()).unwrap();
         let deploy: Transaction = bincode::deserialize(&bytes).unwrap();
-        assert!(deploy.verify_signature(&kovanica_types::SigningContext::new(LOCAL_CHAIN_ID)));
+        assert!(deploy.verify_signature(&kovanica_types::SigningContext::new(DEVNET_CHAIN_ID)));
         assert!(matches!(
             deploy.kind,
             kovanica_types::TransactionKind::Deploy { ref code } if code == &[0x00, 0xff]
@@ -2858,7 +2855,7 @@ mod tests {
         assert!(sign_call_raw(
             created_wallet_json(),
             "pw".to_string(),
-            LOCAL_CHAIN_ID,
+            DEVNET_CHAIN_ID,
             Address([0x33; 32]).to_string(),
             0,
             "m".to_string(),
@@ -2871,7 +2868,7 @@ mod tests {
     }
 
     /// `sign_transfer_raw` and `sign_call_raw` pass `chain_id` into `parse_address`.
-    /// Legacy hex is accepted only on chains 3 and 1337.
+    /// Legacy hex is accepted only on the devnet (chain 3).
     #[test]
     fn transfer_and_call_addresses_follow_the_chain_policy() {
         let key = Address([0x33; 32]);
@@ -2880,8 +2877,8 @@ mod tests {
         let bare = key.to_hex();
         let prefixed = format!("0x{bare}");
         let forms = [legacy.as_str(), bare.as_str(), prefixed.as_str()];
-        let allowed = [chain_id::DEVNET, chain_id::LOCAL];
-        let refused = [chain_id::MAINNET, chain_id::TESTNET, 0, 42];
+        let allowed = [chain_id::DEVNET];
+        let refused = [chain_id::MAINNET, chain_id::TESTNET, 1337, 0, 42];
 
         for chain in allowed {
             for form in forms {
@@ -2923,7 +2920,7 @@ mod tests {
         let call = sign_call_raw(
             created.keystore_json.clone(),
             "pw".to_string(),
-            chain_id::LOCAL,
+            chain_id::DEVNET,
             prefixed.clone(),
             0,
             "m".to_string(),

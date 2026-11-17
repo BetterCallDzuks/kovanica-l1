@@ -72,7 +72,7 @@ pub fn vote_signed_with(
     vote.signature = kovanica_crypto::sign(
         key,
         &vote.signature_data(&kovanica_types::SigningContext::new(
-            kovanica_types::signing::chain_id::LOCAL,
+            kovanica_types::signing::chain_id::DEVNET,
         )),
     );
     vote
@@ -464,7 +464,7 @@ impl BlockManagerTrait for MockBlockManager {
             signature: kovanica_crypto::sign(
                 &key,
                 &kovanica_types::block::block_signature_data(
-                    kovanica_types::signing::chain_id::LOCAL,
+                    kovanica_types::signing::chain_id::DEVNET,
                     &digest,
                 ),
             ),
@@ -548,7 +548,7 @@ pub fn make_engine(
         manager.clone(),
         signing_key,
         None, // No mempool for tests
-        kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+        kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
     );
     (engine, dag, manager)
 }

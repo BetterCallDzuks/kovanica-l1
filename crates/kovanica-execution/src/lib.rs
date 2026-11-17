@@ -240,12 +240,12 @@ struct SubDagContext {
 }
 
 impl ExecutionContext {
-    /// **Dev/test only.** Context for `chain_id::LOCAL` (1337). On a real
-    /// network every signature (signed for mainnet/testnet/devnet) is
-    /// rejected — it fails closed. Nodes must use
-    /// [`ExecutionContext::with_signing_context`].
+    /// **Dev/test only.** Context for `chain_id::DEVNET` (3). Production
+    /// nodes must use [`ExecutionContext::with_signing_context`] with the
+    /// chain they actually run on; signatures for any other chain are
+    /// rejected — it fails closed.
     pub fn new() -> Self {
-        Self::with_signing_context(SigningContext::new(chain_id::LOCAL))
+        Self::with_signing_context(SigningContext::new(chain_id::DEVNET))
     }
 
     /// Execution context verifying transaction signatures (format v1,
@@ -2259,7 +2259,7 @@ mod tests {
     use kovanica_types::{Signature, StatementBlock};
 
     /// Tests sign for the dev/test network `ExecutionContext::new` uses.
-    const TEST_CTX: SigningContext = SigningContext::new(chain_id::LOCAL);
+    const TEST_CTX: SigningContext = SigningContext::new(chain_id::DEVNET);
 
     #[test]
     fn kvnc_amount_keeps_the_fraction() {
@@ -5567,7 +5567,7 @@ mod tests {
         );
         assert_eq!(
             ExecutionContext::new().signing_context().chain_id,
-            chain_id::LOCAL
+            chain_id::DEVNET
         );
     }
 
@@ -5814,7 +5814,7 @@ mod tests {
 
         ctx.staking.committed_leader_height = kovanica_staking::EPOCH_LEADER_HEIGHTS;
         let leader = sample_block_at(0, 9);
-        let input = light_vrf_input(chain_id::LOCAL, 1, &leader.digest);
+        let input = light_vrf_input(chain_id::DEVNET, 1, &leader.digest);
         let output = kovanica_crypto::vrf_prove(&vrf, &input);
         let witness = signed_tx(
             &key,
@@ -8405,7 +8405,7 @@ mod tests {
     }
 
     #[test]
-    fn test_devnet_local_fees_stay_100_percent_burned() {
+    fn test_devnet_fees_stay_100_percent_burned() {
         // 1. kovanica-devnet (chain ID 3)
         {
             let temp_dir = tempfile::tempdir().unwrap();
@@ -8475,80 +8475,6 @@ mod tests {
                 miner_balance, 0,
                 "miner must receive 0 fee share on kovanica-devnet"
             );
-            let fee_state = storage
-                .state()
-                .load_fee_accounting_state(&read)
-                .unwrap()
-                .unwrap_or_default();
-            assert_eq!(fee_state.cumulative_fees_to_miners, 0);
-        }
-
-        // 2. local (chain ID 1337)
-        {
-            let temp_dir = tempfile::tempdir().unwrap();
-            let storage = Storage::new(temp_dir.path().join("local.redb")).unwrap();
-
-            let signing_ctx = SigningContext::new(chain_id::LOCAL);
-            let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
-
-            let sender_key = test_keypair(4);
-            let sender = address_of(&sender_key);
-            let recipient = Address([0x77; 32]);
-            let miner = Address([0xbb; 32]);
-            let initial_balance = 50_000_000_000u64;
-            {
-                let txn = storage.begin_write().unwrap();
-                let mut acct = storage
-                    .state()
-                    .get_account_or_default_write(&txn, &sender)
-                    .unwrap();
-                acct.balance = initial_balance;
-                storage.state().set_account(&txn, &sender, &acct).unwrap();
-                txn.commit().unwrap();
-            }
-
-            let fee = 40_000u64;
-            let tx = make_test_transfer_tx(&signing_ctx, &sender_key, 0, fee, 1000, recipient);
-            let statements = kovanica_types::block::encode_pow_statement(
-                100,
-                kovanica_params::DAA_MAX_TARGET_BITS_DEVNET,
-                0,
-                None,
-                Some(miner),
-            );
-            let txs = vec![tx];
-            let digest =
-                StatementBlock::compute_digest_statements(99, 1, &[], &txs, Some(&statements));
-            let block = StatementBlock {
-                author: 99,
-                round: 1,
-                parents: Vec::new(),
-                transactions: txs,
-                statements,
-                signature: Signature([0u8; 64]),
-                digest,
-                merkle_root: Default::default(),
-            };
-            let subdag = CommittedSubDag {
-                leader: block.clone(),
-                blocks: vec![block],
-                leader_round: 1,
-                leader_author: 99,
-                non_blue: vec![],
-            };
-
-            ctx.execute_committed_subdag(&subdag, &storage).unwrap();
-
-            let read = storage.begin_read().unwrap();
-            let sender_acct = storage.state().get_account(&read, &sender).unwrap();
-            assert_eq!(sender_acct.balance, initial_balance - 1000 - fee);
-            // With an explicit payout address, miner receives 0 fee share (100% burned, no split)
-            let miner_balance = storage
-                .state()
-                .get_account(&read, &miner)
-                .map(|a| a.balance)
-                .unwrap_or(0);
-            assert_eq!(miner_balance, 0, "miner must receive 0 fee share on local");
             let fee_state = storage
                 .state()
                 .load_fee_accounting_state(&read)

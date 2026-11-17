@@ -1,5 +1,5 @@
 //! Light-node config. The chain id is whatever the operator configured
-//! (e.g. 2 for live testnet, 1337 for local). This file does not rewrite it.
+//! (e.g. 2 for live testnet, 3 for devnet and local single-node testing).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,11 +25,11 @@ pub struct LightConfig {
 }
 
 impl LightConfig {
-    /// Defaults for a local node on chain 1337.
-    pub fn local_default() -> Self {
+    /// Defaults for a local node on the devnet (chain 3).
+    pub fn devnet_default() -> Self {
         Self {
             rpc: "http://127.0.0.1:8545".into(),
-            chain_id: 1337,
+            chain_id: 3,
             epoch: 0,
             keystore: PathBuf::from("keystore.json"),
         }

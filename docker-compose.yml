@@ -24,7 +24,7 @@ x-node: &node
     # No consensus-parameter env vars here on purpose. round_duration_ms (4000)
     # and use_mysticghost (true) are the built-in defaults, and the node now
     # refuses KOVANICA_ROUND_DURATION_MS / KOVANICA_MYSTICGHOST /
-    # KOVANICA_VRF_LEADER on any chain other than devnet (3) and local (1337).
+    # KOVANICA_VRF_LEADER on any chain other than devnet (3).
     KOVANICA_MEMPOOL_REBROADCAST_INTERVAL_SECS: "5"
     KOVANICA_MEMPOOL_IN_FLIGHT_TIMEOUT_SECS: "30"
     KOVANICA_MEMPOOL_MIN_FEE_RATE: "0"

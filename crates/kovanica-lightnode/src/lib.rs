@@ -29,12 +29,12 @@ pub use transfer::{confirm_account, encode_raw, signed_transfer};
 /// Create a data directory, a config, and a new encrypted keystore.
 ///
 /// Refuses to replace an existing keystore. `chain_id` is stored as given
-/// (1 for mainnet, 2 for the live testnet, 3 for devnet, 1337 for local).
+/// (1 for mainnet, 2 for the live testnet, 3 for devnet and local testing).
 pub fn init(dir: &Path, rpc: &str, chain_id: u64, passphrase: &str) -> Result<Address> {
     if passphrase.is_empty() {
         bail!("passphrase is empty");
     }
-    let mut cfg = LightConfig::local_default();
+    let mut cfg = LightConfig::devnet_default();
     cfg.rpc = rpc.to_owned();
     cfg.chain_id = chain_id;
     cfg.save(dir)?;

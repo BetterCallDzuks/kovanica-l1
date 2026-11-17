@@ -9,7 +9,7 @@ kovanica-faucet --chain-id 2 --keystore faucet.keystore --rpc-url http://127.0.0
             [--address-rate-limit-window 86400] [--address-max-requests 1]
 ```
 
-`--chain-id` is **required** (no default): 1 mainnet, 2 testnet, 3 devnet, 1337 local. Any other value is rejected at startup.
+`--chain-id` is **required** (no default): 1 mainnet, 2 testnet, 3 devnet. Any other value is rejected at startup.
 
 ## Rate limits: per IP and per address, configured separately
 

@@ -894,7 +894,7 @@ mod tests {
             mempool: Arc::new(Mempool::new(
                 kovanica_mempool::MempoolConfig::default(),
                 storage.clone(),
-                kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+                kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
             )),
             storage,
             staking: Arc::new(RwLock::new(StakingState::new())),
@@ -992,7 +992,7 @@ mod tests {
             mempool: Arc::new(Mempool::new(
                 MempoolConfig::default(),
                 storage.clone(),
-                kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+                kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
             )),
             storage,
             staking: Arc::new(RwLock::new(StakingState::new())),

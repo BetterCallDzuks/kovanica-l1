@@ -18,7 +18,7 @@ use tokio::time::sleep;
 use tracing::{debug, warn};
 
 pub const DEFAULT_RPC_URL: &str = "http://127.0.0.1:8545";
-pub const DEFAULT_CHAIN_ID: u64 = 1337;
+pub const DEFAULT_CHAIN_ID: u64 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {

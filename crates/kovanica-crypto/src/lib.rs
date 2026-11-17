@@ -253,7 +253,7 @@ mod batch_tests {
 
         set_validator_keys(keys.iter().map(|(_, vk)| *vk).collect());
 
-        let chain_id = 1337;
+        let chain_id = 3;
         let msg = b"batch-test-4";
         let mut blocks: Vec<StatementBlock> = Vec::with_capacity(4);
         for (i, (sk, _vk)) in keys.iter().enumerate() {
@@ -589,13 +589,13 @@ mod commit_seal_tests {
             .enumerate()
             .map(|(i, (sk, _))| CommitSeal {
                 authority_index: i as u16,
-                signature: sign(sk, &header.seal_message(1337)),
+                signature: sign(sk, &header.seal_message(3)),
             })
             .collect();
 
-        assert!(verify_commit_seals(1337, &header, &seals[..3], &committee).is_ok());
+        assert!(verify_commit_seals(3, &header, &seals[..3], &committee).is_ok());
         assert_eq!(
-            verify_commit_seals(1337, &header, &seals[..2], &committee),
+            verify_commit_seals(3, &header, &seals[..2], &committee),
             Err(CommitSealError::Structure(
                 kovanica_types::SealError::Quorum
             ))

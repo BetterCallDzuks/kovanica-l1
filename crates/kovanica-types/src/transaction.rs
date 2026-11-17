@@ -277,7 +277,7 @@ pub const HYBRID_STAKE_REFUSAL: &str =
 /// Hybrid chains (mainnet `1` and the public testnet `2`) order blocks with
 /// GHOSTDAG and mine them with KovanicaHash PoW. Stake is not part of their
 /// consensus, so the five staking kinds fail closed there rather than
-/// half-applying. Non-hybrid chains (`3`, `1337`) keep their existing staking
+/// half-applying. Non-hybrid chains (`3`, devnet) keep their existing staking
 /// behaviour.
 pub fn hybrid_refuses_stake_kind(chain_id: u64, kind: &TransactionKind) -> bool {
     crate::signing::chain_id::is_hybrid(chain_id) && kind.is_stake_kind()
@@ -490,9 +490,7 @@ mod tests {
             for hybrid in [chain_id::MAINNET, chain_id::TESTNET] {
                 assert!(hybrid_refuses_stake_kind(hybrid, kind));
             }
-            for non_hybrid in [chain_id::DEVNET, chain_id::LOCAL] {
-                assert!(!hybrid_refuses_stake_kind(non_hybrid, kind));
-            }
+            assert!(!hybrid_refuses_stake_kind(chain_id::DEVNET, kind));
         }
 
         // Non-staking kinds are never refused, and the light-node bond is a

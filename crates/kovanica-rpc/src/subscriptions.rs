@@ -219,7 +219,7 @@ struct Connection {
 
 impl Default for Connection {
     fn default() -> Self {
-        Self::new(1337)
+        Self::new(3)
     }
 }
 
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn eth_subscribe_and_unsubscribe_with_filter() {
-        let mut connection = Connection::new(1337);
+        let mut connection = Connection::new(3);
         let response = request(
             &mut connection,
             json!({

@@ -50,9 +50,7 @@ graph LR
 Definirano u `crates/kovanica-types/src/address.rs:35`:
 - **Dopušteni lanci:**
   - Devnet (`chain_id = 3`)
-  - Testnet v2 (`chain_id = 4`)
-  - Local (`chain_id = 1337`)
-  Na ovim lancima klijenti smiju slati starije heksadecimalne oblike (`kvnc<hex>dag` ili čisti 64-hex ključ s prefiksom `0x`).
+  Na ovom lancu klijenti smiju slati starije heksadecimalne oblike (`kvnc<hex>dag` ili čisti 64-hex ključ s prefiksom `0x`).
 - **Zabranjeni lanci:**
   - Mainnet (`chain_id = 1`)
   - Javni testnet (`chain_id = 2`)

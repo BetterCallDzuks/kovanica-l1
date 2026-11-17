@@ -759,7 +759,7 @@ mod tests {
         SIZE_LIMITS_ACTIVE_FROM_ROUND,
     };
     const TEST_CTX: kovanica_types::SigningContext =
-        kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL);
+        kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
 
     fn test_block_sig(key: &SigningKey, digest: &Hash) -> Signature {
         let msg = kovanica_types::block::block_signature_data(TEST_CTX.chain_id, digest);
@@ -811,7 +811,7 @@ mod tests {
         manager.set_authority_keys(HashMap::from([(0, public_key)]));
 
         let digest = StatementBlock::compute_digest(0, 1, &[], &[]);
-        // Block signed for chain 1 (Mainnet) while manager is on chain 1337 (Local)
+        // Block signed for chain 1 (Mainnet) while manager is on chain 3 (Devnet)
         let other_chain_msg = kovanica_types::block::block_signature_data(
             kovanica_types::signing::chain_id::MAINNET,
             &digest,

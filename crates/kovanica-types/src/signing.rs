@@ -14,10 +14,9 @@ pub mod chain_id {
     pub const MAINNET: u64 = 1;
     /// Public testnet (chain_id 2; Hybrid PoW + GHOSTDAG).
     pub const TESTNET: u64 = 2;
-    /// Devnet.
+    /// Devnet. Also the chain for local single-node testing since chain 1337
+    /// was retired (Toni 2026-11-17).
     pub const DEVNET: u64 = 3;
-    /// Local development network [deprecated].
-    pub const LOCAL: u64 = 1337;
     /// Alias for testnet chain_id 2.
     pub const HYBRID_TESTNET: u64 = TESTNET;
     /// Explicit alias conforming to prompt naming.
@@ -36,18 +35,18 @@ pub mod chain_id {
 
     /// Whether `id` is in the registry.
     pub fn is_registered(id: u64) -> bool {
-        matches!(id, MAINNET | TESTNET | DEVNET | LOCAL)
+        matches!(id, MAINNET | TESTNET | DEVNET)
     }
 
-    /// Whether `id` is a local development chain (devnet or local).
+    /// Whether `id` is a development chain (devnet only).
     ///
-    /// Only these chains may vary consensus parameters per node. Every other
+    /// Only this chain may vary consensus parameters per node. Every other
     /// registered chain is shared with other operators: a node that runs
     /// different round duration, VRF election or MysticGhost settings signs and
     /// votes for rules its peers do not run, and the resulting split surfaces as
     /// a stalled commit rather than a configuration error.
     pub fn is_dev(id: u64) -> bool {
-        matches!(id, DEVNET | LOCAL)
+        id == DEVNET
     }
 }
 
@@ -139,6 +138,8 @@ mod tests {
         }
         assert!(!chain_id::is_registered(0));
         assert!(!chain_id::is_registered(42));
+        // Chain 1337 (`LOCAL`) was retired and merged into the devnet (3).
+        assert!(!chain_id::is_registered(1337));
     }
 
     #[test]
@@ -147,19 +148,21 @@ mod tests {
         assert!(chain_id::is_hybrid(chain_id::TESTNET));
         assert!(chain_id::is_hybrid(chain_id::HYBRID_TESTNET));
         assert!(!chain_id::is_hybrid(chain_id::DEVNET));
-        assert!(!chain_id::is_hybrid(chain_id::LOCAL));
         assert!(!crate::address::legacy_address_allowed(chain_id::TESTNET));
+        assert!(crate::address::legacy_address_allowed(chain_id::DEVNET));
+        assert!(!crate::address::legacy_address_allowed(1337));
     }
 
-    /// Only devnet and local may vary consensus parameters per node; every
-    /// shared chain (mainnet, both testnets) must be frozen.
+    /// Only devnet may vary consensus parameters per node; every shared chain
+    /// (mainnet, testnet) must be frozen.
     #[test]
     fn only_dev_chains_are_dev() {
         assert!(chain_id::is_dev(chain_id::DEVNET));
-        assert!(chain_id::is_dev(chain_id::LOCAL));
         assert!(!chain_id::is_dev(chain_id::MAINNET));
         assert!(!chain_id::is_dev(chain_id::TESTNET));
         assert!(!chain_id::is_dev(chain_id::HYBRID_TESTNET));
+        // Fail closed: the retired `local` id is not a dev chain either.
+        assert!(!chain_id::is_dev(1337));
         // Fail closed: an unregistered id is not a dev chain either.
         assert!(!chain_id::is_dev(0));
     }

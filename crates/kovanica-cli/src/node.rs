@@ -698,7 +698,7 @@ pub fn assemble_staking(
             continue;
         };
         let Ok(row_address) =
-            Address::parse_for_chain(text.trim(), kovanica_types::signing::chain_id::LOCAL)
+            Address::parse_for_chain(text.trim(), kovanica_types::signing::chain_id::DEVNET)
         else {
             continue;
         };
@@ -718,7 +718,7 @@ pub fn assemble_staking(
                 .get("payout_address")
                 .and_then(Value::as_str)
                 .and_then(|text| {
-                    Address::parse_for_chain(text.trim(), kovanica_types::signing::chain_id::LOCAL)
+                    Address::parse_for_chain(text.trim(), kovanica_types::signing::chain_id::DEVNET)
                         .ok()
                 });
         }
@@ -1362,7 +1362,7 @@ mod tests {
         let cursor = " ab ".to_string();
         let params = history_params(
             &hex,
-            Some(kovanica_types::signing::chain_id::LOCAL),
+            Some(kovanica_types::signing::chain_id::DEVNET),
             Some(5),
             Some(cursor.as_str()),
             true,

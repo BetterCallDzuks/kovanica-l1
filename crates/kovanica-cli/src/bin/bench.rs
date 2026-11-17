@@ -55,7 +55,7 @@ struct Args {
     rpc_url: String,
 
     /// Network `chain_id` pinned into every signature (must match the node).
-    #[arg(long, default_value_t = 1337)]
+    #[arg(long, default_value_t = 3)]
     chain_id: u64,
 
     /// Raw 32-byte hex seed file of an already-funded devnet key (repeatable).

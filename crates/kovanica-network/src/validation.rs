@@ -556,9 +556,9 @@ impl GossipValidator {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    /// Signing context used by the network tests (local chain, epoch 0).
+    /// Signing context used by the network tests (devnet chain, epoch 0).
     pub(crate) const TEST_CTX: SigningContext =
-        SigningContext::new(kovanica_types::signing::chain_id::LOCAL);
+        SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
     use kovanica_types::{Hash, Signature};
 
     /// Deterministic committee of `n` keys (seed byte = index + 1).

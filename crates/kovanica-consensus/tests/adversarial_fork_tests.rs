@@ -32,7 +32,7 @@ use kovanica_types::{
 /// `EquivocationProof` is the canonical double-signing evidence.
 pub type EquivocationProof = EquivocationEvidence;
 
-const TEST_CTX: SigningContext = SigningContext::new(kovanica_types::signing::chain_id::LOCAL);
+const TEST_CTX: SigningContext = SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
 
 /// In-memory DAG store implementing [`DagStoreTrait`] for fork and reorg tests.
 #[derive(Default)]
@@ -578,7 +578,7 @@ fn test_equivocation_detection_and_proof_generation() {
     assert_eq!(proof.header_a.signature, b1.signature);
     assert_eq!(proof.header_b.signature, b2.signature);
 
-    // Both signatures strictly verify under the local chain ID.
+    // Both signatures strictly verify under the devnet chain ID.
     assert!(proof.header_a.verify_chain(TEST_CTX.chain_id));
     assert!(proof.header_b.verify_chain(TEST_CTX.chain_id));
 

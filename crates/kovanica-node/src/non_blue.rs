@@ -87,7 +87,7 @@ pub(crate) mod test_support {
         Address, Hash, SigningContext, TransactionKind,
     };
 
-    pub const CTX: SigningContext = SigningContext::new(kovanica_types::signing::chain_id::LOCAL);
+    pub const CTX: SigningContext = SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
 
     /// A funded sender and a validly signed transfer from it.
     pub fn funded_tx(storage: &Storage, nonce: u64) -> Transaction {

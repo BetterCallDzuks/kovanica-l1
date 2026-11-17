@@ -19,7 +19,7 @@ cargo run -p kovanica-bench -- health --rate 50 --duration 30s
 # Transfer load: 8 workers, ~100 tx/s total, 60s, 1 atom fee
 cargo run -p kovanica-bench -- transfer-load \
     --rpc-url http://127.0.0.1:8545 \
-    --chain-id 1337 \
+    --chain-id 3 \
     --workers 8 \
     --rate 100 \
     --duration 60s \
@@ -40,7 +40,7 @@ cargo run -p kovanica-bench -- transfer-load \
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--rpc-url` | `http://127.0.0.1:8545` | JSON-RPC endpoint |
-| `--chain-id` | `1337` | chain id pinned into signatures |
+| `--chain-id` | `3` | chain id pinned into signatures |
 | `--workers` / `--concurrency` | `8` | concurrent submitters |
 | `--rate` | `100` | requests per second (rate limit) |
 | `--duration` | `60s` | run length (`30s`, `60000ms`) |

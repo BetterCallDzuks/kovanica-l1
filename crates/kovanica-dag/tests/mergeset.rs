@@ -18,7 +18,7 @@ fn make_block(
     key: &SigningKey,
 ) -> StatementBlock {
     let digest = StatementBlock::compute_digest(author, round, &parents, &[]);
-    let msg = kovanica_types::block::block_signature_data(1337, &digest);
+    let msg = kovanica_types::block::block_signature_data(3, &digest);
     let signature = kovanica_crypto::sign(key, &msg);
     StatementBlock {
         author,

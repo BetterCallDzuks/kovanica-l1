@@ -100,7 +100,7 @@ pub struct NodeConfig {
     pub round_duration_ms: u64,
     /// Maximum number of connected peers.
     pub max_peers: usize,
-    /// Genesis treasury address (canonical PRO-21 `kvnc...dag` required on Chains 1 & 2; 32-byte hex allowed only on dev chains 3 & 1337). Defaults to the zero address.
+    /// Genesis treasury address (canonical PRO-21 `kvnc...dag` required on Chains 1 & 2; 32-byte hex allowed only on chain 3, devnet). Defaults to the zero address.
     pub treasury_address: Option<String>,
     /// Order committed waves with scoped GHOSTDAG.
     ///
@@ -150,11 +150,12 @@ pub struct NodeConfig {
     /// `KOVANICA_HEALTH_COMMIT_STALL_SECS`.
     pub health_commit_stall_secs: u64,
     /// Chain id bound into every v1 signature (see `docs/SIGNATURE_FORMAT.md`):
-    /// 1 mainnet (Hybrid PoW), 2 testnet (Hybrid PoW), 3 devnet, 1337 local.
+    /// 1 mainnet (Hybrid PoW), 2 testnet (Hybrid PoW), 3 devnet (also used for
+    /// local single-node testing).
     /// Must match the genesis chain id; the node refuses to start otherwise.
     /// For mainnet and testnet `genesis_validators.toml` must declare `chain_id`
     /// explicitly and use canonical PRO-21 `kvnc...dag` addresses; for devnet
-    /// and local `chain_id` is optional. Overridable with `KOVANICA_CHAIN_ID`.
+    /// `chain_id` is optional. Overridable with `KOVANICA_CHAIN_ID`.
     pub chain_id: u64,
     /// Gossipsub peer scoring (`[peer_scoring]` table). Defaults are safe for
     /// a small validator network; see `kovanica_network::PeerScoringConfig`.
@@ -216,8 +217,8 @@ pub struct NodeConfig {
     /// `KOVANICA_ALLOW_GENESIS_MISMATCH` was set to an enabling value.
     ///
     /// Recorded by [`NodeConfig::apply_env_overrides`] and rejected by
-    /// [`NodeConfig::validate`] on every chain that is not devnet (3) or local
-    /// (1337). Checked before the data directory is created. Never loaded from
+    /// [`NodeConfig::validate`] on every chain that is not the devnet (3).
+    /// Checked before the data directory is created. Never loaded from
     /// TOML.
     #[serde(skip)]
     pub allow_genesis_mismatch: bool,
@@ -279,7 +280,7 @@ impl Default for NodeConfig {
             seeder: SeederConfig::default(),
             emission_policy: None,
             idle_shutdown_secs: 0,
-            chain_id: kovanica_types::signing::chain_id::LOCAL,
+            chain_id: kovanica_types::signing::chain_id::DEVNET,
             // Pruning is opt-in: every retention window defaults to "keep
             // everything" so an unconfigured node never deletes data.
             retain_blocks_below_tip: None,
@@ -313,7 +314,7 @@ fn env_retention_window(var: &str) -> Option<u64> {
 }
 
 /// Environment variables that change consensus behavior and therefore may
-/// only be set on a local development chain.
+/// only be set on the dev chain (devnet, 3).
 ///
 /// Round duration sets how often a legacy validator proposes; VRF leader
 /// election and MysticGhost change which block counts as the leader and how
@@ -591,8 +592,8 @@ impl NodeConfig {
             }
         }
         // Recorded here and rejected in `validate` so a non-dev chain fails
-        // before `run_node` creates the data directory. Dev chains (3, 1337)
-        // keep the override; every other chain must not set it.
+        // before `run_node` creates the data directory. The dev chain (3)
+        // keeps the override; every other chain must not set it.
         self.allow_genesis_mismatch = genesis_mismatch_override_enabled(
             std::env::var(ALLOW_GENESIS_MISMATCH_ENV).ok().as_deref(),
         );
@@ -651,7 +652,7 @@ impl NodeConfig {
             .map_err(|e| anyhow::anyhow!("peer_scoring: {e}"))?;
         if !kovanica_types::signing::chain_id::is_registered(self.chain_id) {
             anyhow::bail!(
-                "chain_id {} is not registered (expected 1 mainnet, 2 testnet, 3 devnet or 1337 local)",
+                "chain_id {} is not registered (expected 1 mainnet, 2 testnet or 3 devnet)",
                 self.chain_id
             );
         }
@@ -661,14 +662,14 @@ impl NodeConfig {
         {
             anyhow::bail!(
                 "{ALLOW_GENESIS_MISMATCH_ENV} must not be set on chain_id {}: it is only \
-                 available on dev chains (3 devnet, 1337 local). Unset \
+                 available on the dev chain (3 devnet). Unset \
                  {ALLOW_GENESIS_MISMATCH_ENV}. On a shared chain a mismatched data dir \
                  is fixed by a wipe",
                 self.chain_id
             );
         }
         // Consensus parameters must be identical on every node of a shared
-        // chain; only devnet (3) and local (1337) may differ. The offending
+        // chain; only the devnet (3) may differ. The offending
         // variable was recorded when the environment was applied, so this check
         // is a pure function of the config.
         if let Some(var) = self.forbidden_override {
@@ -676,7 +677,7 @@ impl NodeConfig {
                 "{var} must not be set on chain_id {}: round duration, VRF leader election and \
                  MysticGhost mode are consensus parameters of the legacy Mysticeti path and must \
                  match every node. Unset \
-                 {var}, or use chain_id 3 (devnet) or 1337 (local) for an experimental build",
+                 {var}, or use chain_id 3 (devnet) for an experimental build",
                 self.chain_id
             );
         }
@@ -881,14 +882,12 @@ treasury_address = "treasury-address-placeholder"
                 "{chain_id}: {msg}"
             );
             assert!(msg.contains("must not be set"), "{chain_id}: {msg}");
-            assert!(msg.contains("dev chains"), "{chain_id}: {msg}");
+            assert!(msg.contains("dev chain"), "{chain_id}: {msg}");
         }
-        for chain_id in [3, 1337] {
-            config.chain_id = chain_id;
-            config
-                .validate()
-                .unwrap_or_else(|e| panic!("chain {chain_id} may set the override: {e}"));
-        }
+        config.chain_id = 3;
+        config
+            .validate()
+            .unwrap_or_else(|e| panic!("chain 3 may set the override: {e}"));
 
         // A disabling spelling does not request the override.
         std::env::set_var(ALLOW_GENESIS_MISMATCH_ENV, "false");
@@ -907,8 +906,8 @@ treasury_address = "treasury-address-placeholder"
             run_validator: false,
             ..NodeConfig::default()
         };
-        assert_eq!(base.chain_id, 1337, "default is the local chain");
-        for id in [1, 2, 3, 1337] {
+        assert_eq!(base.chain_id, 3, "default is the devnet chain");
+        for id in [1, 2, 3] {
             let c = NodeConfig {
                 chain_id: id,
                 ..base.clone()
@@ -1105,22 +1104,18 @@ treasury_address = "treasury-address-placeholder"
 
         std::env::remove_var("KOVANICA_ROUND_DURATION_MS");
 
-        // Same environment, dev chains: allowed.
-        for chain in [
-            kovanica_types::signing::chain_id::DEVNET,
-            kovanica_types::signing::chain_id::LOCAL,
-        ] {
-            let mut dev = NodeConfig {
-                run_validator: false,
-                chain_id: chain,
-                ..NodeConfig::default()
-            };
-            std::env::set_var("KOVANICA_VRF_LEADER", "false");
-            dev.apply_env_overrides();
-            std::env::remove_var("KOVANICA_VRF_LEADER");
-            assert!(dev.validate().is_ok(), "chain {chain} must allow overrides");
-            assert!(!dev.use_vrf_leader, "the override must still apply");
-        }
+        // Same environment, dev chain: allowed.
+        let chain = kovanica_types::signing::chain_id::DEVNET;
+        let mut dev = NodeConfig {
+            run_validator: false,
+            chain_id: chain,
+            ..NodeConfig::default()
+        };
+        std::env::set_var("KOVANICA_VRF_LEADER", "false");
+        dev.apply_env_overrides();
+        std::env::remove_var("KOVANICA_VRF_LEADER");
+        assert!(dev.validate().is_ok(), "chain {chain} must allow overrides");
+        assert!(!dev.use_vrf_leader, "the override must still apply");
     }
 
     /// Every frozen variable is covered, not just the first one tested.

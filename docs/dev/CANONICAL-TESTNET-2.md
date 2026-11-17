@@ -17,8 +17,8 @@ production is KovanicaHash mining; GHOSTDAG orders the block DAG with $k = 5$ an
 The isolated hybrid test network that was previously registered as Chain ID 5 is
 **retired**: `HYBRID_TESTNET` is now only an alias for kovanica-testnet (chain ID 2)
 (`CHAIN_ID_HYBRID_TESTNET = TESTNET = 2`), and Chain 4 (`TESTNET_V2`) no longer
-exists. The registered chain set is kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2),
-kovanica-devnet (chain ID 3) and local (chain ID 1337).
+exists. The registered chain set is kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2)
+and kovanica-devnet (chain ID 3).
 
 kovanica-testnet (chain ID 2) is a **fresh genesis deployment**. No pre-hybrid testnet data directory and
 no retired Chain 5 data directory can be reused or relabeled — see
@@ -115,7 +115,7 @@ Consequences:
 - Mining payout addresses (`kovanica_submitWork`, CLI miner) must be canonical.
 - Faucet and wallet flows must submit canonical addresses.
 
-Legacy hex is still accepted on kovanica-devnet (chain ID 3) and local (chain ID 1337) only, where
+Legacy hex is still accepted on kovanica-devnet (chain ID 3) only, where
 `legacy_address_allowed` returns true.
 
 ### 4.1 Stored keystore labels are not user input

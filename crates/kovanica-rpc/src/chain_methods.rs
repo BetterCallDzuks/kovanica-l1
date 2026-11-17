@@ -114,8 +114,7 @@ fn parse_hash(value: &Value, what: &str) -> Result<Hash, RpcError> {
 ///
 /// The canonical 64-character `kvnc…dag` base32 form is accepted on every
 /// chain. The legacy hex forms (`kvnc<hex>dag`, bare or `0x` hex) only where
-/// `kovanica_types::address::legacy_address_allowed` is true (devnet 3 and
-/// local 1337).
+/// `kovanica_types::address::legacy_address_allowed` is true (devnet 3).
 fn parse_address(value: &Value, what: &str, chain_id: u64) -> Result<Address, RpcError> {
     let raw = value
         .as_str()
@@ -3033,7 +3032,7 @@ pub async fn handle_get_dag_tips(_params: Value, state: RpcState) -> Result<Valu
 /// Request testnet tokens (airdrop).
 ///
 /// Strictly forbidden on mainnet (chain_id 1).
-/// Allowed on testnet (2), devnet (3), and local (1337).
+/// Allowed on testnet (2) and devnet (3).
 pub async fn handle_request_airdrop(params: Value, state: RpcState) -> Result<Value, RpcError> {
     let chain_id = served_chain_id(&state);
     if chain_id == kovanica_types::signing::chain_id::MAINNET {
@@ -3121,7 +3120,7 @@ mod tests {
     use kovanica_staking::{StakingState, MIN_VALIDATOR_STAKE};
     use kovanica_storage::Storage;
     use kovanica_types::crypto::PublicKey;
-    use kovanica_types::signing::chain_id::{DEVNET, LOCAL, MAINNET, TESTNET};
+    use kovanica_types::signing::chain_id::{DEVNET, MAINNET, TESTNET};
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -3149,7 +3148,7 @@ mod tests {
             mempool: Arc::new(Mempool::new(
                 MempoolConfig::default(),
                 storage.clone(),
-                kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+                kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
             )),
             storage,
             staking: Arc::new(RwLock::new(StakingState::new())),
@@ -3214,11 +3213,11 @@ mod tests {
             other => panic!("unexpected error type: {other:?}"),
         }
 
-        // 2. Local/Testnet state: credits balance
+        // 2. Devnet state: credits balance
         let testnet_state = test_state(storage.clone());
         let res = handle_request_airdrop(params, testnet_state.clone())
             .await
-            .expect("local/testnet must accept request_airdrop");
+            .expect("devnet must accept request_airdrop");
         assert_eq!(res["success"], true);
         assert_eq!(res["amount"], 10_000_000_000u64); // 10 KVNC default
         assert_eq!(res["balance"], 10_000_000_000u64);
@@ -3411,21 +3410,19 @@ mod tests {
         let address = Address([0x2a; 32]);
         assert_eq!(address.to_string(), address.encode());
         assert_eq!(address.to_string().len(), 64);
-        for chain in [MAINNET, TESTNET, LOCAL] {
+        for chain in [MAINNET, TESTNET, DEVNET] {
             assert_eq!(
                 parse_address(&json!(address.to_string()), "address", chain).unwrap(),
                 address
             );
         }
-        // Legacy hex: devnet and local. Refused on mainnet and testnet.
+        // Legacy hex: devnet. Refused on mainnet and testnet.
         for legacy in [hex32(0x2a), address.encode_legacy_hex()] {
-            for chain in [DEVNET, LOCAL] {
-                assert_eq!(
-                    parse_address(&json!(legacy), "address", chain).unwrap(),
-                    address,
-                    "{legacy} on chain {chain}"
-                );
-            }
+            assert_eq!(
+                parse_address(&json!(legacy), "address", DEVNET).unwrap(),
+                address,
+                "{legacy} on the devnet"
+            );
             for chain in [MAINNET, TESTNET] {
                 let err = parse_address(&json!(legacy), "address", chain).unwrap_err();
                 assert!(format!("{err:?}").contains("legacy"), "{err:?}");
@@ -4663,7 +4660,7 @@ mod tests {
             txn.commit().unwrap();
         }
         let sign_ctx =
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL);
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
         let mut transfer = kovanica_types::Transaction {
             sender,
             nonce: 0,

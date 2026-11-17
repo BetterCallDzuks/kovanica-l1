@@ -9,7 +9,7 @@
 use std::process::Command;
 
 /// Minimal config that passes validation: a non-validator node with no key
-/// requirement and the local chain by default.
+/// requirement and the devnet chain by default.
 fn config_file(chain_id: u64) -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
@@ -95,21 +95,20 @@ fn check_config_rejects_overrides_on_chain_1() {
 }
 
 #[test]
-fn check_config_allows_overrides_on_local_and_devnet() {
-    for chain in [3u64, 1337] {
-        let (_dir, path) = config_file(chain);
-        let out = check_config(&path, &[("KOVANICA_ROUND_DURATION_MS", "250")]);
-        assert!(
-            out.status.success(),
-            "chain {chain} must allow the override, stderr: {}",
-            stderr(&out)
-        );
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(
-            stdout.contains("round_duration_ms=250"),
-            "the override must take effect on chain {chain}, got: {stdout}"
-        );
-    }
+fn check_config_allows_overrides_on_devnet() {
+    let chain = 3u64;
+    let (_dir, path) = config_file(chain);
+    let out = check_config(&path, &[("KOVANICA_ROUND_DURATION_MS", "250")]);
+    assert!(
+        out.status.success(),
+        "chain {chain} must allow the override, stderr: {}",
+        stderr(&out)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("round_duration_ms=250"),
+        "the override must take effect on chain {chain}, got: {stdout}"
+    );
 }
 
 /// The deployed testnet compose must not set consensus parameters: the node

@@ -8,8 +8,8 @@ private keys). Do not treat any example address in this document as canonical.
 
 Consensus Impact: Ledger initialization; executed once before chain start.
 Architecture: **Hybrid PoW + GHOSTDAG** on chains 1 and 2 (NO stake for
-consensus; target block 4 s, GHOSTDAG $K=5$; PoW hash: KovanicaHash). Chains 3
-(devnet) and 1337 (local) keep the legacy policy for development.
+consensus; target block 4 s, GHOSTDAG $K=5$; PoW hash: KovanicaHash). Chain 3
+(devnet, also used for local single-node testing) keeps the legacy policy for development.
 
 Purpose: produce, from the owner's addresses, the genesis file set every node
 on a network must hold byte for byte: initial state, treasury address, founder
@@ -23,8 +23,7 @@ premine and chain ID.
 |---|---|---|---|
 | `1` | kovanica-mainnet (chain ID 1) | `no-stake-82m` (forced) | PRO-21 `kvnc...dag` only |
 | `2` | kovanica-testnet (chain ID 2) | `no-stake-82m` (forced) | PRO-21 `kvnc...dag` only |
-| `3` | kovanica-devnet (chain ID 3) | node default (`legacy-81m`) | PRO-21 or legacy hex |
-| `1337` | local (chain ID 1337) | node default (`legacy-81m`) | PRO-21 or legacy hex |
+| `3` | kovanica-devnet (chain ID 3, also used for local single-node testing) | node default (`legacy-81m`) | PRO-21 or legacy hex |
 
 There is no chain ID 4 or chain ID 5. `testnet/chain4/` stays in the tree as history
 and is not an input to the ceremony, an install target or a bundle source.
@@ -41,7 +40,7 @@ and is not an input to the ceremony, an install target or a bundle source.
 - **Founder address** (`--founder-address`, mandatory) — receives the 200,000
   KVNC premine.
 - **Chain ID** — inferred from `--network` (`mainnet` 1, `testnet` 2, `devnet`
-  3, `local` 1337) or set explicitly with `--chain-id`.
+  3) or set explicitly with `--chain-id`.
 
 On chains 1 and 2 every validator, founder and treasury address must already be
 a canonical PRO-21 `kvnc...dag` address. Legacy hex is **refused**, not
@@ -168,8 +167,8 @@ address = "kvnc..."
 balance = 1000000000000
 ```
 
-Pre-funding accounts from `funded_accounts.toml` is permitted only on kovanica-testnet (chain ID 2),
-kovanica-devnet (chain ID 3) and local (chain ID 1337). On **kovanica-mainnet (chain ID 1)** the file is **strictly prohibited**: every
+Pre-funding accounts from `funded_accounts.toml` is permitted only on kovanica-testnet (chain ID 2)
+and kovanica-devnet (chain ID 3). On **kovanica-mainnet (chain ID 1)** the file is **strictly prohibited**: every
 KVNC must originate from the published allocation (founder premine, treasury
 vesting, mining subsidy), so the node aborts at startup and `genesis-bundle`
 refuses to package it. The mainnet `sha256sum` list therefore omits it (see
@@ -220,7 +219,7 @@ id, the genesis file set and the `treasury_address` recorded in
 `genesis_validators.toml`. It still ignores `KOVANICA_*` overrides, so a bundle
 is reproducible from its files alone. On kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) a source that does not
 record a canonical PRO-21 treasury is refused before an archive is written; on
-kovanica-devnet (chain ID 3) and local (chain ID 1337) an absent field keeps the zero-treasury default.
+kovanica-devnet (chain ID 3) an absent field keeps the zero-treasury default.
 `node/scripts/install.sh` writes the recorded address into a new node config,
 and refuses to keep an existing config whose effective treasury (the config
 file, or `KOVANICA_TREASURY_ADDRESS`, which wins) differs from the bundle. A

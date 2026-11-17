@@ -22,7 +22,7 @@
 #   retention_batch                 -> KOVANICA_RETENTION_BATCH
 
 # Extra env-only overrides without a TOML equivalent:
-#   KOVANICA_CHAIN_ID                   (1 mainnet, 2 testnet, 3 devnet, 1337 local)
+#   KOVANICA_CHAIN_ID                   (1 mainnet, 2 testnet, 3 devnet)
 #   KOVANICA_RPC_AUTH                   (disable|on, default on)
 #   KOVANICA_RPC_WRITE_TOKENS
 #   KOVANICA_HEALTH_COMMIT_STALL_SECS   (default 120; 0 disables the /health stall check)
@@ -45,7 +45,7 @@
 #
 # FROZEN ENV OVERRIDES ON SHARED CHAINS: KOVANICA_ROUND_DURATION_MS,
 # KOVANICA_MYSTICGHOST and KOVANICA_VRF_LEADER may only be set on chain_id 3
-# (devnet) and 1337 (local). On any other chain their presence is a startup
+# (devnet, including local single-node testing). On any other chain their presence is a startup
 # error: consensus parameters must match every node or the chain splits.
 # (Values in this file are the operator's declared config and are not frozen.)
 use_mysticghost = true
@@ -111,7 +111,7 @@ max_peers = 50
 rpc_rate_limit_per_min = 60
 
 # Genesis treasury address. Canonical PRO-21 `kvnc...dag` address is required on
-# chains 1 & 2 (32-byte hex is only accepted on dev chains 3 & 1337). When
+# chains 1 & 2 (32-byte hex is only accepted on dev chain 3). When
 # omitted, the zero address is used. Only read on fresh genesis creation.
 # treasury_address = "kvnc..."
 

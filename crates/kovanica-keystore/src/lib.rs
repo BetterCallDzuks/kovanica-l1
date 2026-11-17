@@ -527,7 +527,7 @@ fn parse_stored_address(value: &str, what: &str) -> Result<Address> {
 ///
 /// The canonical 64-character form is accepted on every chain. Legacy hex is
 /// accepted only where [`kovanica_types::address::legacy_address_allowed`] is
-/// true (devnet 3 and local 1337), so chain 1 refuses it.
+/// true (devnet 3), so chain 1 refuses it.
 pub fn parse_address(value: &str, what: &str, chain_id: u64) -> Result<Address> {
     Address::parse_for_chain(value, chain_id).map_err(|e| anyhow!("{what}: {e}"))
 }
@@ -780,7 +780,7 @@ mod tests {
         assert!(error.contains("32 bytes"), "{error}");
     }
 
-    /// Chain 1 refuses a legacy hex string. Devnet and local accept it.
+    /// Chain 1 refuses a legacy hex string. Devnet accepts it.
     #[test]
     fn parse_address_follows_the_chain_policy() {
         use kovanica_types::signing::chain_id;
@@ -797,13 +797,11 @@ mod tests {
                 err.to_string().contains("not accepted"),
                 "{form} on chain 1: {err}"
             );
-            for chain in [chain_id::DEVNET, chain_id::LOCAL] {
-                assert_eq!(
-                    parse_address(form, "address", chain).unwrap(),
-                    address,
-                    "{form} on chain {chain}"
-                );
-            }
+            assert_eq!(
+                parse_address(form, "address", chain_id::DEVNET).unwrap(),
+                address,
+                "{form} on the devnet"
+            );
         }
         assert_eq!(
             parse_address(&address.encode(), "address", chain_id::MAINNET).unwrap(),

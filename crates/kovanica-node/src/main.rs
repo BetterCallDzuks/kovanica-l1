@@ -134,7 +134,7 @@ enum Commands {
 
 #[derive(clap::Args, Debug)]
 struct GenesisBundleArgs {
-    /// Chain the bundle is for: 1 mainnet, 2 testnet, 3 devnet, 1337 local
+    /// Chain the bundle is for: 1 mainnet, 2 testnet, 3 devnet
     #[arg(long)]
     chain_id: u64,
 
@@ -161,16 +161,16 @@ struct GenesisArgs {
     #[arg(long, value_name = "FILE", default_value = "validators.json")]
     validators: String,
 
-    /// Treasury address (PRO-21 `kvnc...dag` on chains 1 & 2; 32-byte hex on dev chains 3 & 1337)
+    /// Treasury address (PRO-21 `kvnc...dag` on chains 1 & 2; 32-byte hex on chain 3, devnet)
     #[arg(long, value_name = "ADDR")]
     treasury_address: String,
 
-    /// Founder premine address (PRO-21 `kvnc...dag` on chains 1 & 2; 32-byte hex on dev chains 3 & 1337; receives 200,000 KVNC)
+    /// Founder premine address (PRO-21 `kvnc...dag` on chains 1 & 2; 32-byte hex on chain 3, devnet; receives 200,000 KVNC)
     #[arg(long, value_name = "ADDR")]
     founder_address: String,
 
-    /// Chain this genesis is for (1 mainnet, 2 testnet, 3 devnet, 1337 local).
-    /// Legacy hex addresses are accepted on 3 and 1337.
+    /// Chain this genesis is for (1 mainnet, 2 testnet, 3 devnet).
+    /// Legacy hex addresses are accepted on chain 3 (devnet) only.
     #[arg(long)]
     chain_id: u64,
 
@@ -288,8 +288,8 @@ fn run_genesis_bundle(args: GenesisBundleArgs) -> Result<()> {
     let chain_id = args.chain_id;
     if !kovanica_types::signing::chain_id::is_registered(chain_id) {
         anyhow::bail!(
-            "--chain-id {chain_id} is not a registered chain; use 1 (mainnet), 2 (testnet), \
-             3 (devnet) or 1337 (local)"
+            "--chain-id {chain_id} is not a registered chain; use 1 (mainnet), 2 (testnet) \
+             or 3 (devnet)"
         );
     }
 
@@ -364,7 +364,7 @@ fn run_genesis_bundle(args: GenesisBundleArgs) -> Result<()> {
 /// what makes `expected-tag` match a node that sets `KOVANICA_TREASURY_ADDRESS`
 /// to the same address, instead of only matching a node running the zero
 /// treasury. Chains 1 and 2 fail closed: a missing, empty or non-PRO-21 value
-/// refuses the bundle before any archive is written. On chains 3 and 1337 an
+/// refuses the bundle before any archive is written. On chain 3 (devnet) an
 /// absent field keeps the zero-treasury default, and a present one is used.
 fn genesis_bundle_config(chain_id: u64, source: &std::path::Path) -> Result<NodeConfig> {
     let mut config = NodeConfig {
@@ -898,7 +898,7 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     // Rejects KOVANICA_ALLOW_GENESIS_MISMATCH on every non-dev chain before
-    // the data directory is created (dev chains 3 and 1337 may keep it).
+    // the data directory is created (devnet, 3, may keep it).
     config.validate()?;
 
     // ------------------------------------------------------------------
@@ -2066,7 +2066,7 @@ fn ensure_funded_accounts_allowed(config: &NodeConfig) -> Result<()> {
         anyhow::bail!(
             "{} exists but funded_accounts.toml is not allowed on chain_id {} (mainnet): \
              every KVNC on mainnet must come from the published allocation, not from a file. \
-             Remove the file, or run a testnet (2) / devnet (3) / local (1337) chain",
+             Remove the file, or run a testnet (2) / devnet (3) chain",
             path.display(),
             config.chain_id
         );
@@ -2323,8 +2323,8 @@ type GenesisValidatorDigestRow = ([u8; 32], u64, [u8; 32], [u8; 32]);
 
 /// Resolve the genesis-mismatch override for `chain_id`.
 ///
-/// The override is refused on every non-dev chain (only dev chains 3 and 1337
-/// allow it): a node on mainnet, public testnets, or any other non-dev chain
+/// The override is refused on every non-dev chain (only the devnet, 3, allows
+/// it): a node on mainnet, the public testnet, or any other non-dev chain
 /// must never run on a data dir built for another genesis, so setting it is a
 /// deployment error, not a bypass.
 fn genesis_mismatch_override(chain_id: u64, requested: bool) -> Result<bool> {
@@ -5971,7 +5971,7 @@ struct GenesisValidatorEntry {
 #[derive(Debug, Deserialize)]
 struct GenesisValidatorsFile {
     /// Chain id of this genesis. Mandatory when the node is configured for
-    /// mainnet (1) or testnet (2); optional for devnet (3) / local (1337).
+    /// mainnet (1) or testnet (2); optional for devnet (3).
     /// When present it must equal the node's configured `chain_id`.
     #[serde(default)]
     chain_id: Option<u64>,
@@ -6081,8 +6081,8 @@ const CHAIN_ID_MARKER: &str = "chain_id";
 ///
 /// * `genesis_validators.toml` may carry `chain_id = N`; it must match. For
 ///   mainnet (1) and testnet (2) it is **mandatory**: without it (or without
-///   the genesis file) the node refuses to start. Devnet (3) and local (1337)
-///   accept a genesis without `chain_id`.
+///   the genesis file) the node refuses to start. Devnet (3) accepts a genesis
+///   without `chain_id`.
 /// * `<data_dir>/chain_id` records the chain id the data dir was created for;
 ///   it must match on every later start. Written on first start.
 /// * `genesis.json`, if present, may carry a top-level `chain_id`; when it
@@ -6339,7 +6339,7 @@ mod tests {
         );
     }
 
-    /// Chain 1 refuses legacy hex. Devnet and local still accept it.
+    /// Chain 1 refuses legacy hex. Devnet still accepts it.
     #[test]
     fn parse_address_hex_follows_the_chain_policy() {
         use kovanica_types::signing::chain_id;
@@ -6356,11 +6356,9 @@ mod tests {
                 format!("{err:#}").contains("not accepted"),
                 "{form} on chain 1: {err:#}"
             );
-            for chain in [chain_id::DEVNET, chain_id::LOCAL] {
-                let parsed = parse_address_hex(Some(form), chain)
-                    .unwrap_or_else(|e| panic!("{form} on chain {chain}: {e:#}"));
-                assert_eq!(parsed, address);
-            }
+            let parsed = parse_address_hex(Some(form), chain_id::DEVNET)
+                .unwrap_or_else(|e| panic!("{form} on devnet: {e:#}"));
+            assert_eq!(parsed, address);
         }
     }
 
@@ -6403,7 +6401,7 @@ mod tests {
     fn chain_id_must_match_genesis() {
         let dir = tempfile::tempdir().unwrap();
         write_genesis_chain_id(dir.path(), 2);
-        let err = check_chain_id(&chain_id_config(dir.path(), 1337)).unwrap_err();
+        let err = check_chain_id(&chain_id_config(dir.path(), 3)).unwrap_err();
         assert!(err.to_string().contains("chain_id mismatch"), "{err:#}");
         check_chain_id(&chain_id_config(dir.path(), 2)).expect("matching chain id");
     }
@@ -6419,13 +6417,13 @@ mod tests {
             "3"
         );
         check_chain_id(&chain_id_config(dir.path(), 3)).expect("same chain id restarts");
-        let err = check_chain_id(&chain_id_config(dir.path(), 1337)).unwrap_err();
+        let err = check_chain_id(&chain_id_config(dir.path(), 2)).unwrap_err();
         assert!(err.to_string().contains("chain_id mismatch"), "{err:#}");
     }
 
     #[test]
     fn genesis_chain_id_optional_for_testnet_and_devnet() {
-        for id in [2, 3, 1337] {
+        for id in [2, 3] {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(
                 dir.path().join("genesis_validators.toml"),
@@ -6486,7 +6484,7 @@ mod tests {
     async fn node_refuses_to_start_on_chain_id_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         write_genesis_chain_id(dir.path(), 1);
-        let err = run_node(chain_id_config(dir.path(), 1337), std::future::pending())
+        let err = run_node(chain_id_config(dir.path(), 3), std::future::pending())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("chain_id mismatch"), "{err:#}");
@@ -6516,7 +6514,8 @@ mod tests {
         let b = genesis_config_digest(&base).unwrap();
         assert_eq!(a, b, "digest must be deterministic");
 
-        let other_chain = chain_id_config(dir.path(), 1337);
+        let mut other_chain = chain_id_config(dir.path(), 2);
+        other_chain.emission_policy = Some("no-stake-82m".into());
         assert_ne!(
             a,
             genesis_config_digest(&other_chain).unwrap(),
@@ -6550,7 +6549,7 @@ mod tests {
             txn.commit().unwrap();
         }
 
-        let err = verify_persisted_genesis_digest(&storage, &fresh, false, 1337).unwrap_err();
+        let err = verify_persisted_genesis_digest(&storage, &fresh, false, 3).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains(&stored.to_hex()), "{msg}");
         assert!(msg.contains(&fresh.to_hex()), "{msg}");
@@ -6560,7 +6559,6 @@ mod tests {
         assert!(msg.contains("fix is a wipe"), "{msg}");
 
         // The explicit override lets a dev chain start despite the mismatch...
-        verify_persisted_genesis_digest(&storage, &fresh, true, 1337).expect("dev override allows");
         verify_persisted_genesis_digest(&storage, &fresh, true, 3).expect("devnet override allows");
         // ...and does nothing on a non-dev chain. Those errors never name the override.
         for chain_id in [1, 2] {
@@ -6589,20 +6587,18 @@ mod tests {
         );
     }
 
-    /// Jarvis #85 review: the override is forbidden on non-dev chains (1, 2, 4)
-    /// and only available on dev chains (3 and 1337).
+    /// Jarvis #85 review: the override is forbidden on non-dev chains (1, 2)
+    /// and only available on the dev chain (3).
     #[test]
     fn genesis_mismatch_override_is_forbidden_on_mainnet_and_testnet() {
-        use kovanica_types::signing::chain_id::{DEVNET, LOCAL, MAINNET, TESTNET};
+        use kovanica_types::signing::chain_id::{DEVNET, MAINNET, TESTNET};
         for chain in [MAINNET, TESTNET] {
             let err = genesis_mismatch_override(chain, true).unwrap_err();
             assert!(err.to_string().contains("not allowed"), "{err:#}");
             assert!(!genesis_mismatch_override(chain, false).unwrap());
         }
-        for chain in [DEVNET, LOCAL] {
-            assert!(genesis_mismatch_override(chain, true).unwrap());
-            assert!(!genesis_mismatch_override(chain, false).unwrap());
-        }
+        assert!(genesis_mismatch_override(DEVNET, true).unwrap());
+        assert!(!genesis_mismatch_override(DEVNET, false).unwrap());
     }
 
     #[test]
@@ -6622,7 +6618,7 @@ mod tests {
         assert!(!crate::config::genesis_mismatch_override_enabled(None));
     }
 
-    /// Chains 1, 2 and 4 refuse the override inside `validate`, which `run_node`
+    /// Chains 1 and 2 refuse the override inside `validate`, which `run_node`
     /// calls before `create_dir_all`. Dev chains pass that check and do not
     /// create a directory from `validate` itself.
     #[tokio::test]
@@ -6650,22 +6646,18 @@ mod tests {
     }
 
     #[test]
-    fn dev_chains_accept_genesis_mismatch_override_without_creating_data_dir() {
-        for chain_id in [3, 1337] {
-            let parent = tempfile::tempdir().unwrap();
-            let data_dir = parent.path().join("data");
-            let config = NodeConfig {
-                allow_genesis_mismatch: true,
-                ..chain_id_config(&data_dir, chain_id)
-            };
-            config
-                .validate()
-                .unwrap_or_else(|e| panic!("chain {chain_id} may set the override: {e}"));
-            assert!(
-                !data_dir.exists(),
-                "validate must not create a data dir for chain {chain_id}"
-            );
-        }
+    fn dev_chain_accepts_genesis_mismatch_override_without_creating_data_dir() {
+        let parent = tempfile::tempdir().unwrap();
+        let data_dir = parent.path().join("data");
+        let config = NodeConfig {
+            allow_genesis_mismatch: true,
+            ..chain_id_config(&data_dir, 3)
+        };
+        config.validate().expect("devnet may set the override");
+        assert!(
+            !data_dir.exists(),
+            "validate must not create a data dir for the devnet"
+        );
     }
 
     #[tokio::test]
@@ -6685,7 +6677,7 @@ mod tests {
                 .unwrap();
             txn.commit().unwrap();
         }
-        let err = run_node(chain_id_config(dir.path(), 1337), std::future::pending())
+        let err = run_node(chain_id_config(dir.path(), 3), std::future::pending())
             .await
             .unwrap_err();
         let msg = err.to_string();
@@ -6828,7 +6820,7 @@ mod tests {
     #[test]
     fn genesis_json_tamper_is_detected() {
         let dir = tempfile::tempdir().unwrap();
-        let config = chain_id_config(dir.path(), 1337);
+        let config = chain_id_config(dir.path(), 3);
         let canonical = canonical_genesis_digest();
 
         std::fs::write(
@@ -6882,7 +6874,7 @@ mod tests {
             serde_json::to_string(&serde_json::json!({ "chain_id": 3 })).unwrap(),
         )
         .unwrap();
-        let err = check_chain_id(&chain_id_config(dir.path(), 1337)).unwrap_err();
+        let err = check_chain_id(&chain_id_config(dir.path(), 2)).unwrap_err();
         assert!(err.to_string().contains("chain_id mismatch"), "{err:#}");
         check_chain_id(&chain_id_config(dir.path(), 3)).expect("matching genesis.json chain id");
     }
@@ -6907,7 +6899,7 @@ mod tests {
             validators: validators.to_string_lossy().into_owned(),
             treasury_address: "22".repeat(32),
             founder_address: "33".repeat(32),
-            chain_id: kovanica_types::signing::chain_id::LOCAL,
+            chain_id: kovanica_types::signing::chain_id::DEVNET,
             output: output.to_string_lossy().into_owned(),
             validator_keys_out: Some(keys_dir.to_string_lossy().into_owned()),
             force: false,
@@ -7111,16 +7103,18 @@ mod tests {
     #[test]
     fn network_config_is_scoped_to_chain_id_and_genesis() {
         let dir = tempfile::tempdir().unwrap();
-        let config = chain_id_config(dir.path(), 1337);
+        let config = chain_id_config(dir.path(), 3);
         let net = build_network_config(&config).unwrap();
-        assert_eq!(net.network_id.chain_id, 1337);
+        assert_eq!(net.network_id.chain_id, 3);
         assert_eq!(
             net.network_id.genesis,
             genesis_config_digest(&config).unwrap()
         );
 
         let other_dir = tempfile::tempdir().unwrap();
-        let other = build_network_config(&chain_id_config(other_dir.path(), 4)).unwrap();
+        let mut other_cfg = chain_id_config(other_dir.path(), 2);
+        other_cfg.emission_policy = Some("no-stake-82m".into());
+        let other = build_network_config(&other_cfg).unwrap();
         assert_ne!(net.network_id.tag(), other.network_id.tag());
         assert!(!net
             .network_id
@@ -7149,10 +7143,10 @@ mod tests {
     #[test]
     fn zero_address_is_default_treasury() {
         assert_eq!(
-            parse_address_hex(None, kovanica_types::signing::chain_id::LOCAL).unwrap(),
+            parse_address_hex(None, kovanica_types::signing::chain_id::DEVNET).unwrap(),
             Address::default()
         );
-        assert!(parse_address_hex(Some("zz"), kovanica_types::signing::chain_id::LOCAL).is_err());
+        assert!(parse_address_hex(Some("zz"), kovanica_types::signing::chain_id::DEVNET).is_err());
     }
 
     #[test]
@@ -7400,7 +7394,7 @@ mod tests {
         .expect("single-validator committee is valid");
         let block_manager = Arc::new(BlockManager::new(
             dag.clone(),
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
         ));
         block_manager.set_authority(0);
         block_manager.set_signing_key(signing_key.clone());
@@ -7414,7 +7408,7 @@ mod tests {
             })),
             signing_key.clone(),
             None, // No mempool for this test
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
         );
         let (exec_tx, exec_rx) = mpsc::unbounded_channel();
         engine.set_commit_sender(exec_tx);
@@ -7424,7 +7418,7 @@ mod tests {
             state_storage.clone(),
             EventBus::new(),
             None,
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
             shutdown_rx,
             NodeHealth::new(),
             None,
@@ -7447,7 +7441,7 @@ mod tests {
             signature: kovanica_crypto::sign(
                 &signing_key,
                 &kovanica_types::block::block_signature_data(
-                    kovanica_types::signing::chain_id::LOCAL,
+                    kovanica_types::signing::chain_id::DEVNET,
                     &digest,
                 ),
             ),
@@ -7464,7 +7458,7 @@ mod tests {
         vote.signature = kovanica_crypto::sign(
             &signing_key,
             &vote.signature_data(&kovanica_types::SigningContext::new(
-                kovanica_types::signing::chain_id::LOCAL,
+                kovanica_types::signing::chain_id::DEVNET,
             )),
         );
         engine.process_vote(&vote).unwrap();
@@ -7832,7 +7826,7 @@ mod tests {
             state_storage.clone(),
             EventBus::new(),
             None,
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
             shutdown_rx,
             health.clone(),
             None,
@@ -8779,7 +8773,7 @@ mod tests {
             };
             let seal = kovanica_types::CommitSeal {
                 authority_index: 0,
-                signature: kovanica_crypto::sign(&key, &header.seal_message(1337)),
+                signature: kovanica_crypto::sign(&key, &header.seal_message(3)),
             };
             storage.state().save_leader_header(&txn, &header).unwrap();
             storage.state().save_commit_seal(&txn, 0, &seal).unwrap();
@@ -8809,7 +8803,7 @@ mod tests {
         }
         let dag = dag_for(&dir);
 
-        apply_state_snapshot(&storage, &dag, 1337, PeerId::random(), &bytes);
+        apply_state_snapshot(&storage, &dag, 3, PeerId::random(), &bytes);
 
         let txn = storage.begin_read().unwrap();
         let acct = storage
@@ -8844,7 +8838,7 @@ mod tests {
             txn.commit().unwrap();
         }
         let dag = dag_for(&dir);
-        apply_state_snapshot(&storage, &dag, 1337, PeerId::random(), &tampered);
+        apply_state_snapshot(&storage, &dag, 3, PeerId::random(), &tampered);
 
         let txn = storage.begin_read().unwrap();
         assert!(
@@ -8888,7 +8882,7 @@ mod tests {
                 .unwrap();
             txn.commit().unwrap();
         }
-        apply_state_snapshot(&storage, &dag, 1337, PeerId::random(), &bytes);
+        apply_state_snapshot(&storage, &dag, 3, PeerId::random(), &bytes);
 
         let txn = storage.begin_read().unwrap();
         assert!(
@@ -8980,7 +8974,7 @@ mod tests {
             };
             let seal = kovanica_types::CommitSeal {
                 authority_index: 0,
-                signature: kovanica_crypto::sign(&key, &header.seal_message(1337)),
+                signature: kovanica_crypto::sign(&key, &header.seal_message(3)),
             };
             src.state().save_leader_header(&txn, &header).unwrap();
             src.state()
@@ -9005,7 +8999,7 @@ mod tests {
             txn.commit().unwrap();
         }
         let dag = dag_for(&dst_dir);
-        apply_state_snapshot(&storage, &dag, 1337, PeerId::random(), &bytes);
+        apply_state_snapshot(&storage, &dag, 3, PeerId::random(), &bytes);
 
         assert!(
             commits > 100,
@@ -9037,7 +9031,7 @@ mod tests {
             txn.commit().unwrap();
         }
         let dag = dag_for(&dir);
-        apply_state_snapshot(&storage, &dag, 1337, PeerId::random(), &bytes);
+        apply_state_snapshot(&storage, &dag, 3, PeerId::random(), &bytes);
 
         // Header claims that leader round; catch-up anchor MUST be Some(it).
         assert_eq!(
@@ -9239,7 +9233,7 @@ mod tests {
             };
             let seal = kovanica_types::CommitSeal {
                 authority_index: 0,
-                signature: kovanica_crypto::sign(&key, &header.seal_message(1337)),
+                signature: kovanica_crypto::sign(&key, &header.seal_message(3)),
             };
             peer_storage
                 .state()
@@ -9270,7 +9264,7 @@ mod tests {
         let mempool = Mempool::new(
             Default::default(),
             state_storage.clone(),
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
         );
         let events = EventBus::new();
         let (net_tx, mut net_rx) = mpsc::unbounded_channel();
@@ -9289,7 +9283,7 @@ mod tests {
                 dag_store: &dag,
                 network_cmd_tx: &net_tx,
                 events: &events,
-                chain_id: 1337,
+                chain_id: 3,
                 ghostdag: None,
                 exec_tx: None,
             },
@@ -9318,7 +9312,7 @@ mod tests {
                 dag_store: &dag,
                 network_cmd_tx: &net_tx,
                 events: &events,
-                chain_id: 1337,
+                chain_id: 3,
                 ghostdag: None,
                 exec_tx: None,
             },
@@ -9361,7 +9355,7 @@ mod tests {
                 dag_store: &dag,
                 network_cmd_tx: &net_tx,
                 events: &events,
-                chain_id: 1337,
+                chain_id: 3,
                 ghostdag: None,
                 exec_tx: None,
             },
@@ -9392,7 +9386,7 @@ mod tests {
         };
         next_leader.signature = kovanica_crypto::sign(
             &key,
-            &kovanica_types::block::block_signature_data(1337, &next_leader.digest),
+            &kovanica_types::block::block_signature_data(3, &next_leader.digest),
         );
         let vote = vote_sync_test_vote(&key, next_leader_round, next_leader.digest);
 
@@ -9407,7 +9401,7 @@ mod tests {
                 dag_store: &dag,
                 network_cmd_tx: &net_tx,
                 events: &events,
-                chain_id: 1337,
+                chain_id: 3,
                 ghostdag: None,
                 exec_tx: None,
             },
@@ -9425,7 +9419,7 @@ mod tests {
                 dag_store: &dag,
                 network_cmd_tx: &net_tx,
                 events: &events,
-                chain_id: 1337,
+                chain_id: 3,
                 ghostdag: None,
                 exec_tx: None,
             },
@@ -9443,7 +9437,7 @@ mod tests {
         assert_eq!(engine.last_decided_round(), next_leader_round);
 
         let mut exec_ctx = ExecutionContext::with_signing_context(
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
         );
         let exec_res = exec_ctx
             .execute_committed_subdag(&committed_subdag, &state_storage)
@@ -9869,7 +9863,7 @@ mod tests {
         .expect("test committee is valid");
         let block_manager = Arc::new(BlockManager::new(
             dag.clone(),
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
         ));
         block_manager.set_authority(0);
         block_manager.set_signing_key(key.clone());
@@ -9883,7 +9877,7 @@ mod tests {
             })),
             key.clone(),
             None,
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
         );
         (engine, dag, key)
     }
@@ -9905,7 +9899,7 @@ mod tests {
         vote.signature = kovanica_crypto::sign(
             key,
             &vote.signature_data(
-                &kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL)
+                &kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET)
                     .with_epoch(kovanica_types::epoch_for_round(leader_round)),
             ),
         );
@@ -10186,7 +10180,7 @@ mod tests {
             signature: kovanica_crypto::sign(
                 &key,
                 &kovanica_types::block::block_signature_data(
-                    kovanica_types::signing::chain_id::LOCAL,
+                    kovanica_types::signing::chain_id::DEVNET,
                     &digest,
                 ),
             ),
@@ -10205,8 +10199,7 @@ mod tests {
     }
 
     /// `founder_premine.hex` is parsed with the chain policy: chain 1 refuses
-    /// legacy hex, and devnet and local accept it. Canonical still
-    /// parses on mainnet.
+    /// legacy hex, and the devnet accepts it. Canonical still parses on mainnet.
     #[test]
     fn genesis_file_addresses_follow_the_chain_policy() {
         use kovanica_types::signing::chain_id;
@@ -10230,10 +10223,8 @@ mod tests {
             format!("{err:#}").contains("not accepted"),
             "chain 1 must refuse hex: {err:#}"
         );
-        for chain in [chain_id::DEVNET, chain_id::LOCAL] {
-            digest_with(chain, &hex)
-                .unwrap_or_else(|e| panic!("chain {chain} must accept hex: {e:#}"));
-        }
+        digest_with(chain_id::DEVNET, &hex)
+            .unwrap_or_else(|e| panic!("chain 3 must accept hex: {e:#}"));
         digest_with(chain_id::MAINNET, &canonical).expect("mainnet accepts the canonical form");
     }
 
@@ -10245,7 +10236,7 @@ mod tests {
         use kovanica_types::signing::chain_id;
 
         assert!(!funded_accounts_allowed(chain_id::MAINNET));
-        for allowed in [chain_id::TESTNET, chain_id::DEVNET, chain_id::LOCAL] {
+        for allowed in [chain_id::TESTNET, chain_id::DEVNET] {
             assert!(
                 funded_accounts_allowed(allowed),
                 "chain {allowed} must accept funded_accounts.toml"
@@ -10428,7 +10419,7 @@ mod tests {
         }
 
         // Every other chain is exempt: a 1-node local or 3-node testnet is fine.
-        for other in [chain_id::TESTNET, chain_id::DEVNET, chain_id::LOCAL] {
+        for other in [chain_id::TESTNET, chain_id::DEVNET] {
             for count in [0, 3, 100] {
                 ensure_mainnet_genesis_validator_count(other, count)
                     .unwrap_or_else(|e| panic!("chain {other} must be exempt: {e}"));
@@ -10679,7 +10670,7 @@ mod b1_epoch_restart_repro {
             })
             .collect();
         let pubs: Vec<_> = keys.iter().map(|(_, a, p)| (*a, *p)).collect();
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
 
         // Node A started at genesis and is still running: committee built at round 0.
         let a = storage_at_height(dir.path(), "a.redb", &pubs, 0);
@@ -10817,7 +10808,7 @@ mod b1_epoch_restart_repro {
         let dir = tempfile::tempdir().unwrap();
         let (sk, pk) = kovanica_crypto::generate_keypair();
         let addr = Address::from_public_key(&pk);
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
         let leader_round = EPOCH_ROUNDS + 1;
         let expected_epoch = kovanica_types::epoch_for_round(leader_round);
         assert_eq!(expected_epoch, 1, "EPOCH_ROUNDS + 1 must be epoch 1");
@@ -10925,7 +10916,7 @@ mod b1_epoch_restart_repro {
         let dir = tempfile::tempdir().unwrap();
         let (sk, pk) = kovanica_crypto::generate_keypair();
         let addr = Address::from_public_key(&pk);
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
         let leader_round = EPOCH_ROUNDS;
         let storage = storage_at_height(dir.path(), "e1r.redb", &[(addr, pk)], leader_round / 3);
         let ctx = seals::SealContext {
@@ -10970,7 +10961,7 @@ mod b1_epoch_restart_repro {
         let dir = tempfile::tempdir().unwrap();
         let (sk, pk) = kovanica_crypto::generate_keypair();
         let addr = Address::from_public_key(&pk);
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
 
         // Build staking state exactly as the node does, but with the chain already
         // past the first epoch boundary when the seal is produced.
@@ -11122,7 +11113,7 @@ mod b1_epoch_restart_repro {
     #[test]
     fn e1_jarvis_mid_epoch_eviction_keeps_rpc_committee_hash() {
         let dir = tempfile::tempdir().unwrap();
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
         let leader_round = 3 * EPOCH_ROUNDS + 10; // epoch 3, mid-epoch
         let epoch = kovanica_types::epoch_for_round(leader_round);
 
@@ -11219,7 +11210,7 @@ mod b1_epoch_restart_repro {
         let dir = tempfile::tempdir().unwrap();
         let (sk, pk) = kovanica_crypto::generate_keypair();
         let addr = Address::from_public_key(&pk);
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
         let leader_round = EPOCH_ROUNDS + 1;
 
         let storage =
@@ -11280,7 +11271,7 @@ mod b1_epoch_restart_repro {
         let dir = tempfile::tempdir().unwrap();
         let (sk, pk) = kovanica_crypto::generate_keypair();
         let addr = Address::from_public_key(&pk);
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
         // Exactly at the boundary: round that starts epoch 1.
         let boundary_round = EPOCH_ROUNDS;
         assert_eq!(kovanica_types::epoch_for_round(boundary_round), 1);
@@ -11327,7 +11318,7 @@ mod b1_epoch_restart_repro {
     #[test]
     fn e1_jarvis_seal_hash_matches_after_mid_epoch_change() {
         let dir = tempfile::tempdir().unwrap();
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
         let leader_round = 5 * EPOCH_ROUNDS + 3;
         let epoch = kovanica_types::epoch_for_round(leader_round);
 
@@ -11405,7 +11396,7 @@ mod b1_epoch_restart_repro {
     #[test]
     fn e1_jarvis_boot_committee_keeps_vrf_keys_after_seal_snapshot() {
         let dir = tempfile::tempdir().unwrap();
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
         let leader_round = 3 * EPOCH_ROUNDS + 10;
         let epoch = kovanica_types::epoch_for_round(leader_round);
 
@@ -11608,7 +11599,7 @@ mod b1_epoch_restart_repro {
     #[test]
     fn e1_jarvis_restarted_node_picks_same_leader() {
         let dir = tempfile::tempdir().unwrap();
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
         let leader_round = 2 * EPOCH_ROUNDS + 5;
 
         struct V {
@@ -11770,7 +11761,7 @@ mod b1_epoch_restart_repro {
             .all(|a| a.vrf_public_key.is_some()));
 
         let ctx = seals::SealContext {
-            chain_id: kovanica_types::signing::chain_id::LOCAL,
+            chain_id: kovanica_types::signing::chain_id::DEVNET,
             signer: Some((0, keys[0].0.clone())),
             mysticghost: false,
         };
@@ -14062,7 +14053,7 @@ mod b1_epoch_restart_repro {
         let mempool = Mempool::new(
             kovanica_mempool::MempoolConfig::default(),
             storage,
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
         );
         let activity = kovanica_rpc::ActivityTracker::new();
 

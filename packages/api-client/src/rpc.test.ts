@@ -28,7 +28,6 @@ describe("ChainId and HYBRID_TESTNET_CHAIN_ID constants", () => {
     expect(ChainId.TESTNET).toBe(2);
     expect(ChainId.DEVNET).toBe(3);
     expect(ChainId.HYBRID_TESTNET).toBe(2);
-    expect(ChainId.LOCAL).toBe(1337);
     expect(HYBRID_TESTNET_CHAIN_ID).toBe(2);
   });
 });

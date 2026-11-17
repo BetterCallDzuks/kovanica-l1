@@ -12,13 +12,14 @@ These replace Gazda for day-to-day agent work. If a prompt conflicts with them, 
 
 **Naming (zaključano):** chain = **Kovanica**, native coin ticker = **KVNC** (9 decimals; preimenovano natrag iz KUNA per Toni 2026-11-05),
 codebase/binary/env prefiks = **kovanica** (`kovanica-*` crate-ovi, `kovanica-node`, `KOVANICA_*`). Adresa je
-`kvnc` + 57 base32 znakova (bech32 abeceda, samo mala slova) + `dag` = 64 znaka (PRO-21: 32 B ključ ‖ prvih 29 bitova blake3(ključ)); `FromStr` je samo taj oblik. Legacy `kvnc<hex>dag` i hex (heks znamenke case-insensitive, affixi i `0x` mala slova) na kovanica-devnet (chain ID 3) i local (chain ID 1337), odbijeni na kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2) i svakom drugom id-u. Adresni prefiks `kvnc`...`dag` je usklađen s KVNC tickerom.
+`kvnc` + 57 base32 znakova (bech32 abeceda, samo mala slova) + `dag` = 64 znaka (PRO-21: 32 B ključ ‖ prvih 29 bitova blake3(ključ)); `FromStr` je samo taj oblik. Legacy `kvnc<hex>dag` i hex (heks znamenke case-insensitive, affixi i `0x` mala slova) na kovanica-devnet (chain ID 3, uključujući lokalno single-node testiranje), odbijeni na kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2), umirovljenom local id-u (chain ID 1337) i svakom drugom id-u. Adresni prefiks `kvnc`...`dag` je usklađen s KVNC tickerom.
 
-**Chain ID Registry (4 Registered Chains: 2 Canonical Public + 2 Dev):**
+**Chain ID Registry (3 Registered Chains: 2 Canonical Public + 1 Dev):**
 - `1` = **kovanica-mainnet** (chain ID 1) (`MAINNET`) — canonical PRO-21 base32 address, Hybrid PoW + GHOSTDAG (NO stake for consensus, KovanicaHash, target block 4 s, GHOSTDAG K=5). `funded_accounts.toml` strictly forbidden. Fee split: 3/4 burned, 1/4 miner (`NoStake82M`). DAA: easiest target `0x1f00_ffff`.
 - `2` = **kovanica-testnet** (chain ID 2) (`TESTNET`) — official Hybrid PoW + GHOSTDAG testnet (KovanicaHash, target block 4 s, GHOSTDAG K=5, NO stake for consensus; canonical PRO-21 base32 addresses strictly enforced; `funded_accounts.toml` and faucet allowed; legacy alias HYBRID_TESTNET=2). Official network tag: `2-acfdf6a6c80fd28a`. Host topology is seed1-only (`seed1.kovanica.online`; seed2 and seed3 are no longer hosts; seed3 / seed-extra remain only as bootstrap identities in genesis). Fee split: 3/4 burned, 1/4 miner (`NoStake82M`). DAA: easiest target `0x1f7f_ffff`, hardest `0x1e00_ffff` (#242).
-- `3` = **kovanica-devnet** (chain ID 3) (`DEVNET`) — devnet; legacy hex addresses allowed, dev parameter overrides. Fees 100% burned. DAA: easiest target `0x1f7f_ffff`, hardest `0x1e00_ffff`.
-- `1337` = **local** (chain ID 1337) (`LOCAL`) — single-node / local cluster testing (legacy hex allowed). Fees 100% burned.
+- `3` = **kovanica-devnet** (chain ID 3) (`DEVNET`) — devnet, also used for local single-node / local cluster testing; legacy hex addresses allowed, dev parameter overrides. Fees 100% burned. DAA: easiest target `0x1f7f_ffff`, hardest `0x1e00_ffff`.
+
+The former `1337` (`LOCAL`, "local") chain ID was retired and merged into kovanica-devnet (chain ID 3) per Toni's explicit decision on 2026-11-17. It is not a registered chain and no code path may accept it.
 
 *Params SoT:* `kovanica-params`. `funded_accounts.toml` allowed on every chain except kovanica-mainnet (chain ID 1).
 *RPC Authentication:* RPC writes require bearer auth (#234); `KOVANICA_RPC_AUTH` must never be documented as something to disable.
@@ -53,7 +54,7 @@ codebase/binary/env prefiks = **kovanica** (`kovanica-*` crate-ovi, `kovanica-no
 
 ## Tokenomics (zaključano)
 
-> Revidirano 2026-10-13 / Ažurirano 2026-11-05 / no-stake 2026-11-06: ticker KVNC, s₀=2,5 KVNC, era=8 200 000 rewarded blokova, budget=82M, genesis validatorska alokacija 0 (1M vraćen u mining emission), target block 4 s (`TARGET_BLOCK_MS = 4000`), GHOSTDAG K=5. kovanica-mainnet (chain ID 1) i kovanica-testnet (chain ID 2) su oba hybrid (`NoStake82M`) s fee splitom 3/4 burn, 1/4 miner (#239, #245); kovanica-devnet (chain ID 3) i local (chain ID 1337) ostaju 100% burn; legacy `Legacy81M` konstante ostaju u kodu samo za postojeće baze i dev chainove.
+> Revidirano 2026-10-13 / Ažurirano 2026-11-05 / no-stake 2026-11-06: ticker KVNC, s₀=2,5 KVNC, era=8 200 000 rewarded blokova, budget=82M, genesis validatorska alokacija 0 (1M vraćen u mining emission), target block 4 s (`TARGET_BLOCK_MS = 4000`), GHOSTDAG K=5. kovanica-mainnet (chain ID 1) i kovanica-testnet (chain ID 2) su oba hybrid (`NoStake82M`) s fee splitom 3/4 burn, 1/4 miner (#239, #245); kovanica-devnet (chain ID 3, uključujući lokalno single-node testiranje) ostaje 100% burn; legacy `Legacy81M` konstante ostaju u kodu samo za postojeće baze i dev chainove.
 
 | Parameter                  | Value                                          |
 |---------------------------|------------------------------------------------|

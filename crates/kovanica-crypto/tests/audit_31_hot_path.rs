@@ -9,7 +9,7 @@ fn reject_invalid_block_signature_at_hot_path() {
         ed25519_dalek::VerifyingKey::from_bytes(&vk.0).expect("vk valid")
     ]);
     let _pk = vk;
-    let chain_id = 1337;
+    let chain_id = 3;
     let digest = StatementBlock::compute_digest(0, 1, &[], &[]);
     let msg = kovanica_types::block::block_signature_data(chain_id, &digest);
     let valid = StatementBlock {

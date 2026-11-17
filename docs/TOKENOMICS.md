@@ -11,7 +11,7 @@ Canonical constants: `crates/kovanica-params`.
 
 Kovanica defines two genesis supply allocations depending on the network's consensus model:
 1. **No-Stake Hybrid Networks (NoStake82M):** kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) both run Hybrid PoW + GHOSTDAG with no stake in the consensus path. The 1,000,000 KVNC genesis validator allocation is retired and returned to capped mining emissions, setting the mining subsidy budget to 82,000,000 KVNC.
-2. **Legacy (with validator stake, `Legacy81M`):** The former mining budget with a 1,000,000 KVNC genesis validator split survives only for existing databases and kovanica-devnet (chain ID 3) and local (chain ID 1337). No new network uses it.
+2. **Legacy (with validator stake, `Legacy81M`):** The former mining budget with a 1,000,000 KVNC genesis validator split survives only for existing databases and kovanica-devnet (chain ID 3). No new network uses it.
 
 | Allocation                  | Legacy (with stake) | New NO-Stake (82M) | % of Total         | Notes                                      |
 |-----------------------------|---------------------|--------------------|--------------------|--------------------------------------------|
@@ -46,7 +46,7 @@ All 82,000,000 KVNC are emitted solely through block rewards according to the 82
 
 ### 2.2 Approved NoStake82M Policy (NO-stake hybrid networks, Toni 2026-11-06)
 
-- **Scope & Gating:** Required on both NO-stake hybrid chains — kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2). The node refuses to start a hybrid chain with any other emission policy (fail closed). Non-hybrid chains (kovanica-devnet (chain ID 3), local (chain ID 1337)) may still use `Legacy81M`.
+- **Scope & Gating:** Required on both NO-stake hybrid chains — kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2). The node refuses to start a hybrid chain with any other emission policy (fail closed). Non-hybrid devnet (kovanica-devnet, chain ID 3) may still use `Legacy81M`.
 - **Initial reward:** 2.5 KVNC (`2_500_000_000` base units).
 - **Era length:** **8 200 000** rewarded blocks (`SUBSIDY_ERA_BLOCKS_NO_STAKE_82M`).
   The first rewarded block is defined as index 0: indices `0..8_199_999` use the initial reward, index `8_200_000` starts era 1.
@@ -65,7 +65,7 @@ All 82,000,000 KVNC are emitted solely through block rewards according to the 82
 - **Activation & Safe Migration:**
   - Persisted in storage tables `EMISSION_POLICY` and `MINING_REWARD_STATE`.
   - Configured via `genesis_validators.toml` (`emission_policy = "no-stake-82m"` at top level), CLI (`--emission-policy no-stake-82m`), or environment variable (`KOVANICA_EMISSION_POLICY=no-stake-82m`).
-  - Existing databases without an explicit policy table default to `Legacy81M`. On a hybrid chain (kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2)) that default fails closed at startup, so the policy must be set explicitly; on kovanica-devnet (chain ID 3) and local (chain ID 1337) the legacy default is kept, preventing any accidental reinterpretation of existing balances.
+  - Existing databases without an explicit policy table default to `Legacy81M`. On a hybrid chain (kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2)) that default fails closed at startup, so the policy must be set explicitly; on kovanica-devnet (chain ID 3) the legacy default is kept, preventing any accidental reinterpretation of existing balances.
 
 ---
 
@@ -114,7 +114,7 @@ year 0          year 1          year 2          …          year 8
 > There is no stake in kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) consensus, so these values do not select block
 > producers. Staking transactions (`Stake`, `Unstake`, `Delegate`, `ClaimRewards`, and
 > `SetCommission`) are explicitly refused on hybrid chains (kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2)) (`HYBRID_STAKE_REFUSAL`
-> in `kovanica-execution`). They remain active only on legacy/dev chains (kovanica-devnet (chain ID 3), local (chain ID 1337)).
+> in `kovanica-execution`). They remain active only on the legacy dev chain (kovanica-devnet, chain ID 3).
 
 | Parameter                | Value                  |
 |--------------------------|------------------------|
@@ -138,7 +138,7 @@ circulating ≈ FOUNDER_PREMINE
             + treasury.vested
 ```
 
-Capped at `TOTAL_SUPPLY`. For the NO-stake hybrid chains (kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2)), `GENESIS_VALIDATOR_ALLOCATION = 0`, so genesis circulating supply is 200 000 KVNC (founder premine only). For legacy chains (kovanica-devnet (chain ID 3), local (chain ID 1337)), genesis circulating supply is 1 200 000 KVNC (premine + genesis allocation). Treasury vests over time.
+Capped at `TOTAL_SUPPLY`. For the NO-stake hybrid chains (kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2)), `GENESIS_VALIDATOR_ALLOCATION = 0`, so genesis circulating supply is 200 000 KVNC (founder premine only). For the legacy dev chain (kovanica-devnet, chain ID 3), genesis circulating supply is 1 200 000 KVNC (premine + genesis allocation). Treasury vests over time.
 
 Note that burned transaction fees permanently reduce the total tokens held in user and miner accounts (`sum_of_balances = initial_balances + mining_subsidy − cumulative_fees_burned`). The formal circulating supply tracking formula in `circulating_supply_with_policy` accounts for total issued and vested tokens, while burned fees reduce held circulating supply in the ledger.
 
@@ -151,7 +151,7 @@ Under PRO-53, transaction fees on hybrid NO-stake networks (kovanica-mainnet (ch
 - **No payout address:** If an executed block has no payout address, 100% of its fees are burned (`burn_fee = F`).
 - **Red blocks:** Red (`non_blue`) blocks are not executed in that round; they pay and burn 0.
 - **Accounting:** Persistent counters `cumulative_fees_burned` and `cumulative_fees_to_miners` track lifetime fees in dedicated state storage and are exposed via `kovanica_getMiningInfo`. Miner fee shares are fee redistributions, not new issuance, and do not increment `cumulative_mining_issued` or count toward the 82M subsidy cap.
-- **Other networks:** On kovanica-devnet (chain ID 3) and local (chain ID 1337), transaction fees remain 100% burned.
+- **Other networks:** On kovanica-devnet (chain ID 3, including local single-node testing), transaction fees remain 100% burned.
 
 ---
 

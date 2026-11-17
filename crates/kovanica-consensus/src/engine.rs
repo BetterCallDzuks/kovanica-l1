@@ -2369,14 +2369,13 @@ pub enum VoteRejection {
 mod tests {
     use super::*;
     const TEST_CTX: kovanica_types::SigningContext =
-        kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL);
+        kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
 
     #[test]
     fn hybrid_chains_do_not_run_the_legacy_leader_clock() {
-        use kovanica_types::signing::chain_id::{DEVNET, LOCAL, MAINNET, TESTNET};
+        use kovanica_types::signing::chain_id::{DEVNET, MAINNET, TESTNET};
         assert!(!legacy_leader_clock_enabled(TESTNET));
         assert!(!legacy_leader_clock_enabled(MAINNET));
-        assert!(legacy_leader_clock_enabled(LOCAL));
         assert!(legacy_leader_clock_enabled(DEVNET));
     }
 

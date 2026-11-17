@@ -17,7 +17,7 @@ All tokenomics parameters and network protocols are binding per `AGENTS.md`.
   ```
   The 57 characters encode the 32-byte Ed25519 public key (256 bits) concatenated with the first 29 bits of its BLAKE3 hash MSB-first (`256 + 29 = 285 bits = 57 base32 chars` using the BIP-173 bech32 lowercase alphabet `qpzry9x8gf2tvdw0s3jn54khce6mua7l`, unpadded).
   - `FromStr for Address` strictly enforces the 64-character base32 form.
-  - Legacy hex formats (`kvnc<72hex>dag` and bare/`0x` 64-hex keys) are supported **only** on kovanica-devnet (chain ID 3) and local (chain ID 1337); strictly rejected on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2).
+  - Legacy hex formats (`kvnc<72hex>dag` and bare/`0x` 64-hex keys) are supported **only** on kovanica-devnet (chain ID 3); strictly rejected on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2).
   - kovanica-mainnet (chain ID 1), kovanica-testnet (chain ID 2), and all other chain IDs strictly reject legacy formats (`legacy_address_allowed = false`).
   - **Rule:** The native coin ticker is **KVNC** (renamed from KUNA per Toni 2026-11-05 lock). Remaining KVNC crypto tags and address prefix `kvnc…dag` align with the KVNC ticker.
 
@@ -69,7 +69,7 @@ Canonical parameters implemented in `crates/kovanica-staking/src/lib.rs` and doc
 | **Initial Block Reward** | **2.5 KVNC** | Minted on committed blocks to the block author ($5 \times 10^9 / 2$ atoms) |
 | **Subsidy Era Length** | **8,200,000 blocks** | Rewarded blocks per era (`SUBSIDY_ERA_BLOCKS_NO_STAKE_82M`) |
 | **Reward Decay Rate** | **$\times 3/4$** | Emission multiplies by $3/4$ (25% decay) at each era boundary |
-| **Fee Split** | **3/4 burn, 1/4 miner** | On kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) (`NoStake82M`); 100% burned on kovanica-devnet (chain ID 3) and local (chain ID 1337) |
+| **Fee Split** | **3/4 burn, 1/4 miner** | On kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) (`NoStake82M`); 100% burned on kovanica-devnet (chain ID 3, including local single-node testing) |
 | **DAA Targets** | **Chain-specific** | kovanica-mainnet (chain ID 1) easiest `0x1f00_ffff`; kovanica-testnet (chain ID 2) and kovanica-devnet (chain ID 3) easiest `0x1f7f_ffff`, hardest `0x1e00_ffff` |
 | **Minimum Validator Stake** | **50,000 KVNC** | `MIN_VALIDATOR_STAKE`; legacy / non-consensus — kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) have no validator committee |
 | **Minimum Delegation** | **50,000 KVNC** | `MIN_DELEGATION`; legacy / non-consensus |
@@ -381,8 +381,7 @@ Default network configuration parameters (`crates/kovanica-node/src/config.rs`):
 ### Chain ID Registry
 - **`1`**: **kovanica-mainnet** (chain ID 1) (`MAINNET`) — strictly enforces PRO-21 canonical base32 addresses; consensus parameters frozen. `funded_accounts.toml` strictly forbidden. Release tag `v1.0.0-mainnet`.
 - **`2`**: **kovanica-testnet** (chain ID 2) (`TESTNET` / `HYBRID_TESTNET`) — canonical Hybrid PoW + GHOSTDAG public testnet; enforces PRO-21 base32 addresses (legacy hex rejected). Official network tag: `2-acfdf6a6c80fd28a`. Node release: `v0.3.0-node`. External peers bootstrap at `seed1.kovanica.online:8000` (DNS name only; seed2 and seed3 are not hosts).
-- **`3`**: **kovanica-devnet** (chain ID 3) (`DEVNET`) — lenient address parsing; allows parameter overrides.
-- **`1337`**: **local** (chain ID 1337) (`LOCAL`) — single-node / local cluster testing.
+- **`3`**: **kovanica-devnet** (chain ID 3, also used for local single-node testing) (`DEVNET`) — devnet; lenient address parsing; allows parameter overrides.
 
 ---
 

@@ -396,7 +396,7 @@ fn signed_timeout(round: Round, voter: AuthorityIndex) -> kovanica_types::Timeou
     timeout.signature = kovanica_crypto::sign(
         &common::validator_signing_key(voter),
         &timeout.signature_data(
-            kovanica_types::signing::chain_id::LOCAL,
+            kovanica_types::signing::chain_id::DEVNET,
             &engine_config().genesis_hash,
         ),
     );

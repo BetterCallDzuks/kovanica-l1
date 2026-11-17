@@ -69,7 +69,7 @@ fn seals_for(signers: &[SigningKey], header: &LeaderHeader, n: u16) -> Vec<Commi
     (0..n)
         .map(|index| CommitSeal {
             authority_index: index,
-            signature: kovanica_crypto::sign(&signers[index as usize], &header.seal_message(1337)),
+            signature: kovanica_crypto::sign(&signers[index as usize], &header.seal_message(3)),
         })
         .collect()
 }
@@ -81,7 +81,7 @@ fn a_bad_seal_is_not_stored() {
     let mut seals = seals_for(&signers, &header, 3);
     seals[0].signature = Signature([9u8; 64]);
     let dir = tempfile_dir();
-    let err = sync::accept_and_store(&dir, 1337, &committee, &header, &seals, None).unwrap_err();
+    let err = sync::accept_and_store(&dir, 3, &committee, &header, &seals, None).unwrap_err();
     assert!(err.to_string().contains("rejected") || err.root_cause().to_string().contains("seal"));
     assert!(sync::load_header(&dir).unwrap().is_none());
     assert!(!dir.join(sync::HEADER_FILE).exists());
@@ -94,7 +94,7 @@ fn a_valid_checkpoint_is_stored_and_the_next_header_must_follow_it() {
     let dir = tempfile_dir();
     sync::accept_and_store(
         &dir,
-        1337,
+        3,
         &committee,
         &first,
         &seals_for(&signers, &first, 3),
@@ -107,7 +107,7 @@ fn a_valid_checkpoint_is_stored_and_the_next_header_must_follow_it() {
     let broken = header_for(&committee, 1, Hash::new([9u8]), Hash::new([2u8]));
     let err = sync::accept_and_store(
         &dir,
-        1337,
+        3,
         &committee,
         &broken,
         &seals_for(&signers, &broken, 3),
@@ -123,7 +123,7 @@ fn a_valid_checkpoint_is_stored_and_the_next_header_must_follow_it() {
     let second = header_for(&committee, 1, first.leader_digest, Hash::new([2u8]));
     sync::accept_and_store(
         &dir,
-        1337,
+        3,
         &committee,
         &second,
         &seals_for(&signers, &second, 3),
@@ -154,7 +154,7 @@ fn sync_over_http_stores_a_good_header_and_rejects_a_bad_one() {
     let dir = tempfile_dir();
     let cfg = LightConfig {
         rpc: url.clone(),
-        chain_id: 1337,
+        chain_id: 3,
         epoch: 0,
         keystore: "keystore.json".into(),
     };
@@ -183,7 +183,7 @@ fn sync_over_http_stores_a_good_header_and_rejects_a_bad_one() {
     let dir = tempfile_dir();
     let cfg = LightConfig {
         rpc: url.clone(),
-        chain_id: 1337,
+        chain_id: 3,
         epoch: 0,
         keystore: "keystore.json".into(),
     };
@@ -215,12 +215,12 @@ fn an_account_proof_confirms_the_recipient_and_a_transfer_roundtrips() {
 
     let signer = SigningKey::from_bytes(&[9u8; 32]);
     let sender = Address::from_public_key(&PublicKey::from(signer.verifying_key()));
-    let tx = signed_transfer(1337, &signer, sender, address, 10, 1, 1);
+    let tx = signed_transfer(3, &signer, sender, address, 10, 1, 1);
     let raw = encode_raw(&tx).unwrap();
     let bytes = hex::decode(raw.strip_prefix("0x").unwrap()).unwrap();
     let decoded: kovanica_types::Transaction = bincode::deserialize(&bytes).unwrap();
     assert_eq!(decoded.hash, tx.hash);
-    assert!(decoded.verify_signature(&kovanica_types::SigningContext::new(1337)));
+    assert!(decoded.verify_signature(&kovanica_types::SigningContext::new(3)));
     assert!(!decoded.verify_signature(&kovanica_types::SigningContext::new(2)));
 }
 

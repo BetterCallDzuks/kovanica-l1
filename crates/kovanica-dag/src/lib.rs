@@ -71,7 +71,7 @@ mod tests {
         let storage = Storage::new(dir.path().join("test.db")).unwrap();
         let _dag = Dag::new(
             storage,
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
         )
         .unwrap();
     }

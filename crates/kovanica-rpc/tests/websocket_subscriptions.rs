@@ -45,7 +45,7 @@ fn test_state(storage: Arc<Storage>, events: EventBus) -> RpcState {
         mempool: Arc::new(Mempool::new(
             MempoolConfig::default(),
             storage.clone(),
-            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET),
         )),
         storage,
         staking: Arc::new(RwLock::new(StakingState::new())),

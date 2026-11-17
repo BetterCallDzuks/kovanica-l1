@@ -407,7 +407,7 @@ mod tests {
         let dag_store = Arc::new(DagStore::new(dag_storage).unwrap());
         let state_storage = Arc::new(Storage::new(dir.path().join("state.redb")).unwrap());
 
-        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let chain_id = kovanica_types::signing::chain_id::DEVNET;
         let mempool = Arc::new(Mempool::new(
             kovanica_mempool::MempoolConfig::default(),
             state_storage,

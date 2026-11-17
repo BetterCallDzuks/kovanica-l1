@@ -8,7 +8,7 @@ set -euo pipefail
 # Configuration
 DUR=${DUR:-60}                              # benchmark duration (seconds)
 RPC_URL=${RPC_URL:-http://127.0.0.1:8545}   # node1 RPC endpoint
-CHAIN_ID=${CHAIN_ID:-1337}                  # local chain ID
+CHAIN_ID=${CHAIN_ID:-3}                     # devnet chain ID (local testing)
 FUNDER_KEYS=${FUNDER_KEYS:-}                # space-separated funder key files
 SENDERS=${SENDERS:-8}                       # number of derived bench senders
 TXS_PER_SENDER=${TXS_PER_SENDER:-16}        # transactions per sender (clamped to 64)

@@ -20,7 +20,7 @@ export interface Network {
 export const TESTNET: Network = {
   id: "testnet",
   label: "Testnet",
-  // Chain ids: mainnet 1, testnet 2, devnet 3, local 1337.
+  // Chain ids: mainnet 1, testnet 2, devnet 3 (also used for local testing).
   chainId: 2,
   rpcUrl: "https://rpc-testnet.kovanica.online/rpc",
   wsUrl: "wss://rpc-testnet.kovanica.online/ws",
@@ -49,8 +49,8 @@ export const MAINNET: Network = {
 
 export const LOCAL: Network = {
   id: "local",
-  label: "Local",
-  chainId: 1337,
+  label: "Local (Devnet)",
+  chainId: 3,
   rpcUrl: "http://127.0.0.1:8545/rpc",
   wsUrl: "ws://127.0.0.1:8545/ws",
   indexerHttpUrl:
