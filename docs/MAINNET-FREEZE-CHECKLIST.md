@@ -135,12 +135,12 @@ Verify that every parameter in the release binary matches the canonical mainnet 
 | **Initial Block Reward** | `2.5 KVNC` | $2.5 \times 10^9$ atoms ($5 \times 10^9 / 2$) | `crates/kovanica-staking/src/lib.rs` | [ ] |
 | **Subsidy Era Length** | `8,200,000 blocks` | Rewarded blocks per era; multiplied by $3/4$ decay each era | `crates/kovanica-params/src/lib.rs` | [ ] |
 | **Target Block Duration**| `4,000 ms` (4 s) | GHOSTDAG $K=5$, target block 4 s | `crates/kovanica-consensus/src/lib.rs` | [ ] |
-| **Epoch Duration** | `7,200 rounds` | `EPOCH_ROUNDS = 7_200` (~8 hours; legacy) | `crates/kovanica-consensus/src/lib.rs` | [ ] |
+| **Epoch Duration** | `7,200 rounds` | `EPOCH_ROUNDS = 7_200` (~8 hours; legacy, **non-consensus** under Hybrid PoW + GHOSTDAG) | `crates/kovanica-params/src/lib.rs` | [ ] |
 | **Unbonding Period** | `100,000 blocks` | `UNBONDING_ROUNDS = 100_000` (~13.9 days; legacy, non-consensus) | `crates/kovanica-staking/src/lib.rs` | [ ] |
 | **Minimum Validator Stake**| `50,000 KVNC` | `MIN_VALIDATOR_STAKE = 50_000 * 10^9` (legacy, non-consensus) | `crates/kovanica-params/src/lib.rs` | [ ] |
 | **Minimum Delegation** | `50,000 KVNC` | `MIN_DELEGATION = 50_000 * 10^9` (legacy, non-consensus) | `crates/kovanica-params/src/lib.rs` | [ ] |
 | **Slashing Penalty** | `500 bps` (5%) | Fixed equivocation penalty (legacy; slashing not active, `SLASHING_ACTIVE_FROM_ROUND = u64::MAX`) | `crates/kovanica-staking/src/lib.rs` | [ ] |
-| **Jail Duration** | `7,200 blocks` | `JAIL_ROUNDS = 7_200` (~1 day = 3 epochs; legacy) | `crates/kovanica-staking/src/lib.rs` | [ ] |
+| **Jail Duration** | `7,200 blocks` | `JAIL_ROUNDS = 7_200` (~1 day = 3 epochs; legacy, **non-consensus**) | `crates/kovanica-staking/src/lib.rs` | [ ] |
 | **Light-Node Share** | `20%` (2,000 bps) | Escrowed for 32 winning slots/epoch | `crates/kovanica-staking/src/lib.rs` | [ ] |
 
 ### 3.2 Pre-Flight Safety Invariants
@@ -171,7 +171,7 @@ The genesis ceremony establishes the cryptographic trust root of the network and
 - [x] **Entropy Mixing:** Combined hardware TRNG (`/dev/random`), physical dice rolls, and BLAKE3 hashing.
 - [x] **Key Derivations:**
   - Ed25519 Bootstrap Seed Node Keypair (`0600` permissions; P2P identity and initial bootstrap coordination).
-  - Obsolete VRF key generation retired per Hybrid PoW + GHOSTDAG architecture (PRO-7 frozen; block mining is permissionless via KovanicaHash and authors require only standard PRO-21 wallet addresses via `KOVANICA_MINING_AUTHOR`).
+  - Obsolete VRF key generation retired per Hybrid PoW + GHOSTDAG architecture (PRO-7 frozen; `use_vrf_leader` and `TimeoutGossip` are gated off with `!is_hybrid` in `crates/kovanica-node/src/main.rs`; block mining is permissionless via KovanicaHash and authors require only standard PRO-21 wallet addresses via `KOVANICA_MINING_AUTHOR`).
 - [x] **Proof of Possession (PoP):** Each operator submits a cryptographic signature over the designated ceremony challenge string `KOVANICA_GENESIS_CHALLENGE_MAINNET_1`.
 - [x] **Witness Sign-Off:** Ceremony witnesses verify air-gap integrity and sign off on key collection.
 
@@ -281,7 +281,7 @@ Verify that Prometheus alerting rules defined in `ops/prometheus/alerts.yml` are
 
 ### 6.2 Health Probes & Dashboards
 
-- [ ] **Node Health Probe (`/health`):** Returns HTTP 200 with JSON status payload (`status: ok`, `block_height`, `peer_count`).
+- [ ] **Node Health Probe (`/health`):** Returns HTTP 200 with JSON status payload (`status: "ok"`, `healthy: true`, `peer_count`, `consensus.committed_leaders`, `consensus.last_committed_round`, `execution.executed_subdags`).
 - [ ] **CLI Inspection Tooling:**
   ```bash
   kovanica node sync --rpc http://127.0.0.1:8545

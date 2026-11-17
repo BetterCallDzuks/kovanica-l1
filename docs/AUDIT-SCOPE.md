@@ -38,7 +38,7 @@ This scope document specifies the components, invariants, threat models, and pri
 | `daa.rs` (Difficulty Adjustment) | **Critical** | Difficulty adjustment algorithm targeting 4 s block time (`TARGET_BLOCK_MS = 4000`). Adjustment dampening, min/max target clamping, timestamp median calculations, and resistance against timestamp warping / selfish mining manipulation. |
 | `block_manager.rs` (DAG Store) | **Critical** | Ingestion pipeline, parent validation, duplicate detection, topological commit cursor advancement, and pruning bounds. |
 | Anti-DoS Edge Ingress | **Critical** | Header PoW verification before gossip relay (`validate_pow_target`). Ensures un-mined or low-difficulty blocks cannot flood the P2P mesh or exhaust memory before verification. |
-| Legacy Mysticeti Transition | **High** | Note that PRO-7 (Mysticeti VRF leader selection) is **FROZEN** under Hybrid PoW + GHOSTDAG. Verify that legacy leader/stake logic does not interfere with the PoW + GHOSTDAG execution path on the hybrid networks (kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2)). |
+| Legacy Mysticeti Transition | **High** | PRO-7 (Mysticeti VRF leader selection) is **FROZEN** under Hybrid PoW + GHOSTDAG. In `crates/kovanica-node/src/main.rs`, `use_vrf_leader`, validator-mempool wiring, and `TimeoutGossip` are gated on `!is_hybrid`, and legacy constants (`WAVE_LENGTH`, `EPOCH_ROUNDS`, `MIN_VALIDATOR_STAKE`, `MIN_DELEGATION`) are marked `NON-CONSENSUS` in `crates/kovanica-params/src/lib.rs`. Verify that no legacy leader/stake path interferes with PoW + GHOSTDAG on `kovanica-mainnet` (chain ID 1) and `kovanica-testnet` (chain ID 2). |
 
 **Key Consensus Invariants to Verify:**
 1. **Deterministic DAG Ordering:** All honest nodes processing the same set of DAG blocks derive an identical GHOSTDAG linear sequence and identical state root.
@@ -121,7 +121,8 @@ $$\text{TOTAL\_SUPPLY} = \text{PREMINE } (0.2\text{M}) + \text{TREASURY } (8\tex
 | Endpoint Group | Risk | Description |
 |---|---|---|
 | Mining Interface | **High** | `kovanica_getWork`, `kovanica_submitWork`, `kovanica_getMiningInfo`, `kovanica_getDagTips`. Concurrency control, rate limiting, and input sanitization on submitted work. |
-| Standard Client RPC | **Medium** | `kovanica_sendRawTransaction`, `kovanica_getBlock`, `kovanica_getTransactionReceipt`, `kovanica_call` (WASM state simulation). |
+| Standard Client RPC | **Medium** | `kovanica_sendRawTransaction`, `kovanica_getBlockByNumber`, `kovanica_getBlockHeaderByNumber`, `kovanica_getTransactionReceipt`, `kovanica_syncStatus`, `kovanica_call` (WASM state simulation). |
+| Hybrid Legacy RPC Refusal | **Medium** | `kovanica_getValidators`, `kovanica_getStake`, and `kovanica_getLeaderSchedule` are explicitly rejected (`RpcError::InvalidRequest`) on hybrid chains (`chain_id::is_hybrid`, i.e., `kovanica-mainnet` chain ID 1 and `kovanica-testnet` chain ID 2). |
 | Security Middleware | **Medium** | Per-IP token-bucket rate limiting, Bearer token authentication support, CORS configuration, request body size limits, 10s request execution timeout. |
 
 ---
