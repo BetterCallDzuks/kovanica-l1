@@ -60,9 +60,9 @@ pub extern "system" fn Java_online_kovanica_node_NativeBridge_nodeSyncProgress(
 ) -> jstring {
     let running = NODE_RUNNING.load(Ordering::SeqCst);
     let progress_json = if running {
-        r#"{"current_height":0,"target_height":0,"syncing":false,"catching_up":false}"#
+        r#"{"height":0,"target":0,"peers":0,"current_height":0,"target_height":0,"syncing":false,"catching_up":false}"#
     } else {
-        r#"{"current_height":0,"target_height":0,"syncing":false,"catching_up":false,"error":"node not running"}"#
+        r#"{"height":0,"target":0,"peers":0,"current_height":0,"target_height":0,"syncing":false,"catching_up":false,"error":"node not running"}"#
     };
     match env.new_string(progress_json) {
         Ok(js) => js.into_raw(),
@@ -90,9 +90,11 @@ mod tests {
 
     #[test]
     fn test_sync_progress_json_validity() {
-        let progress_json =
-            r#"{"current_height":0,"target_height":0,"syncing":false,"catching_up":false}"#;
+        let progress_json = r#"{"height":0,"target":0,"peers":0,"current_height":0,"target_height":0,"syncing":false,"catching_up":false}"#;
         let v: serde_json::Value = serde_json::from_str(progress_json).expect("valid json");
+        assert_eq!(v["height"], 0);
+        assert_eq!(v["target"], 0);
+        assert_eq!(v["peers"], 0);
         assert_eq!(v["syncing"], false);
         assert_eq!(v["catching_up"], false);
     }
