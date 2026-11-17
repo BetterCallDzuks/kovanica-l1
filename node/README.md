@@ -32,7 +32,7 @@ The installer:
 
 1. detects the architecture and downloads
    `kovanica-node-<arch>-linux.tar.gz` plus the network's genesis bundle
-   (`kovanica-chain<chain-id>-genesis.tar.gz` by default), verifying both
+   (`kovanica-{mainnet,testnet,devnet}-genesis.tar.gz` for chains 1/2/3 by default), verifying both
    against the published `SHA256SUMS`;
 2. installs the binary (default `/usr/local/bin/kovanica-node`);
 3. copies the genesis bundle into the data directory (default
@@ -84,7 +84,7 @@ kovanica-node genesis-bundle --chain-id 2 --source <genesis-dir>
 `founder_premine.hex`, `funded_accounts.toml`, `validators.json`); anything
 else — a signing key, a keystore, a config — is refused, so it cannot be
 published by accident. The output
-`kovanica-chain<chain-id>-genesis.tar.gz` (`--out` to change it) carries a
+`kovanica-{mainnet,testnet,devnet}-genesis.tar.gz` (for chains 1/2/3, `--out` to change it) carries a
 `SHA256SUMS` over the genesis files and an `expected-tag`, and is
 byte-identical across rebuilds. Attach it to the `v<version>-node` release
 next to the binaries. Details and the refusal rules: `docs/TESTNET-RESET.md`.
@@ -108,7 +108,7 @@ production key ceremony addresses exist.
   kovanica-node genesis-bundle --chain-id 2 --source testnet/chain2
   ```
 
-  Then attach `kovanica-chain2-genesis.tar.gz` to the `v<version>-node`
+  Then attach `kovanica-testnet-genesis.tar.gz` to the `v<version>-node`
   release and confirm the embedded `expected-tag` is `2-acfdf6a6c80fd28a`.
 - **Gate:** do **not** run the command, generate a bundle, or attach one to a
   release until **Toni supplies the ceremony addresses** and the genesis file

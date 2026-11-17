@@ -132,8 +132,8 @@ jobs:
           target/release/kovanica-node genesis-bundle \
             --chain-id "$GENESIS_CHAIN_ID" \
             --source "$src" \
-            --out "$work/kovanica-chain2-genesis.tar.gz"
-          tar -xzf "$work/kovanica-chain2-genesis.tar.gz" -C "$work/data"
+            --out "$work/kovanica-testnet-genesis.tar.gz"
+          tar -xzf "$work/kovanica-testnet-genesis.tar.gz" -C "$work/data"
           # The bundle tag binds the treasury recorded in
           # genesis_validators.toml. Give this node the same address the way
           # install.sh does, otherwise the comparison below would use the zero
@@ -204,20 +204,20 @@ jobs:
           node-dist/kovanica-node genesis-bundle \
             --chain-id "$GENESIS_CHAIN_ID" \
             --source "$src" \
-            --out dist/kovanica-chain2-genesis.tar.gz
+            --out dist/kovanica-testnet-genesis.tar.gz
           # The installer verifies SHA256SUMS from the extracted bundle; do the
           # same check here so a broken archive never reaches a release.
           verify="$RUNNER_TEMP/bundle-verify"
           rm -rf "$verify"
           mkdir -p "$verify"
-          tar -xzf dist/kovanica-chain2-genesis.tar.gz -C "$verify"
+          tar -xzf dist/kovanica-testnet-genesis.tar.gz -C "$verify"
           ( cd "$verify" && sha256sum -c SHA256SUMS )
-          ls -l dist/kovanica-chain2-genesis.tar.gz
+          ls -l dist/kovanica-testnet-genesis.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
           name: genesis-bundle
-          path: dist/kovanica-chain2-genesis.tar.gz
+          path: dist/kovanica-testnet-genesis.tar.gz
           if-no-files-found: error
 
   checksums:
@@ -238,7 +238,7 @@ jobs:
           test -s SHA256SUMS
           grep -q 'kovanica-node-x86_64-linux.tar.gz' SHA256SUMS
           grep -q 'kovanica-node-aarch64-linux.tar.gz' SHA256SUMS
-          grep -q 'kovanica-chain2-genesis.tar.gz' SHA256SUMS
+          grep -q 'kovanica-testnet-genesis.tar.gz' SHA256SUMS
           cat SHA256SUMS
 
       - uses: actions/upload-artifact@v4
@@ -267,7 +267,7 @@ jobs:
           test -s SHA256SUMS
           grep -q 'kovanica-node-x86_64-linux.tar.gz' SHA256SUMS
           grep -q 'kovanica-node-aarch64-linux.tar.gz' SHA256SUMS
-          grep -q 'kovanica-chain2-genesis.tar.gz' SHA256SUMS
+          grep -q 'kovanica-testnet-genesis.tar.gz' SHA256SUMS
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
 
@@ -288,7 +288,7 @@ jobs:
           |---|---|
           | `kovanica-node-x86_64-linux.tar.gz` | Linux x86_64 (glibc) |
           | `kovanica-node-aarch64-linux.tar.gz` | Linux aarch64/arm64 (glibc) |
-          | `kovanica-chain2-genesis.tar.gz` | genesis bundle every chain-2 node must share |
+          | `kovanica-testnet-genesis.tar.gz` | genesis bundle every chain-2 node must share |
           | `SHA256SUMS` | checksums for all assets above |
 
           Install (non-validating full node, RPC on loopback):

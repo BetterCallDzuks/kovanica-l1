@@ -19,7 +19,7 @@
 #   --version <v>     node release version          (default 0.3.0)
 #   --chain-id <id>   network to install for        (default 2, testnet)
 #   --bundle-asset <name>  genesis asset in the release
-#                          (default kovanica-chain<chain-id>-genesis.tar.gz)
+#                          (default kovanica-{mainnet,testnet,devnet}-genesis.tar.gz)
 #   --expected-tag <t>     published tag <chain-id>-<16 hex>
 #                          (default: the `expected-tag` file inside the bundle)
 #   --prefix <dir>    install prefix                (default /usr/local, root)
@@ -135,7 +135,12 @@ esac
 # Default asset name for the network's genesis bundle. A network that publishes
 # a different name can say so with --bundle-asset.
 if [ -z "$BUNDLE_ASSET" ]; then
-    BUNDLE_ASSET="kovanica-chain${CHAIN_ID}-genesis.tar.gz"
+    case "$CHAIN_ID" in
+        1) BUNDLE_ASSET="kovanica-mainnet-genesis.tar.gz" ;;
+        2) BUNDLE_ASSET="kovanica-testnet-genesis.tar.gz" ;;
+        3) BUNDLE_ASSET="kovanica-devnet-genesis.tar.gz" ;;
+        *) BUNDLE_ASSET="kovanica-chain${CHAIN_ID}-genesis.tar.gz" ;;
+    esac
 fi
 
 # A tag is `<chain-id>-<16 lowercase hex>` and is derived from the chain id and

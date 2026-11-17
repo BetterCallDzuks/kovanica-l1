@@ -57,7 +57,7 @@ Out of this plan: `kovanica-vault` (separate private tool).
 | ID | Item | Repo | Notes |
 |----|------|------|-------|
 | P3-1 | Multi-hour height watch after any future deploy | ops | Read-only |
-| P3-2 | Genesis bundle on a node release for `install.sh` | l1 | After ceremony addresses exist |
+| P3-2 | Genesis bundle (`kovanica-testnet-genesis.tar.gz`) on a node release for `install.sh` | l1 | After ceremony addresses exist (`mainnet`/`testnet`/`devnet` canonical names) |
 | P3-3 | Faucet stays sequential under load | l1 | Already passed basic checks |
 | P3-4 | Safe nginx Authorization check (from #257) | ops | Docs already merged |
 | P3-5 | Fund the rotated chain-2 faucet after re-genesis | l1/ops | **Blocked**: faucet is `0x0`, below the 100 KVNC floor; no signable funded key on the host. Procedure and unblock options: `docs/FAUCET-FUNDING.md` |

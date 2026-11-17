@@ -464,10 +464,10 @@ fn the_default_archive_name_is_the_published_chain2_asset() {
         .expect("running kovanica-node");
     assert!(bundle.status.success(), "failed:\n{}", stderr(&bundle));
 
-    let archive = workdir.join("kovanica-chain2-genesis.tar.gz");
+    let archive = workdir.join("kovanica-testnet-genesis.tar.gz");
     assert!(
         archive.exists(),
-        "default output must be kovanica-chain2-genesis.tar.gz, got: {:?}",
+        "default output must be kovanica-testnet-genesis.tar.gz, got: {:?}",
         std::fs::read_dir(&workdir)
             .expect("read workdir")
             .filter_map(Result::ok)
@@ -526,7 +526,7 @@ fn the_release_workflow_packages_the_chain2_bundle() {
     for needle in [
         "genesis-bundle",
         "--chain-id \"$GENESIS_CHAIN_ID\"",
-        "kovanica-chain2-genesis.tar.gz",
+        "kovanica-testnet-genesis.tar.gz",
         "testnet/chain2",
         "expected-tag",
         "SHA256SUMS",

@@ -42,6 +42,16 @@ pub(crate) const TAG_FILE: &str = "expected-tag";
 /// `sha256sum -c` verifies.
 pub(crate) const SUMS_FILE: &str = "SHA256SUMS";
 
+/// Canonical default archive filename for a chain ID.
+pub(crate) fn default_filename(chain_id: u64) -> String {
+    match chain_id {
+        1 => "kovanica-mainnet-genesis.tar.gz".to_string(),
+        2 => "kovanica-testnet-genesis.tar.gz".to_string(),
+        3 => "kovanica-devnet-genesis.tar.gz".to_string(),
+        _ => format!("kovanica-chain{chain_id}-genesis.tar.gz"),
+    }
+}
+
 /// A built bundle, not yet written to disk.
 #[derive(Debug)]
 pub(crate) struct Bundle {
@@ -509,5 +519,13 @@ mod tests {
         let dir = temp_dir();
         let err = build(&dir.path().join("nope"), 2, "2-0123456789abcdef").expect_err("refused");
         assert!(err.to_string().contains("is not a directory"), "got: {err}");
+    }
+
+    #[test]
+    fn default_filename_maps_canonical_network_names() {
+        assert_eq!(default_filename(1), "kovanica-mainnet-genesis.tar.gz");
+        assert_eq!(default_filename(2), "kovanica-testnet-genesis.tar.gz");
+        assert_eq!(default_filename(3), "kovanica-devnet-genesis.tar.gz");
+        assert_eq!(default_filename(99), "kovanica-chain99-genesis.tar.gz");
     }
 }

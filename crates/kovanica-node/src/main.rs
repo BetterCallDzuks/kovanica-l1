@@ -144,7 +144,8 @@ struct GenesisBundleArgs {
     #[arg(long, value_name = "DIR")]
     source: std::path::PathBuf,
 
-    /// Output archive (default `kovanica-chain<chain-id>-genesis.tar.gz` in
+    /// Output archive (default `kovanica-{mainnet,testnet,devnet}-genesis.tar.gz`
+    /// for chains 1/2/3, or `kovanica-chain<chain-id>-genesis.tar.gz`, in
     /// the current directory). Must be outside `--source`.
     #[arg(long, value_name = "FILE")]
     out: Option<std::path::PathBuf>,
@@ -311,7 +312,7 @@ fn run_genesis_bundle(args: GenesisBundleArgs) -> Result<()> {
 
     let out = args
         .out
-        .unwrap_or_else(|| PathBuf::from(format!("kovanica-chain{chain_id}-genesis.tar.gz")));
+        .unwrap_or_else(|| PathBuf::from(genesis_bundle::default_filename(chain_id)));
     refuse_output_inside_source(&source, &out)?;
     if out.exists() && !args.force {
         anyhow::bail!(
