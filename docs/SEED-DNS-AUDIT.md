@@ -190,9 +190,8 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
-      KOVANICA_RUN_VALIDATOR: "false"
       KOVANICA_LISTEN_ADDR: "0.0.0.0:8000"
-      KOVANICA_BOOTNODES: "seed3.kovanica.online:8000"
+      KOVANICA_BOOTNODES: "testnet.kovanica.online:8000"
       KOVANICA_MAX_PEERS: "50"
       KOVANICA_RPC_AUTH: "disable"
       KOVANICA_RPC_RATE_LIMIT_PER_MIN: "0"
@@ -228,11 +227,11 @@ volumes:
 6. [ ] Add seed node to `KOVANICA_BOOTNODES` in genesis config
 7. [ ] For mainnet: provision 1 bare-metal server, add `mainnet.kovanica.online` A record
 
-### Phase 2: Genesis Ceremony (T-1 week)
-1. [ ] Collect validator public keys + stakes via PR
-2. [ ] Run `kovanica-node genesis --validators validators.json --force`
-3. [ ] Distribute `genesis.json` + `genesis_validators.toml` to all participants
-3. [ ] Verify genesis hash matches across all nodes
+### Phase 2: Genesis Ceremony (T-1 week, Hybrid PoW + GHOSTDAG, NoStake82M)
+1. [ ] Collect bootstrap seed public keys (zero stake) via PR
+2. [ ] Run `ops/genesis/ceremony.sh` to generate `genesis_validators.toml` with bootstrap identities (0 stake) and `genesis_validators.toml`
+3. [ ] Cut canonical genesis bundle `kovanica-testnet-genesis.tar.gz` (`genesis_validators.toml`, `funded_accounts.toml`) and verify `SHA256SUMS` + embedded `expected-tag: 2-24cdb5fadd98b207`
+4. [ ] Verify genesis tag via `kovanica-node network-tag` matches `2-24cdb5fadd98b207` across all nodes
 
 ### Phase 3: Testnet Launch (T-0)
 1. [ ] Deploy explorer to Cloudflare Pages
@@ -254,7 +253,7 @@ volumes:
 
 - `docs/MAINNET-FREEZE-CHECKLIST.md` — full testnet/mainnet freeze checklist
 - `docs/TOKENOMICS.md` — genesis allocation numbers
-- `ops/docker/validators/generate.sh` — key generation script
+- `ops/genesis/ceremony.sh` — genesis ceremony / key generation script
 - `ops/docker/` — docker compose files
 - `crates/kovanica-faucet/` — faucet crate
 - `ops/grafana/kovanica-overview.json` — Grafana dashboard
