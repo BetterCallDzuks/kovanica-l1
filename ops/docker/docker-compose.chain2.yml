@@ -174,12 +174,14 @@ services:
       - "1"
       - --min-balance-ku
       - "100"
+      - --trusted-proxies
+      - "127.0.0.1,172.16.0.0/12,10.0.0.0/8"
     environment:
       # Host env file only: never a literal in this file.
       KOVANICA_FAUCET_PASSPHRASE: "${KOVANICA_FAUCET_PASSPHRASE:-}"
       # Comma-separated IPs/CIDRs of the reverse proxies allowed to set
       # X-Forwarded-For. Empty means every caller keys on the proxy's IP.
-      KOVANICA_FAUCET_TRUSTED_PROXIES: "${KOVANICA_FAUCET_TRUSTED_PROXIES:-}"
+      KOVANICA_FAUCET_TRUSTED_PROXIES: "${KOVANICA_FAUCET_TRUSTED_PROXIES:-127.0.0.1,172.16.0.0/12,10.0.0.0/8}"
       # Same token the nodes accept, so the faucet keeps working with auth on.
       KOVANICA_RPC_WRITE_TOKENS: "${KOVANICA_RPC_WRITE_TOKENS:-}"
       RUST_LOG: "info"
