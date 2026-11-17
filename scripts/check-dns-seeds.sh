@@ -30,7 +30,6 @@ CUSTOM_SEEDS=""
 TESTNET_DEFAULT_SEEDS=(
   "testnet.kovanica.online"
   "seed1.kovanica.online"
-  "seed3.kovanica.online"
 )
 
 MAINNET_DEFAULT_SEEDS=(
