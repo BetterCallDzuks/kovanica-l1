@@ -196,6 +196,8 @@ pub struct Mempool {
     state: Mutex<PoolState>,
     /// Last time we rebroadcast transactions.
     last_rebroadcast: Mutex<Instant>,
+    /// Wakes on-demand miners as soon as a transaction enters the pool.
+    tx_notify: tokio::sync::Notify,
 }
 
 /// Value moved out of the sender's balance by `kind` at execution time
@@ -239,7 +241,14 @@ impl Mempool {
             signing_ctx,
             state: Mutex::new(PoolState::default()),
             last_rebroadcast: Mutex::new(Instant::now()),
+            tx_notify: tokio::sync::Notify::new(),
         }
+    }
+
+    /// Returns a future that resolves when a new transaction is admitted to
+    /// the mempool (or immediately if a notification permit is already stored).
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.tx_notify.notified()
     }
 
     /// Get a reference to the mempool configuration.
@@ -561,6 +570,7 @@ impl Mempool {
             gossip,
         });
         info!(%hash, fee_rate, size, gossip, "added transaction to mempool");
+        self.tx_notify.notify_one();
         Ok(())
     }
 
@@ -1884,5 +1894,41 @@ mod tests {
                 Err(MempoolError::ZeroFee)
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn notified_wakes_when_transaction_admitted() {
+        let fx = Fixture::new();
+        let (sk, sender) = fx.funded(10_000_000, 0);
+        let ctx = kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL);
+        let pool = Arc::new(Mempool::new(
+            MempoolConfig::default(),
+            fx.storage.clone(),
+            ctx,
+        ));
+
+        let pool_bg = Arc::clone(&pool);
+        let waiter = tokio::spawn(async move {
+            pool_bg.notified().await;
+        });
+
+        tokio::task::yield_now().await;
+        let tx = build_signed_tx_with_ctx(
+            sender,
+            0,
+            TransactionKind::Transfer {
+                to: Address([2u8; 32]),
+                amount: 100,
+            },
+            10_000,
+            &sk,
+            &ctx,
+        );
+        pool.add_transaction(tx).unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("notified should wake promptly")
+            .unwrap();
     }
 }

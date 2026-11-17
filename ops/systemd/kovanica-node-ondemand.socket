@@ -1,0 +1,11 @@
+[Unit]
+Description=Kovanica Node On-Demand JSON-RPC Socket
+Documentation=https://github.com/KovanicaDAG/kovanica-l1
+
+[Socket]
+ListenStream=127.0.0.1:8545
+Service=kovanica-node-ondemand.service
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

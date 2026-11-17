@@ -26,6 +26,7 @@
 #   KOVANICA_RPC_AUTH                   (disable|on, default on)
 #   KOVANICA_RPC_WRITE_TOKENS
 #   KOVANICA_HEALTH_COMMIT_STALL_SECS   (default 120; 0 disables the /health stall check)
+#   KOVANICA_IDLE_SHUTDOWN_SECS         (default 0 = disabled; clean shutdown after N s of no RPC/WS/mempool activity)
 #   KOVANICA_VRF_LEADER                 (true|false; TOML equivalent use_vrf_leader)
 #   KOVANICA_ENFORCE_MIN_ACTIVE_VALIDATORS (true|false, default off; enforces 15 active validators minimum and
 #                                          refuses the single-node genesis fallback)
@@ -158,11 +159,15 @@ invalid_message_weight = -10.0
 
 # Proof-of-Work Mining (Hybrid PoW Chains 1 & 2).
 # When enabled, the node mines blocks using KovanicaHash on top of recent DAG tips.
-#   enabled -> KOVANICA_MINING_ENABLED
-#   threads -> KOVANICA_MINING_THREADS
+#   enabled                   -> KOVANICA_MINING_ENABLED
+#   threads                   -> KOVANICA_MINING_THREADS
+#   on_demand                 -> KOVANICA_MINING_ON_DEMAND (opt-in; sleeps when mempool is empty)
+#   on_demand_trailing_blocks -> KOVANICA_MINING_ON_DEMAND_TRAILING_BLOCKS
 [mining]
 enabled = false
 threads = 1
+on_demand = false
+on_demand_trailing_blocks = 0
 
 # Contract execution limits.
 #

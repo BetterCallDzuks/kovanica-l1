@@ -5,6 +5,7 @@ Production systemd unit definitions and environment templates for Kovanica node 
 ## Unit Files
 
 * **`kovanica-node.service`**: Standard full node and mining worker service.
+* **`kovanica-node-ondemand.socket` / `kovanica-node-ondemand.service`**: Opt-in socket-activated, scale-to-zero units for local/dev/personal RPC nodes (`KOVANICA_MINING_ON_DEMAND=true`, `KOVANICA_IDLE_SHUTDOWN_SECS=300`; node adopts `LISTEN_FDS` and exits cleanly when idle).
 * **`kovanica-seed@.service`**: Multi-instance template for seed node operators (`systemctl start kovanica-seed@1`).
 * **`kovanica.env.example`**: Example environment file template for `/etc/kovanica/kovanica.env`.
 

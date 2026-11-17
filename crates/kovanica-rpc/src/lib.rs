@@ -6,9 +6,10 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
     Arc,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     extract::{ws::WebSocketUpgrade, Extension, Json},
@@ -219,11 +220,56 @@ pub type TxGossipSender = tokio::sync::mpsc::UnboundedSender<kovanica_types::Tra
 /// Channel the node drains to publish RPC-submitted blocks on gossip.
 pub type BlockGossipSender = tokio::sync::mpsc::UnboundedSender<kovanica_types::Block>;
 
+/// Tracks the Unix epoch timestamp (in seconds) of the most recent user
+/// activity (RPC/WS request or external touch) for idle-shutdown monitoring.
+#[derive(Clone, Debug)]
+pub struct ActivityTracker {
+    last_secs: Arc<AtomicU64>,
+}
+
+impl Default for ActivityTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ActivityTracker {
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Create a new tracker initialized to the current timestamp.
+    pub fn new() -> Self {
+        Self {
+            last_secs: Arc::new(AtomicU64::new(Self::now_secs())),
+        }
+    }
+
+    /// Record activity at the current timestamp.
+    pub fn touch(&self) {
+        self.last_secs.store(Self::now_secs(), Ordering::Relaxed);
+    }
+
+    /// Last recorded activity timestamp in Unix epoch seconds.
+    pub fn last_activity_secs(&self) -> u64 {
+        self.last_secs.load(Ordering::Relaxed)
+    }
+
+    /// Seconds elapsed since the last recorded activity.
+    pub fn idle_secs(&self) -> u64 {
+        Self::now_secs().saturating_sub(self.last_activity_secs())
+    }
+}
+
 #[derive(Clone)]
 pub struct RpcServer {
     methods: Arc<RwLock<HashMap<String, RpcHandler>>>,
     addr: SocketAddr,
     state: RpcState,
+    activity: ActivityTracker,
 }
 
 impl RpcServer {
@@ -246,9 +292,15 @@ impl RpcServer {
             methods: Arc::new(RwLock::new(HashMap::new())),
             addr,
             state,
+            activity: ActivityTracker::new(),
         };
         server.register_default_methods().await;
         server
+    }
+
+    /// Returns a handle to the server's [`ActivityTracker`].
+    pub fn activity(&self) -> ActivityTracker {
+        self.activity.clone()
     }
 
     async fn register_default_methods(&mut self) {
@@ -437,24 +489,61 @@ impl RpcServer {
             .layer(Extension(self.state.auth_config.clone()))
             .layer(Extension(self.state.peer_count.clone()))
             .layer(Extension(self.state.clone()))
+            .layer(Extension(self.activity.clone()))
             // Outermost, so a browser preflight is answered before the
             // rate limiter and before routing.
             .layer(axum::middleware::from_fn(console_cors))
     }
 
     pub async fn start(self) -> Result<tokio::task::JoinHandle<()>, std::io::Error> {
+        self.start_inner(None).await
+    }
+
+    /// Start the RPC server with an external shutdown watch receiver (e.g.
+    /// from idle-shutdown or node signal handling).
+    pub async fn start_with_shutdown(
+        self,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<tokio::task::JoinHandle<()>, std::io::Error> {
+        self.start_inner(Some(shutdown_rx)).await
+    }
+
+    async fn start_inner(
+        self,
+        shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<tokio::task::JoinHandle<()>, std::io::Error> {
         let app = self.router();
-        let listener = TcpListener::bind(self.addr).await?;
+        let listener = match adopt_systemd_listener()? {
+            Some(inherited) => inherited,
+            None => TcpListener::bind(self.addr).await?,
+        };
         let actual_addr = listener.local_addr()?;
         info!("JSON-RPC server listening on http://{}", actual_addr);
 
         let handle = tokio::spawn(async move {
+            let shutdown = async move {
+                match shutdown_rx {
+                    Some(mut rx) => {
+                        tokio::select! {
+                            _ = shutdown_signal() => {}
+                            _ = async {
+                                while !*rx.borrow() {
+                                    if rx.changed().await.is_err() {
+                                        std::future::pending::<()>().await;
+                                    }
+                                }
+                            } => {}
+                        }
+                    }
+                    None => shutdown_signal().await,
+                }
+            };
             // Connect info gives the rate limiter the client IP.
             if let Err(e) = axum::serve(
                 listener,
                 app.into_make_service_with_connect_info::<SocketAddr>(),
             )
-            .with_graceful_shutdown(shutdown_signal())
+            .with_graceful_shutdown(shutdown)
             .await
             {
                 error!(error = %e, "JSON-RPC server stopped with an error");
@@ -469,8 +558,51 @@ impl RpcServer {
     }
 }
 
+/// Adopts a pre-bound TCP listener passed via systemd socket activation
+/// (`LISTEN_FDS` / `LISTEN_PID`), if present for this process.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn adopt_systemd_listener() -> Result<Option<TcpListener>, std::io::Error> {
+    use std::os::unix::io::FromRawFd;
+
+    let Ok(fds_str) = std::env::var("LISTEN_FDS") else {
+        return Ok(None);
+    };
+    let Ok(fds) = fds_str.trim().parse::<usize>() else {
+        return Ok(None);
+    };
+    if fds == 0 {
+        return Ok(None);
+    }
+    if let Ok(pid_str) = std::env::var("LISTEN_PID") {
+        if pid_str.trim().parse::<u32>().ok() != Some(std::process::id()) {
+            return Ok(None);
+        }
+    }
+    // Clear so child processes do not inherit systemd socket env vars.
+    std::env::remove_var("LISTEN_FDS");
+    std::env::remove_var("LISTEN_PID");
+
+    // SAFETY: systemd passes the first activated socket on fd 3 (SD_LISTEN_FDS_START)
+    // and we verified LISTEN_FDS >= 1 and LISTEN_PID matches our PID.
+    let std_listener = unsafe { std::net::TcpListener::from_raw_fd(3) };
+    std_listener.set_nonblocking(true)?;
+    let listener = TcpListener::from_std(std_listener)?;
+    Ok(Some(listener))
+}
+
+#[cfg(not(unix))]
+fn adopt_systemd_listener() -> Result<Option<TcpListener>, std::io::Error> {
+    Ok(None)
+}
+
 /// Upgrades an HTTP request to a WebSocket and drives the subscription loop.
-async fn ws_handler(ws: WebSocketUpgrade, Extension(state): Extension<RpcState>) -> Response {
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    Extension(state): Extension<RpcState>,
+    Extension(activity): Extension<ActivityTracker>,
+) -> Response {
+    activity.touch();
     ws.on_upgrade(move |socket| subscriptions::serve_connection(socket, state))
 }
 
@@ -559,9 +691,11 @@ fn bounded_method_label(method: &str) -> &'static str {
 async fn rpc_handler(
     Extension(methods): Extension<Arc<RwLock<HashMap<String, RpcHandler>>>>,
     Extension(auth): Extension<Arc<AuthConfig>>,
+    Extension(activity): Extension<ActivityTracker>,
     headers: HeaderMap,
     Json(request): Json<JsonRpcRequest>,
 ) -> Response {
+    activity.touch();
     let method_label = bounded_method_label(&request.method);
     let started = std::time::Instant::now();
 

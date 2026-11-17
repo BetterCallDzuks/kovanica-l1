@@ -27,6 +27,12 @@ pub struct MiningConfig {
     pub author: Option<u16>,
     /// Explicit miner payout address (base32 or hex). If not set, author index resolves to genesis validator.
     pub address: Option<String>,
+    /// Pause mining when the mempool is empty and wake immediately when a
+    /// transaction arrives (`KOVANICA_MINING_ON_DEMAND`).
+    pub on_demand: bool,
+    /// Optional number of trailing empty blocks to mine after a non-empty
+    /// block when `on_demand` is enabled (`KOVANICA_MINING_ON_DEMAND_TRAILING_BLOCKS`).
+    pub on_demand_trailing_blocks: u32,
 }
 
 impl Default for MiningConfig {
@@ -36,6 +42,8 @@ impl Default for MiningConfig {
             threads: 1,
             author: None,
             address: None,
+            on_demand: false,
+            on_demand_trailing_blocks: 0,
         }
     }
 }
@@ -160,6 +168,11 @@ pub struct NodeConfig {
     /// Explicit emission policy override ("legacy-81m" or "no-stake-82m").
     /// Overridable with `KOVANICA_EMISSION_POLICY`.
     pub emission_policy: Option<String>,
+    /// Seconds of RPC/WS/mempool inactivity after which the node triggers a
+    /// clean shutdown (`0` disables idle shutdown). Overridable with
+    /// `KOVANICA_IDLE_SHUTDOWN_SECS`.
+    #[serde(default)]
+    pub idle_shutdown_secs: u64,
 
     // ------------------------------------------------------------------
     // Retention / pruning (opt-in: with every window unset the node never
@@ -265,6 +278,7 @@ impl Default for NodeConfig {
             mining: MiningConfig::default(),
             seeder: SeederConfig::default(),
             emission_policy: None,
+            idle_shutdown_secs: 0,
             chain_id: kovanica_types::signing::chain_id::LOCAL,
             // Pruning is opt-in: every retention window defaults to "keep
             // everything" so an unconfigured node never deletes data.
@@ -502,6 +516,34 @@ impl NodeConfig {
                 Err(_) => tracing::warn!(
                     value = %v,
                     "ignoring invalid KOVANICA_HEALTH_COMMIT_STALL_SECS"
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KOVANICA_IDLE_SHUTDOWN_SECS") {
+            match v.trim().parse() {
+                Ok(secs) => self.idle_shutdown_secs = secs,
+                Err(_) => tracing::warn!(
+                    value = %v,
+                    "ignoring invalid KOVANICA_IDLE_SHUTDOWN_SECS"
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KOVANICA_MINING_ON_DEMAND") {
+            match v.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => self.mining.on_demand = true,
+                "0" | "false" | "no" | "off" => self.mining.on_demand = false,
+                _ => tracing::warn!(
+                    value = %v,
+                    "ignoring invalid KOVANICA_MINING_ON_DEMAND"
+                ),
+            }
+        }
+        if let Ok(v) = std::env::var("KOVANICA_MINING_ON_DEMAND_TRAILING_BLOCKS") {
+            match v.trim().parse() {
+                Ok(blocks) => self.mining.on_demand_trailing_blocks = blocks,
+                Err(_) => tracing::warn!(
+                    value = %v,
+                    "ignoring invalid KOVANICA_MINING_ON_DEMAND_TRAILING_BLOCKS"
                 ),
             }
         }

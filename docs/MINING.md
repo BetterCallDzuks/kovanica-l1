@@ -242,6 +242,9 @@ enabled = true
 author = 0
 threads = 4
 payout_address = "kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag"
+# Optional (for local/dev/private chains; leave false on public mainnet/testnet miners):
+# on_demand = true
+# on_demand_trailing_blocks = 0
 ```
 
 Or passing flags to the node binary:

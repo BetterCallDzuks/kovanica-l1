@@ -147,6 +147,7 @@ Contracts (već implementirani): HTLC, Vault, Multisig, Token + Host trait.
 - Max peers: 50 (`config.example.toml`)
 - Workspace tests: 1,101+ tests passing (100% pass in verified crate suites)
 - Public launch: Planned 1.1.2027
+- Opt-in on-demand lifecycle (`off` by default): `mining.on_demand` (`KOVANICA_MINING_ON_DEMAND`), `idle_shutdown_secs` (`KOVANICA_IDLE_SHUTDOWN_SECS`), and `LISTEN_FDS` systemd socket activation (`ops/systemd/kovanica-node-ondemand.{socket,service}`); mainnet/testnet defaults unchanged.
 
 ## Coding standards
 

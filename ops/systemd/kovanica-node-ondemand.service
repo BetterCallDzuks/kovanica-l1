@@ -1,0 +1,59 @@
+[Unit]
+Description=Kovanica Node Daemon (On-Demand / Scale-to-Zero)
+Documentation=https://github.com/KovanicaDAG/kovanica-l1
+Requires=kovanica-node-ondemand.socket
+After=network-online.target kovanica-node-ondemand.socket
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kovanica
+Group=kovanica
+UMask=0027
+WorkingDirectory=/var/lib/kovanica
+StateDirectory=kovanica
+ConfigurationDirectory=kovanica
+
+# Load environment configuration overrides
+EnvironmentFile=-/etc/kovanica/kovanica.env
+
+# On-demand mining + clean exit after 5 minutes of RPC/WS/mempool inactivity.
+# Clean exit (0) leaves the service stopped until the next connection on the socket.
+Environment=KOVANICA_MINING_ON_DEMAND=true
+Environment=KOVANICA_IDLE_SHUTDOWN_SECS=300
+
+ExecStart=/usr/local/bin/kovanica-node
+
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+MemoryMax=3G
+MemoryAccounting=yes
+
+# Sandboxing and security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/kovanica
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

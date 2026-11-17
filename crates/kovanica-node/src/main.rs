@@ -1237,6 +1237,7 @@ where
         Some(auth_config),
     )
     .await;
+    let rpc_activity = rpc_server.activity();
     let rpc_handle = rpc_server.start().await.context("starting RPC server")?;
 
     // ------------------------------------------------------------------
@@ -1647,10 +1648,25 @@ where
     info!("Kovanica node started");
 
     // ------------------------------------------------------------------
-    // 9. Run until shutdown, then stop everything
+    // 9. Run until shutdown (or idle timeout), then stop everything
     // ------------------------------------------------------------------
-    shutdown.await;
-    info!("shutdown signal received; stopping node");
+    if config.idle_shutdown_secs > 0 {
+        let idle_secs = config.idle_shutdown_secs;
+        let idle_activity = rpc_activity.clone();
+        let idle_mempool = mempool.clone();
+        info!(idle_shutdown_secs = idle_secs, "idle auto-shutdown enabled");
+        tokio::select! {
+            _ = shutdown => {
+                info!("shutdown signal received; stopping node");
+            }
+            _ = wait_for_idle_shutdown(&idle_activity, &idle_mempool, idle_secs) => {
+                info!(idle_shutdown_secs = idle_secs, "idle timeout reached; stopping node");
+            }
+        }
+    } else {
+        shutdown.await;
+        info!("shutdown signal received; stopping node");
+    }
 
     let _ = shutdown_tx.send(true);
     engine.stop();
@@ -1676,6 +1692,25 @@ where
     // left to flush: dropping the handles closes the databases.
     info!("Kovanica node stopped cleanly");
     Ok(())
+}
+
+/// Polls RPC/WS activity and the mempool, returning once `idle_secs` have
+/// elapsed without any activity and with an empty mempool.
+async fn wait_for_idle_shutdown(
+    activity: &kovanica_rpc::ActivityTracker,
+    mempool: &Mempool,
+    idle_secs: u64,
+) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if !mempool.is_empty() {
+            activity.touch();
+            continue;
+        }
+        if activity.idle_secs() >= idle_secs {
+            return;
+        }
+    }
 }
 
 /// RPC write authorisation from the environment.
@@ -14017,5 +14052,24 @@ mod b1_epoch_restart_repro {
                 .contains("unfilled template containing placeholders"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn idle_shutdown_triggers_when_inactive_and_mempool_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::new(dir.path().join("state.redb")).unwrap());
+        let mempool = Mempool::new(
+            kovanica_mempool::MempoolConfig::default(),
+            storage,
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::LOCAL),
+        );
+        let activity = kovanica_rpc::ActivityTracker::new();
+
+        tokio::time::timeout(
+            Duration::from_secs(4),
+            wait_for_idle_shutdown(&activity, &mempool, 1),
+        )
+        .await
+        .expect("wait_for_idle_shutdown should fire after 1s of inactivity");
     }
 }

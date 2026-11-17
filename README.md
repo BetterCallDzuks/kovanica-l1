@@ -372,6 +372,9 @@ Default network configuration parameters (`crates/kovanica-node/src/config.rs`):
 | `round_duration_ms` | `KOVANICA_ROUND_DURATION_MS` | `4000` | Consensus round target duration in ms |
 | `run_validator` | `KOVANICA_RUN_VALIDATOR` | `true` | Legacy Mysticeti signing path; on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) mining is driven by `[mining]` |
 | `rpc_rate_limit_per_min` | `KOVANICA_RPC_RATE_LIMIT_PER_MIN` | `60` | Token-bucket rate limit per client IP |
+| `idle_shutdown_secs` | `KOVANICA_IDLE_SHUTDOWN_SECS` | `0` | Opt-in clean shutdown after N seconds of no RPC/WS/mempool activity (`0` disables; pairs with `systemd` `LISTEN_FDS` socket activation via [`ops/systemd/kovanica-node-ondemand.socket`](ops/systemd/kovanica-node-ondemand.socket)) |
+| `mining.on_demand` | `KOVANICA_MINING_ON_DEMAND` | `false` | Opt-in on-demand mining: pauses at ~0% CPU when mempool is empty and wakes on tx arrival (local/dev/private chains) |
+| `mining.on_demand_trailing_blocks` | `KOVANICA_MINING_ON_DEMAND_TRAILING_BLOCKS` | `0` | Optional trailing empty blocks to mine after a non-empty block when `mining.on_demand = true` |
 
 *RPC writes require bearer authentication (#234); `KOVANICA_RPC_AUTH` must never be disabled.*
 

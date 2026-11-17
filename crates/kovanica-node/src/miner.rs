@@ -127,11 +127,26 @@ pub async fn run_mining_loop(
     let mut current_nonce: u64 = (author as u64).wrapping_mul(10_000_000);
     // (round, when hashing it started, whether the 30s wait was logged).
     let mut round_wait: Option<(u64, Instant, bool)> = None;
+    let mut trailing_blocks_remaining: u32 = 0;
 
     loop {
         if *shutdown_rx.borrow() {
             info!("PoW miner loop received shutdown signal; stopping");
             break;
+        }
+
+        if mining_config.on_demand && mempool.is_empty() && trailing_blocks_remaining == 0 {
+            let mut rx = shutdown_rx.clone();
+            tokio::select! {
+                _ = mempool.notified() => {}
+                _ = rx.changed() => {
+                    if *rx.borrow() {
+                        info!("PoW miner loop received shutdown signal; stopping");
+                        break;
+                    }
+                }
+            }
+            continue;
         }
 
         let parents = select_parents_from_tips(&dag_store, kovanica_params::GHOSTDAG_K as usize);
@@ -177,6 +192,10 @@ pub async fn run_mining_loop(
         // set, so asking again while the same round is still being mined would
         // rebuild the next chunk without those transactions.
         let txs = mempool.get_next_transactions(kovanica_types::MAX_TXS_PER_BLOCK);
+        let had_txs = !txs.is_empty();
+        if mining_config.on_demand && !had_txs && trailing_blocks_remaining == 0 {
+            continue;
+        }
         let merkle_root = StatementBlock::compute_merkle_root(&txs);
 
         // Mine the round in bounded chunks so the loop cooperates with tokio,
@@ -278,6 +297,14 @@ pub async fn run_mining_loop(
         if let Err(e) = network_cmd_tx.send(NetworkCommand::BroadcastBlock(statement_block)) {
             warn!(error = %e, "failed to broadcast mined block to P2P network");
         }
+
+        if mining_config.on_demand {
+            if had_txs {
+                trailing_blocks_remaining = mining_config.on_demand_trailing_blocks;
+            } else {
+                trailing_blocks_remaining = trailing_blocks_remaining.saturating_sub(1);
+            }
+        }
     }
 }
 
@@ -371,5 +398,61 @@ mod tests {
 
         let timestamps = extract_ancestor_timestamps(&dag, &tips, 5, 10).unwrap();
         assert_eq!(timestamps, vec![10_000]);
+    }
+
+    #[tokio::test]
+    async fn on_demand_miner_does_not_mine_when_mempool_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let dag_storage = Storage::new(dir.path().join("dag.redb")).unwrap();
+        let dag_store = Arc::new(DagStore::new(dag_storage).unwrap());
+        let state_storage = Arc::new(Storage::new(dir.path().join("state.redb")).unwrap());
+
+        let chain_id = kovanica_types::signing::chain_id::LOCAL;
+        let mempool = Arc::new(Mempool::new(
+            kovanica_mempool::MempoolConfig::default(),
+            state_storage,
+            kovanica_types::SigningContext::new(chain_id),
+        ));
+        let (network_cmd_tx, _network_cmd_rx) = mpsc::unbounded_channel();
+        let (exec_tx, _exec_rx) = mpsc::unbounded_channel();
+        let ghostdag = Arc::new(parking_lot::Mutex::new(GhostdagCommitter::new(
+            kovanica_params::GHOSTDAG_K as usize,
+        )));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        let mining_config = MiningConfig {
+            enabled: true,
+            threads: 1,
+            author: Some(0),
+            address: None,
+            on_demand: true,
+            on_demand_trailing_blocks: 0,
+        };
+
+        let dag_clone = Arc::clone(&dag_store);
+        let handle = tokio::spawn(run_mining_loop(
+            mining_config,
+            chain_id,
+            0,
+            kovanica_types::Address([1u8; 32]),
+            dag_clone,
+            mempool,
+            network_cmd_tx,
+            exec_tx,
+            ghostdag,
+            shutdown_rx,
+        ));
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            select_parents_from_tips(&dag_store, 5).is_empty(),
+            "on_demand miner must not produce empty blocks while mempool is empty"
+        );
+
+        let _ = shutdown_tx.send(true);
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("on_demand miner should shut down promptly")
+            .unwrap();
     }
 }
