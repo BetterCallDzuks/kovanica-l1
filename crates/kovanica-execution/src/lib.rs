@@ -42,7 +42,8 @@ pub mod contracts;
 pub use call_args::{
     encode_escrow_approve, encode_escrow_create, encode_escrow_refund, encode_escrow_release,
     encode_htlc_claim, encode_htlc_create, encode_htlc_refund, encode_multisig_confirm,
-    encode_multisig_create, encode_multisig_execute, encode_multisig_propose, encode_nft_approve,
+    encode_multisig_create, encode_multisig_execute, encode_multisig_propose, encode_name_register,
+    encode_name_resolve, encode_name_transfer, encode_name_update_endpoints, encode_nft_approve,
     encode_nft_burn, encode_nft_create_collection, encode_nft_mint, encode_nft_set_base_uri,
     encode_nft_transfer, encode_nft_transfer_from, encode_token_approve, encode_token_burn,
     encode_token_buy, encode_token_create, encode_token_init_pool, encode_token_mint,

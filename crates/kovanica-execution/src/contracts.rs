@@ -178,9 +178,13 @@ pub const ENTRY_POINTS: &[&str] = &[
     "escrow_approve",
     "escrow_release",
     "escrow_refund",
+    "name_register",
+    "name_resolve",
+    "name_update_endpoints",
+    "name_transfer",
 ];
 
-/// Returns whether `name` is one of the 30 dispatchable entry points.
+/// Returns whether `name` is one of the 34 dispatchable entry points.
 pub fn is_entry_point(name: &str) -> bool {
     ENTRY_POINTS.contains(&name)
 }
@@ -1021,6 +1025,27 @@ fn dispatch_entry(
             let (amount_in, min_out): (kovanica_common::Amount, kovanica_common::Amount) =
                 dec(args)?;
             enc(&Token::sell(host, amount_in, min_out)?)
+        }
+
+        // --- kovanica-name-registry --------------------------------------------
+        "name_register" => {
+            let (name, pubkey, relay_endpoints): (String, [u8; 32], Vec<String>) = dec(args)?;
+            kovanica_name_registry::NameRegistry::register(host, name, pubkey, relay_endpoints)?;
+            enc(&())
+        }
+        "name_resolve" => {
+            let (name,): (String,) = dec(args)?;
+            enc(&kovanica_name_registry::NameRegistry::resolve(host, &name)?)
+        }
+        "name_update_endpoints" => {
+            let (name, relay_endpoints): (String, Vec<String>) = dec(args)?;
+            kovanica_name_registry::NameRegistry::update_endpoints(host, name, relay_endpoints)?;
+            enc(&())
+        }
+        "name_transfer" => {
+            let (name, new_owner): (String, [u8; 32]) = dec(args)?;
+            kovanica_name_registry::NameRegistry::transfer(host, name, new_owner)?;
+            enc(&())
         }
 
         other => Err(ExecutionError::Other(format!(
@@ -2160,17 +2185,17 @@ pub(crate) mod tests {
     // Every advertised entry point reaches the dispatcher: with an empty
     // argument buffer each one fails during argument decoding (InvalidInput),
     // never with "unknown entry point". This pins the native table to the
-    // ENTRY_POINTS names of the FIXED ABI (currently 30, incl. escrow_*).
+    // ENTRY_POINTS names of the FIXED ABI (currently 34, incl. escrow_* and name_*).
     #[test]
     fn dispatch_covers_all_entry_points() {
         let (_dir, storage) = open_storage();
         let contract = addr(30);
         let caller = addr(1);
         deploy(&storage, &contract);
-        assert_eq!(ENTRY_POINTS.len(), 30);
+        assert_eq!(ENTRY_POINTS.len(), 34);
         assert_eq!(
             ENTRY_POINTS.iter().filter(|e| is_entry_point(e)).count(),
-            30
+            34
         );
         for entry in ENTRY_POINTS {
             let err = execute_contract_call(entry, contract, caller, 1, 100, &[], &storage)

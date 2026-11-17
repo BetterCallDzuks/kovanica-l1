@@ -29,6 +29,12 @@ impl std::error::Error for EncodeError {
     }
 }
 
+impl From<bincode::Error> for EncodeError {
+    fn from(err: bincode::Error) -> Self {
+        Self(err)
+    }
+}
+
 fn enc<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
     bincode::serialize(value).map_err(EncodeError)
 }
@@ -250,6 +256,33 @@ pub fn encode_escrow_refund(id: [u8; 32]) -> Result<Vec<u8>, EncodeError> {
     enc(&id)
 }
 
+/// `name_register(name, pubkey, relay_endpoints)`.
+pub fn encode_name_register(
+    name: &str,
+    pubkey: [u8; 32],
+    relay_endpoints: &[String],
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(name.to_string(), pubkey, relay_endpoints.to_vec()))
+}
+
+/// `name_resolve(name)`.
+pub fn encode_name_resolve(name: &str) -> Result<Vec<u8>, EncodeError> {
+    enc(&(name.to_string(),))
+}
+
+/// `name_update_endpoints(name, relay_endpoints)`.
+pub fn encode_name_update_endpoints(
+    name: &str,
+    relay_endpoints: &[String],
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(name.to_string(), relay_endpoints.to_vec()))
+}
+
+/// `name_transfer(name, new_owner)`.
+pub fn encode_name_transfer(name: &str, new_owner: [u8; 32]) -> Result<Vec<u8>, EncodeError> {
+    enc(&(name.to_string(), new_owner))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +487,27 @@ mod tests {
             bincode::deserialize::<[u8; 32]>(&encode_escrow_refund(id).unwrap()).unwrap(),
             id
         );
+
+        let endpoints = vec![
+            "https://relay1.example.com".to_string(),
+            "http://relay2.example.com".to_string(),
+        ];
+        let name_register = encode_name_register("alice", id, &endpoints).unwrap();
+        let decoded: (String, [u8; 32], Vec<String>) =
+            bincode::deserialize(&name_register).unwrap();
+        assert_eq!(decoded, ("alice".to_string(), id, endpoints.clone()));
+
+        let name_resolve = encode_name_resolve("alice").unwrap();
+        let decoded: (String,) = bincode::deserialize(&name_resolve).unwrap();
+        assert_eq!(decoded, ("alice".to_string(),));
+
+        let name_update = encode_name_update_endpoints("alice", &endpoints).unwrap();
+        let decoded: (String, Vec<String>) = bincode::deserialize(&name_update).unwrap();
+        assert_eq!(decoded, ("alice".to_string(), endpoints.clone()));
+
+        let name_transfer = encode_name_transfer("alice", other).unwrap();
+        let decoded: (String, [u8; 32]) = bincode::deserialize(&name_transfer).unwrap();
+        assert_eq!(decoded, ("alice".to_string(), other));
     }
 
     #[test]
@@ -853,5 +907,158 @@ mod tests {
             &storage,
         )
         .expect("escrow_release");
+    }
+
+    #[test]
+    fn encoded_name_registry_calls_execute_on_a_local_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::new(dir.path().join("state.redb")).expect("storage");
+        let contract = addr(36);
+        let owner = addr(1);
+        let new_owner = addr(2);
+        let third_party = addr(3);
+        deploy(&storage, &contract);
+
+        let pubkey = [0x55; 32];
+        let endpoints = vec!["https://relay1.kovanica.org".to_string()];
+
+        // 1. Register name
+        let reg_args = encode_name_register("alice", pubkey, &endpoints).expect("encode");
+        execute_contract_call(
+            "name_register",
+            contract,
+            owner,
+            1,
+            100,
+            &reg_args,
+            &storage,
+        )
+        .expect("name_register");
+
+        // 2. Resolve name
+        let resolve_args = encode_name_resolve("alice").expect("encode");
+        let out = execute_contract_call(
+            "name_resolve",
+            contract,
+            third_party,
+            2,
+            110,
+            &resolve_args,
+            &storage,
+        )
+        .expect("name_resolve");
+        let entry: kovanica_name_registry::NameEntry =
+            bincode::deserialize(&out).expect("deserialize NameEntry");
+        assert_eq!(entry.owner, owner.0);
+        assert_eq!(entry.pubkey, pubkey);
+        assert_eq!(entry.relay_endpoints, endpoints);
+
+        // 3. Update endpoints by owner
+        let new_endpoints = vec![
+            "https://relay1.kovanica.org".to_string(),
+            "https://relay2.kovanica.org".to_string(),
+        ];
+        let update_args = encode_name_update_endpoints("alice", &new_endpoints).expect("encode");
+        execute_contract_call(
+            "name_update_endpoints",
+            contract,
+            owner,
+            3,
+            120,
+            &update_args,
+            &storage,
+        )
+        .expect("name_update_endpoints");
+
+        // Verify updated endpoints
+        let out_updated = execute_contract_call(
+            "name_resolve",
+            contract,
+            third_party,
+            4,
+            130,
+            &resolve_args,
+            &storage,
+        )
+        .expect("name_resolve updated");
+        let entry_updated: kovanica_name_registry::NameEntry =
+            bincode::deserialize(&out_updated).expect("deserialize updated");
+        assert_eq!(entry_updated.relay_endpoints, new_endpoints);
+
+        // 4. Update endpoints by unauthorized caller must fail
+        let unauthorized_update = execute_contract_call(
+            "name_update_endpoints",
+            contract,
+            third_party,
+            5,
+            140,
+            &update_args,
+            &storage,
+        )
+        .expect_err("unauthorized update must fail");
+        assert!(matches!(
+            unauthorized_update,
+            ExecutionError::Contract(ContractError::Unauthorized)
+        ));
+
+        // 5. Transfer name to new owner
+        let transfer_args = encode_name_transfer("alice", new_owner.0).expect("encode");
+        execute_contract_call(
+            "name_transfer",
+            contract,
+            owner,
+            6,
+            150,
+            &transfer_args,
+            &storage,
+        )
+        .expect("name_transfer");
+
+        // Verify new owner via resolve
+        let out_transferred = execute_contract_call(
+            "name_resolve",
+            contract,
+            third_party,
+            7,
+            160,
+            &resolve_args,
+            &storage,
+        )
+        .expect("name_resolve after transfer");
+        let entry_transferred: kovanica_name_registry::NameEntry =
+            bincode::deserialize(&out_transferred).expect("deserialize transferred");
+        assert_eq!(entry_transferred.owner, new_owner.0);
+
+        // 6. Former owner can no longer update endpoints
+        let old_owner_update = execute_contract_call(
+            "name_update_endpoints",
+            contract,
+            owner,
+            8,
+            170,
+            &update_args,
+            &storage,
+        )
+        .expect_err("former owner update must fail");
+        assert!(matches!(
+            old_owner_update,
+            ExecutionError::Contract(ContractError::Unauthorized)
+        ));
+
+        // 7. Duplicate register must fail with AlreadyExists
+        let dup_err = execute_contract_call(
+            "name_register",
+            contract,
+            new_owner,
+            9,
+            180,
+            &reg_args,
+            &storage,
+        )
+        .expect_err("duplicate register must fail");
+        assert!(matches!(
+            dup_err,
+            ExecutionError::Contract(ContractError::AlreadyExists)
+        ));
     }
 }
