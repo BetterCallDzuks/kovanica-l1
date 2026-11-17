@@ -5,7 +5,7 @@
 **Report Date:** [REPORT DATE]  
 **Codebase Commit:** [COMMIT HASH — latest `main`: `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b`]  
 **Scope Document:** `docs/AUDIT-SCOPE.md` v2.0  
-**Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: 0892ff8056b1a4d999141752d258750b02be7e141ae0e742b1721b3d2bcfd38a`, network tag `2-acfdf6a6c80fd28a`)  
+**Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, network tag `2-24cdb5fadd98b207`)  
 **Chain Registry:** `1` (`kovanica-mainnet`), `2` (`kovanica-testnet`), `3` (`kovanica-devnet`; `1337` retired in `#284`)  
 **Hardening Gates (`P4-6` `#288`):** `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0` (`GENESIS_ROUND`)  
 **Classification:** [PUBLIC / PRIVATE / CONFIDENTIAL]

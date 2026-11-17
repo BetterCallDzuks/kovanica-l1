@@ -6,7 +6,7 @@
 **Codebase Commit (`origin/main`):** `833e7e9caa46d696402968567a67bfc95e2ac260` (code tip `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b`, post-`#283`–`#289`)  
 **Scope Document:** [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) v2.0  
 **Checklist Document:** [`docs/AUDIT-CHECKLIST.md`](AUDIT-CHECKLIST.md)  
-**Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: 0892ff8056b1a4d999141752d258750b02be7e141ae0e742b1721b3d2bcfd38a`, network tag `2-acfdf6a6c80fd28a`)  
+**Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, network tag `2-24cdb5fadd98b207`)  
 **Chain Registry:** `1` (`kovanica-mainnet`), `2` (`kovanica-testnet`), `3` (`kovanica-devnet`; `1337` retired in `#284`)  
 **Hardening Gates (`P4-6` `#288`):** `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0` (`GENESIS_ROUND`)  
 **Classification:** PUBLIC (External Auditor Handoff Package)
@@ -114,7 +114,7 @@
 
 | Invariant / Check | Code Reference | Verification Details & Backing Tests | Status |
 |---|---|---|---|
-| **P2P Gossipsub frame cap & network-tag isolation** | `crates/kovanica-network/src/lib.rs`, `crates/kovanica-network/src/network_id.rs` | Transport uses TCP port `8000` + Noise + Yamux; protocol and gossip topics bind `/kovanica/<network-tag>/1.0.0` (`2-acfdf6a6c80fd28a` on testnet). `MAX_TRANSMIT_SIZE = 1 MiB` bounds gossip frames above `MAX_BLOCK_BYTES = 960 KiB`. | **VERIFIED** |
+| **P2P Gossipsub frame cap & network-tag isolation** | `crates/kovanica-network/src/lib.rs`, `crates/kovanica-network/src/network_id.rs` | Transport uses TCP port `8000` + Noise + Yamux; protocol and gossip topics bind `/kovanica/<network-tag>/1.0.0` (`2-24cdb5fadd98b207` on testnet). `MAX_TRANSMIT_SIZE = 1 MiB` bounds gossip frames above `MAX_BLOCK_BYTES = 960 KiB`. | **VERIFIED** |
 | **RPC Bearer token write auth (constant-time, no loopback bypass)** | `crates/kovanica-rpc/src/rpc_middleware.rs:250-276` | `AuthConfig::authorize` requires `Authorization: Bearer <token>` on all `WRITE_METHODS` (`kovanica_sendRawTransaction`, `kovanica_submitWork`, etc.) when `require_auth_for_writes` is enabled, comparing every configured token via `constant_time_eq` without early exit (`rpc_middleware.rs:266-270`) and with no loopback bypass. | **VERIFIED** |
 | **Per-IP token-bucket rate limiter & strict CORS allowlist** | `crates/kovanica-rpc/src/rpc_middleware.rs:124-145`, `288-360` | Per-IP `TokenBucket` with `MAX_TRACKED_CLIENTS = 100_000` and idle eviction (`rpc_middleware.rs:124-128`). Browser CORS is restricted to `CONSOLE_ALLOWED_ORIGINS` on `/rpc`, `/ws`, and `/health` (`rpc_middleware.rs:313-327`), leaving `/metrics` unexposed to cross-origin browsers. | **VERIFIED** |
 

@@ -53,7 +53,7 @@ Confirm the binary matches this table. Operators do not override these in config
 | Public launch | 1.1.2027 |
 | Address | PRO-21: `kvnc` + 57 bech32 chars + `dag` |
 
-The DAA aims at 4 seconds and clamps to those two bit values. Operators do not write a target into the config. The testnet tag `2-acfdf6a6c80fd28a` and the testnet bounds `0x1f7fffff` / `0x1e00ffff` are chain ID 2. A mainnet node that prints that tag is on the wrong genesis.
+The DAA aims at 4 seconds and clamps to those two bit values. Operators do not write a target into the config. The testnet tag `2-24cdb5fadd98b207` and the testnet bounds `0x1f7fffff` / `0x1e00ffff` are chain ID 2. A mainnet node that prints that tag is on the wrong genesis.
 
 ---
 

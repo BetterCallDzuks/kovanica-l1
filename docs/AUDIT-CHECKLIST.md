@@ -32,7 +32,7 @@ Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, Kovanic
   - [ ] Verify Ed25519 signatures (strict dalek v2.1 `verify_strict`: canonical S check, small-order rejection in `crates/kovanica-types/src/crypto.rs:171-181`)
   - [ ] Verify PRO-21 addresses: `kvnc` + 57 base32 chars + `dag` (64 chars; 32B Ed25519 ‖ 29-bit BLAKE3 checksum in `crates/kovanica-types/src/address.rs`)
   - [ ] Confirm legacy hex format is strictly rejected on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2), and retired chain ID `1337` (`local`) is rejected across all paths (`chain_id::is_registered` in `crates/kovanica-types/src/signing.rs:37-142`, `#284`)
-  - [ ] Verify canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: 0892ff8056b1a4d999141752d258750b02be7e141ae0e742b1721b3d2bcfd38a`, network tag `2-acfdf6a6c80fd28a`)
+  - [ ] Verify canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, network tag `2-24cdb5fadd98b207`)
   - [ ] Verify keystore v2: Argon2id (64 MiB, 3 iter, 4 parallelism) + XChaCha20-Poly1305 (`crates/kovanica-keystore/src/lib.rs:29-35,112`)
 - [ ] **P2P Networking & Node Security:**
   - [ ] Verify eclipse / Sybil resistance, peer discovery, gossip limits (port 8000 default)

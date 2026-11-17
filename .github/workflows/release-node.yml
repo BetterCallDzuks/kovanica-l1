@@ -151,7 +151,7 @@ jobs:
           EOF
           tag="$(target/release/kovanica-node network-tag --config "$work/kovanica.toml")"
           expected="$(cat "$work/data/expected-tag")"
-          canonical="2-acfdf6a6c80fd28a"
+          canonical="2-24cdb5fadd98b207"
           echo "network tag: $tag (bundle expected-tag: $expected, kovanica-testnet: $canonical)"
           if [ "$tag" != "$expected" ]; then
             echo "::error::network tag $tag does not match the bundle's expected-tag $expected; a node installing this bundle would be isolated from the mesh"
@@ -282,7 +282,7 @@ jobs:
             --notes "$(cat <<'EOF'
           Prebuilt `kovanica-node` for kovanica-testnet.
 
-          Network tag: `2-acfdf6a6c80fd28a`. External peers bootstrap at `seed1.kovanica.online:8000` (DNS name only).
+          Network tag: `2-24cdb5fadd98b207`. External peers bootstrap at `seed1.kovanica.online:8000` (DNS name only).
 
           | Asset | Target |
           |---|---|

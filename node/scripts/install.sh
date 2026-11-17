@@ -9,7 +9,7 @@
 #   curl -fsSL https://kovanica.online/download/install.sh | sh
 #
 # The default network is kovanica-testnet (chain ID 2). Its network tag is
-# pinned to 2-acfdf6a6c80fd28a: after install, `kovanica-node network-tag`
+# pinned to 2-24cdb5fadd98b207: after install, `kovanica-node network-tag`
 # must print that value or the installer exits. kovanica-mainnet (1),
 # kovanica-devnet (3) and local (1337) are selectable with --chain-id, but
 # only a network whose bundle is published for that release can pass the tag
@@ -79,7 +79,7 @@ DRY_RUN=0
 # External peers bootstrap via seed1's DNS name only. KOVANICA_BOOTNODES
 # still overrides this list.
 BOOTNODES="${KOVANICA_BOOTNODES:-seed1.kovanica.online:8000}"
-CANONICAL_TESTNET_TAG="2-acfdf6a6c80fd28a"
+CANONICAL_TESTNET_TAG="2-24cdb5fadd98b207"
 
 die() {
     printf 'install: error: %s\n' "$*" >&2

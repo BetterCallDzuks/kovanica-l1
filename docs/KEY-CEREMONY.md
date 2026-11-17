@@ -54,7 +54,7 @@ These match [`AGENT-RULES.md`](AGENT-RULES.md). The ceremony script does not acc
 | BIP44 coin type | `3007` |
 | Public launch | 1.1.2027 |
 
-The testnet network tag `2-acfdf6a6c80fd28a` belongs to chain ID 2. Mainnet does not reuse it. The mainnet tag is computed after this ceremony (section 8) and is **OPEN** until then.
+The testnet network tag `2-24cdb5fadd98b207` belongs to chain ID 2. Mainnet does not reuse it. The mainnet tag is computed after this ceremony (section 8) and is **OPEN** until then.
 
 ---
 
@@ -231,7 +231,7 @@ It depends on chain ID `1`, the genesis file bytes, and the treasury address. Co
 kovanica-node network-tag --config /etc/kovanica/config.toml
 ```
 
-Every mainnet node must print the same line. Record that line in the launch notes. It is **OPEN** in this draft. It will not equal `2-acfdf6a6c80fd28a`.
+Every mainnet node must print the same line. Record that line in the launch notes. It is **OPEN** in this draft. It will not equal `2-24cdb5fadd98b207`.
 
 A publishable archive, when Toni asks for one, is cut by the node and not by hand:
 

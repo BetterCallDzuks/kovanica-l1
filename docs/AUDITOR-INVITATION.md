@@ -16,7 +16,7 @@ Datum poziva: 2026-11-17.
 - **Tokenomika:** Nativni coin **KVNC** (9 decimala, tvrdi limit **90 200 000 KVNC**, početna nagrada bloka 2,5 KVNC s decay-om $\times \frac{3}{4}$ svakih 8 100 000 visina).
 - **Adrese:** PRO-21 kanonski format: `kvnc` + 57 base32 znakova (bech32 abeceda) + `dag` = 64 znaka. Hex adrese strogo zabranjene na mainnetu (`chain_id = 1`) i testnetu (`chain_id = 2`); dopuštene samo na devnetu (`chain_id = 3`).
 - **Registar lanaca (3 lanca):** `1` (`kovanica-mainnet`), `2` (`kovanica-testnet`), `3` (`kovanica-devnet`). Stari ID `1337` (`local`) povučen je u `#284` (lokalno testiranje spojeno u devnet `3`).
-- **Kanonski testnet genesis paket:** `kovanica-testnet-genesis.tar.gz` (`#283`, mrežni tag `2-acfdf6a6c80fd28a`).
+- **Kanonski testnet genesis paket:** `kovanica-testnet-genesis.tar.gz` (`#283`, mrežni tag `2-24cdb5fadd98b207`).
 
 ---
 

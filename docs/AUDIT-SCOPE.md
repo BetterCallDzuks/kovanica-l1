@@ -174,7 +174,7 @@ $$\text{TOTAL\_SUPPLY} = \text{PREMINE } (0.2\text{M}) + \text{TREASURY } (8\tex
 
 - **Repository:** `https://github.com/KovanicaDAG/kovanica-l1`
 - **Branch / Pinned Commit:** `main` @ `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b` (post-`#288`, where `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0`)
-- **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: 0892ff8056b1a4d999141752d258750b02be7e141ae0e742b1721b3d2bcfd38a`, network tag `2-acfdf6a6c80fd28a`)
+- **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, network tag `2-24cdb5fadd98b207`)
 - **Build Instructions:**
   ```bash
   cargo build --workspace --release

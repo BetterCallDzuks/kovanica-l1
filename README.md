@@ -379,8 +379,8 @@ Default network configuration parameters (`crates/kovanica-node/src/config.rs`):
 *RPC writes require bearer authentication (#234); `KOVANICA_RPC_AUTH` must never be disabled.*
 
 ### Chain ID Registry
-- **`1`**: **kovanica-mainnet** (chain ID 1) (`MAINNET`) — strictly enforces PRO-21 canonical base32 addresses; consensus parameters frozen. Official network tag: `1-4d827d40dd9655db`. `funded_accounts.toml` strictly forbidden. Release tag `v1.0.0-mainnet`.
-- **`2`**: **kovanica-testnet** (chain ID 2) (`TESTNET` / `HYBRID_TESTNET`) — canonical Hybrid PoW + GHOSTDAG public testnet; enforces PRO-21 base32 addresses (legacy hex rejected). Official network tag: `2-acfdf6a6c80fd28a`. Node release: `v0.3.0-node`. External peers bootstrap at `seed1.kovanica.online:8000` (DNS name only; seed2 and seed3 are not hosts).
+- **`1`**: **kovanica-mainnet** (chain ID 1) (`MAINNET`) — strictly enforces PRO-21 canonical base32 addresses; consensus parameters frozen. Official network tag: `1-f35df34c92001436`. `funded_accounts.toml` strictly forbidden. Release tag `v1.0.0-mainnet`.
+- **`2`**: **kovanica-testnet** (chain ID 2) (`TESTNET` / `HYBRID_TESTNET`) — canonical Hybrid PoW + GHOSTDAG public testnet; enforces PRO-21 base32 addresses (legacy hex rejected). Official network tag: `2-24cdb5fadd98b207`. Node release: `v0.3.0-node`. External peers bootstrap at `seed1.kovanica.online:8000` (DNS name only; seed2 and seed3 are not hosts).
 - **`3`**: **kovanica-devnet** (chain ID 3, also used for local single-node testing) (`DEVNET`) — devnet; lenient address parsing; allows parameter overrides.
 
 ---
@@ -401,7 +401,7 @@ Detailed architectural specifications and operational runbooks:
 - **JSON-RPC Reference:** [`docs/RPC.md`](docs/RPC.md)
 - **Comprehensive 2026 Audit Report (point-in-time):** [`docs/AUDIT_REPORT_2026.md`](docs/AUDIT_REPORT_2026.md)
 - **Mainnet Launch & Monitoring Runbook (operational runbook for Hybrid PoW + GHOSTDAG):** [`docs/MAINNET-RUNBOOK.md`](docs/MAINNET-RUNBOOK.md)
-- **Genesis Key Ceremony Protocol (normative procedure; mainnet ceremony executed in #290, tag `1-4d827d40dd9655db`):** [`docs/KEY-CEREMONY.md`](docs/KEY-CEREMONY.md)
+- **Genesis Key Ceremony Protocol (normative procedure; mainnet ceremony executed in #290, tag `1-f35df34c92001436`):** [`docs/KEY-CEREMONY.md`](docs/KEY-CEREMONY.md)
 - **Mainnet Launch Freeze Checklist:** [`docs/MAINNET-FREEZE-CHECKLIST.md`](docs/MAINNET-FREEZE-CHECKLIST.md)
 - **Explorer & Console Deployment Guide:** [`docs/EXPLORER.md`](docs/EXPLORER.md)
 

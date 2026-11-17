@@ -3,7 +3,7 @@
 **Replaces Gazda for day-to-day agent work.**
 Read this before any change. If a rule here conflicts with a prompt, stop and ask Toni.
 
-Last updated: 2026-11-17 (chain ID 1337 retired and merged into devnet 3 per Toni; main protected on all five repos; #259 activated on seed1 at `9758ffe0`; mainnet genesis ceremony #290 executed with network tag `1-4d827d40dd9655db`).
+Last updated: 2026-11-17 (chain ID 1337 retired and merged into devnet 3 per Toni; main protected on all five repos; #259 activated on seed1 at `9758ffe0`; mainnet genesis ceremony #290 executed with network tag `1-f35df34c92001436`).
 
 ## 1. Frozen values — do not change, do not remove
 
@@ -29,7 +29,7 @@ These are locked. Any PR that alters them without an explicit Toni decision is r
 | Address format | `kvnc` + 57 base32 + `dag` (64 chars) | types |
 | Chain IDs | 1 mainnet, 2 testnet, 3 devnet (1337 retired/merged into devnet per Toni 2026-11-17) | params |
 | Network tag (mainnet) | `1-f35df34c92001436` | genesis (updated post-KVNC domain rename) |
-| Network tag (testnet) | `2-acfdf6a6c80fd28a` | genesis (A-freeze on seed1) |
+| Network tag (testnet) | `2-24cdb5fadd98b207` | genesis (A-freeze on seed1) |
 | DAA easiest (testnet/devnet) | `0x1f7f_ffff` | params |
 | DAA hardest (testnet/devnet) | `0x1e00_ffff` | params |
 | DAA easiest (mainnet) | `0x1f00_ffff` | params |
@@ -55,7 +55,7 @@ Legacy Mysticeti constants (`WAVE_LENGTH`, `EPOCH_ROUNDS`, `MIN_VALIDATOR_STAKE`
 ## 3. What agents must NOT touch without explicit Toni OK
 
 - Genesis files (`testnet/chain2/*`, `mainnet/*`, tags)
-- Network tags `1-4d827d40dd9655db` (mainnet) and `2-acfdf6a6c80fd28a` (testnet)
+- Network tags `1-f35df34c92001436` (mainnet) and `2-24cdb5fadd98b207` (testnet)
 - Any frozen value in section 1
 - `Cargo.toml` workspace version or dependency pins that affect consensus determinism
 - CI workflows that gate merges
@@ -79,7 +79,7 @@ A change to `calculate_next_target_bits`, reward math, header format, or commit 
 - Live deploy SHA: `9758ffe0d0129dd58851d916d183753618fd71de` on seed1 (`kovanica-testnet`, chain ID 2).
 - #259 is merged and activated on seed1 via empty-volume re-genesis. Do not start a second deploy. Do not touch seed1 unless the prompt is an explicit ops task.
 - Tag `v0.3.0-node` stays on `e3fce499afe6637b2a594b60306aef6312ef4bbf`. Do not move it.
-- Network tag stays `2-acfdf6a6c80fd28a`.
+- Network tag stays `2-24cdb5fadd98b207`.
 - Consensus remains Hybrid PoW + GHOSTDAG. No stake. No validator set.
 - Faucet process is up. Balance is 0x0. Top-up is BLOCKED on the retired keystore passphrase. No validator funding path.
 - Faucet address: `kvnc8a4atp0g5tngcua9h90anhel7233alyd5y88h0yc592cv8adu5uyz46d3dag`

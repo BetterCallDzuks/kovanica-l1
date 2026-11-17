@@ -1,6 +1,6 @@
 # Kovanica Mainnet Freeze Checklist & Genesis Sign-Off Gates
 
-> **Network:** `kovanica-mainnet` (chain ID 1, network tag `1-4d827d40dd9655db`)  
+> **Network:** `kovanica-mainnet` (chain ID 1, network tag `1-f35df34c92001436`)  
 > **Native Ticker:** **KVNC** (9 decimals: $1\text{ KVNC} = 10^9\text{ atoms}$, legacy alias `KUNA`)  
 > **Canonical Address Format:** PRO-21 base32 (`kvnc<57 base32>dag`, exactly 64 characters)  
 > **Target Date:** Mainnet Genesis ($T_0$)  
@@ -125,7 +125,7 @@ Verify that every parameter in the release binary matches the canonical mainnet 
 | Parameter | Mainnet Value | Invariant Expression | Source File | Status |
 |---|---|---|---|---|
 | **Chain ID** | `1` (`kovanica-mainnet`) | `CHAIN_ID == 1` | `crates/kovanica-params/src/lib.rs` | [x] |
-| **Network Tag** | `1-4d827d40dd9655db` | `<chain_id>-<16 hex genesis digest>` (`kovanica-mainnet-genesis.tar.gz` sha256 `75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e`) | `mainnet/genesis.json` | [x] |
+| **Network Tag** | `1-f35df34c92001436` | `<chain_id>-<16 hex genesis digest>` (`kovanica-mainnet-genesis.tar.gz` sha256 `75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e`) | `mainnet/genesis.json` | [x] |
 | **Native Ticker** | **KVNC** | Decimals: `9` | `crates/kovanica-params/src/lib.rs` | [ ] |
 | **Address Format** | PRO-21 base32 | `kvnc` + 57 base32 chars + `dag` (64 chars) | `crates/kovanica-types/src/address.rs` | [ ] |
 | **Total Supply Ceiling** | `90,200,000 KVNC` | `90_200_000 * 10^9` atoms | `crates/kovanica-staking/src/lib.rs` | [ ] |

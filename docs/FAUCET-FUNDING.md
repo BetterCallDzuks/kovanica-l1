@@ -2,7 +2,7 @@
 
 The chain-2 genesis is frozen. `testnet/chain2/funded_accounts.toml` is a genesis
 input: its balances are baked into the genesis digest, and the digest is what
-produces the network tag `2-acfdf6a6c80fd28a`. Adding the current faucet address
+produces the network tag `2-24cdb5fadd98b207`. Adding the current faucet address
 to that file would change the tag, so it is **not** a usable top-up path on a
 live chain. Top-ups are ordinary on-chain transfers from an already-funded
 account.
