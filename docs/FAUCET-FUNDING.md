@@ -166,18 +166,10 @@ key derives to those addresses either.
   funder above and reports the `tx_hash` plus the new balance.
 - **Path B (not available):** fund from a genesis bootstrap identity. No host key
   derives to those addresses, and they hold only earned block rewards.
-- **Path C:** leave the faucet at `0x0`. The faucet stays healthy but dispenses
-  nothing, and `STATE.md` gap #5 stays open.
+- **Path C (approved for live testnet):** leave the rotated faucet at `0x0` (or rotate to a newly funded faucet when an operator supplies keys/funds out-of-band). The faucet stays healthy but dispenses nothing, and `STATE.md` gap #5 tracks the funding state.
 
-## Secret hygiene findings (follow-up, needs its own PR)
+## Secret hygiene findings (resolved in P3-6)
 
-- `ops/docker/chain2/faucet.keystore`, `ops/docker/chain2/faucet_passphrase`, and
-  `ops/docker/chain2/node1_p2p.key` are **tracked in git**. The keystore and the
-  p2p key are allowlisted in `.gitleaks.toml` (described as "encrypted keystore
-  test fixtures" — they are not fixtures).
-- The tracked passphrase file is not the passphrase the faucet ever used, which
-  is worse than either extreme: it looks like a working secret, so it hides the
-  fact that the real one was never in the repo.
-- Removing or rotating these files touches genesis-adjacent ops state and CI
-  gating config, so it needs an explicit decision, not a drive-by edit. Until
-  then: treat the tracked values as public.
+- `ops/docker/chain2/faucet.keystore`, `ops/docker/chain2/faucet_passphrase`, and `ops/docker/chain2/node1_p2p.key` have been **untracked from git** and ignored via `.gitignore`, with local operator instructions in `ops/docker/chain2/README.md`.
+- The misleading `.gitleaks.toml` "encrypted keystore test fixtures" allowlist entries for `ops/docker/chain2/faucet.keystore` and `ops/docker/chain2/node1_p2p.key` have been removed.
+- Any previously committed values in git history must still be treated as public.
