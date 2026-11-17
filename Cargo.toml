@@ -19,6 +19,7 @@ members = [
     "crates/kovanica-light",
     "crates/kovanica-light-proofs",
     "crates/kovanica-light-ffi",
+    "crates/kovanica-ffi",
     "crates/kovanica-lightnode",
     "crates/kovanica-rpc",
     "crates/kovanica-common",
