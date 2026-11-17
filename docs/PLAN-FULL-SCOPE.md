@@ -3,7 +3,7 @@
 **Companion to `docs/AGENT-RULES.md` and `docs/PLAN-2026-11.md`.**
 This is the full-scope plan across all public product repos. Frozen values stay frozen. Consensus changes need an activation plan and Toni’s OK before deploy.
 
-Snapshot: 2026-11-17 (L1 `main` at `db4d110`, post-#308, #309; cross-repo `main` tips: `kovanica-sdk#16` `76cbd85`, `kovanica-playground#21` `a8909db`, `kovanica-web#22` `13ee461`, `kovanica-apps#35` `fdeea5c`).
+Snapshot: 2026-11-17 (L1 `main` at `566da35`, post-#308, #309, #310; cross-repo `main` tips: `kovanica-sdk#17` `83a6495` (v0.3.0), `kovanica-playground#21` `a8909db`, `kovanica-web#23` `057e4eb`, `kovanica-apps#36` `633f130`).
 Live L1: `seed1` (`kovanica-testnet`, chain ID 2, tag `2-24cdb5fadd98b207`) live at `9758ffe0` with `#259` non-compounding LWMA DAA active; release tag `v0.3.0-node` stays on `e3fce499` with `kovanica-testnet-genesis.tar.gz` attached (`#283`/`#287`). Mainnet (`kovanica-mainnet`, chain ID 1) genesis ceremony executed in `#290` with frozen network tag `1-f35df34c92001436` and bundle `kovanica-mainnet-genesis.tar.gz` (`sha256: 75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e`).
 
 ## Repos in scope
@@ -12,7 +12,7 @@ Live L1: `seed1` (`kovanica-testnet`, chain ID 2, tag `2-24cdb5fadd98b207`) live
 |------|------|----------------|-------|
 | `kovanica-l1` | Rust L1 (consensus, node, faucet, Wasmi, light-ffi) | main | Source of truth for protocol |
 | `kovanica-web` | Public site kovanica.online (TanStack Start) | main | Private repo; no secrets in commits |
-| `kovanica-sdk` | TypeScript read-only client | main | Preview only; no signing yet |
+| `kovanica-sdk` | TypeScript client & HD wallet toolkit | main | v0.3.0 release; SLIP-0010, contract builders & tx signing |
 | `kovanica-apps` | Android / iOS / desktop / wallet-web clients | main | FFI stays in L1 |
 | `kovanica-playground` | Developer console / RPC explorer | main | Pins a specific SDK SHA |
 
@@ -22,7 +22,7 @@ Out of this plan: `kovanica-vault` (separate private tool).
 
 - L1 owns consensus, genesis, tokenomics, light-ffi, node binary.
 - Apps and web never reintroduce light-ffi or consensus code.
-- SDK stays read-only until a dedicated signing design is approved.
+- SDK implements canonical Wasmi smart contract call builders, SLIP-0010 key derivation, and RFC 8032 Ed25519 signing under `KVNC/tx/v1` (post-v0.3.0).
 - Playground and web consume SDK; they do not talk to seed1 docker directly.
 - No force-push, no self-merge, no secrets, no seed1 volume changes unless the prompt is an explicit ops task.
 - DAA #259 is merged but **not activated**. Do not deploy it until Toni chooses empty-volume re-genesis or a height gate.
@@ -86,15 +86,15 @@ Out of this plan: `kovanica-vault` (separate private tool).
 
 ## P6 — SDK (kovanica-sdk)
 
-Current state: TypeScript SDK client (`main` at `76cbd85`, post-#16). Verified against L1 `de641f6`/`496f874`; enforces canonical 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#11`) and documents `-32600` (`InvalidRequest`) rejection of legacy staking RPCs (`kovanica_getValidators`, `kovanica_getStake`, `kovanica_getLeaderSchedule`) on hybrid chains 1 and 2. Includes native canonical Wasmi contract call builders for Name Registry, HTLC, NFT, and Escrow (#16).
+Current state: TypeScript SDK client (`main` at `83a6495`, post-#17, v0.3.0 release). Enforces canonical 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#11`), documents `-32600` (`InvalidRequest`) rejection of legacy staking RPCs, and provides full `KovanicaWallet` SLIP-0010 HD key derivation (`m/44'/3007'/0'/0/0`), RFC 8032 Ed25519 signing under `KVNC/tx/v1`, canonical Wasmi contract call builders (Name Registry, HTLC, NFT, Escrow, Token, Vault), and `sendRawTransaction` broadcasting (#16, #17).
 
 | ID | Item | Status / Notes |
 |----|------|----------------|
 | P6-1 | Re-verify RPC methods against current L1 main | Done (`#8` `039d0e8`, `#9` `5aa4f34`, `#10` `9a8a2045` citing L1 `de641f6`) |
 | P6-2 | Confirm hybrid methods (`getMiningInfo`, `getDagTips`) match live chain 2 | Done (`#10` `9a8a2045` + deterministic transport tests) |
-| P6-3 | Keep read-only | Active boundary — no signing until a design PR is approved |
+| P6-3 | Canonical contract builders & signing support | Done (`#16` `76cbd85`, `#17` `83a6495`, v0.3.0 release) |
 | P6-4 | Chain registry stays 1/2/3 (`1337` retired) with frozen address rules | Done (`#11` `b534224`) |
-| P6-5 | Publish or document how web/playground should pin a SHA | Done (`#10` / playground `#10`, `#13` `0dd469d`) |
+| P6-5 | Publish or document how web/playground should pin a SHA | Done (`#10` / playground `#10`, `#13` `0dd469d`, `#17` `83a6495`) |
 
 ## P7 — Playground (kovanica-playground)
 
@@ -108,24 +108,24 @@ Current state: `main` at `a8909db` (PR `#21` merged, expands Wasmi contract buil
 
 ## P8 — Web (kovanica-web)
 
-Current state: TanStack Start site for kovanica.online (`main` at `13ee461`, PR `#22` merged). Vendored `@kovanica/sdk-wasm`. Env-driven config; no secrets in repo.
+Current state: TanStack Start site for kovanica.online (`main` at `057e4eb`, PR `#23` merged). Features Explorer Smart Contract Call Decoding with `BincodeReader` and `ExplorerTxCard` for canonical entry points, vendored `@kovanica/sdk-wasm`, env-driven config, and no secrets in repo.
 
 | ID | Item | Status / Notes |
 |----|------|----------------|
 | P8-1 | Align public copy with live testnet (chain 2, tag, no stake, 3-chain registry 1/2/3) | Done (`#14` `1366018`, `#15` `b5ddb18`, `#17` `b2fe0be`) |
 | P8-2 | Confirm explorer / health links match deployed endpoints | Done (`#14` / `#15` `b5ddb18`, no nginx edits; `#16` `66d2c0a` fixes stale-build test harness) |
-| P8-3 | Refresh vendored wasm only from a tagged SDK build | Open (awaiting tagged SDK build) |
+| P8-3 | Explorer Smart Contract Call Decoding | Done (`#23` `057e4eb`) |
 | P8-4 | Brand assets stay consistent with L1 palette (ink / copper / paper) | Done (`#14` `1366018`) |
 
 ## P9 — Apps (kovanica-apps)
 
-Current state: Android (wallet, comms, chain, node), iOS light client, desktop / console-desktop / node-desktop (Tauri), wallet-web (`main` at `fdeea5c`, PR `#35` merged). FFI stays in L1.
+Current state: Android (wallet, comms, chain, node), iOS light client, desktop / console-desktop / node-desktop (Tauri), wallet-web (`main` at `633f130`, PR `#36` merged). Wallet-web supports canonical contract call dispatch for Name Registry, NFT Minting, and Escrow using `kovanica-sdk` v0.3.0. FFI stays in L1.
 
 | ID | Item | Status / Notes |
 |----|------|----------------|
 | P9-1 | Fix sibling paths to `KovanicaDAG/kovanica-l1` & align with L1 `main` | Done (`#22` `92f2d904`, `#23` `86ad7d89`, `#24` `67dc47f`, `#25` `305df94`, `#26` `be4baae`) |
 | P9-2 | Android-node: confirm testnet chain 2 + network tag | Done (`#21` `6ba74fb1`, `#24` `67dc47f`, `#26` `be4baae`) |
-| P9-3 | Wallet-web: consume current SDK (read-only first) | Open |
+| P9-3 | Wallet-web: consume current SDK contract builders | Done (`#36` `633f130`) |
 | P9-4 | node-desktop: document pointing at a self-built `kovanica-node` | Done (`#19`, `#20` `37ec0290`, `#26` `be4baae`) |
 | P9-5 | Do not move light-ffi into this repo | Active boundary |
 
