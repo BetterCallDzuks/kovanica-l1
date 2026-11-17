@@ -20,7 +20,8 @@ Key architectural pillars (confirmed Toni 2026-11-05):
 - **Execution:** Wasmi (deterministic WebAssembly engine with strict fuel-based gas metering).
 - **Account Model:** Account-based state transitions with nonces and cryptographic replay protection.
 - **Resource Footprint:** Optimized to run comfortably on standard 2–4 GB RAM VPS infrastructure.
-- **Address Standard:** PRO-21 canonical base32 address: `kvnc` + 57 bech32 characters + `dag` = **64 characters** (32-byte Ed25519 pubkey ‖ 29-bit BLAKE3 checksum). Legacy hex addresses are strictly prohibited on Mainnet (`chain_id = 1`).
+- **Address Standard:** PRO-21 canonical base32 address: `kvnc` + 57 bech32 characters + `dag` = **64 characters** (32-byte Ed25519 pubkey ‖ 29-bit BLAKE3 checksum). Legacy hex addresses are strictly prohibited on Mainnet (`chain_id = 1`) and Testnet (`chain_id = 2`), and allowed only on Devnet (`chain_id = 3`).
+- **Chain Registry:** Canonical 3-chain registry only: `1` (`kovanica-mainnet`), `2` (`kovanica-testnet`), `3` (`kovanica-devnet`). Legacy chain ID `1337` (`local`) was retired in `#284` (local testing consolidated into Devnet `3`).
 
 This scope document specifies the components, invariants, threat models, and priority review tracks for an external security audit preceding the Kovanica Mainnet $T_0$ launch.
 
@@ -171,7 +172,8 @@ $$\text{TOTAL\_SUPPLY} = \text{PREMINE } (0.2\text{M}) + \text{TREASURY } (8\tex
 ## 6. Repository & Build Pinning
 
 - **Repository:** `https://github.com/KovanicaDAG/kovanica-l1`
-- **Branch:** `main`
+- **Branch / Pinned Commit:** `main` @ `496f874d5d71570539cdbb99d9a32bf788a19b0e` (post-`#284`)
+- **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`, network tag `2-acfdf6a6c80fd28a`)
 - **Build Instructions:**
   ```bash
   cargo build --workspace --release

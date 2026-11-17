@@ -3,8 +3,8 @@
 Status: **Interna verifikacija i specifikacija završena** (`docs/AUDIT-SCOPE.md`, `docs/AUDIT-CHECKLIST.md`); eksterni audit **nije izvršen** — obavezan prije mainnet $T_0$ lansiranja.
 
 Identitet projekta: **kovanica** (nezavisni Rust Layer-1, od-scratch; NE kovanica-protocol, NE stariji Kovanica repo).
-Repozitorij: `https://github.com/KovanicaDAG/kovanica-l1` (`main` branch).
-Datum poziva: 2026-11-09.
+Repozitorij: `https://github.com/KovanicaDAG/kovanica-l1` (`main` branch, commit `496f874d5d71570539cdbb99d9a32bf788a19b0e`).
+Datum poziva: 2026-11-17.
 
 ---
 
@@ -14,7 +14,9 @@ Datum poziva: 2026-11-09.
 - **PoW algoritam:** **KovanicaHash** (BLAKE3 + 2 MiB memorijski mix scratchpad; memorijski zahtjevan, otporan na ASIC ubrzanja, deterministička verifikacija).
 - **Izvršavanje:** Wasmi deterministički WebAssembly engine s mjerenjem goriva (fuel/gas metering) i memorijskim limitom od 256 stranica (16 MiB, `DEFAULT_CONTRACT_MEMORY_PAGES = 256`).
 - **Tokenomika:** Nativni coin **KVNC** (9 decimala, tvrdi limit **90 200 000 KVNC**, početna nagrada bloka 2,5 KVNC s decay-om $\times \frac{3}{4}$ svakih 8 100 000 visina).
-- **Adrese:** PRO-21 kanonski format: `kvnc` + 57 base32 znakova (bech32 abeceda) + `dag` = 64 znaka. Hex adrese strogo zabranjene na mainnetu (`chain_id = 1`).
+- **Adrese:** PRO-21 kanonski format: `kvnc` + 57 base32 znakova (bech32 abeceda) + `dag` = 64 znaka. Hex adrese strogo zabranjene na mainnetu (`chain_id = 1`) i testnetu (`chain_id = 2`); dopuštene samo na devnetu (`chain_id = 3`).
+- **Registar lanaca (3 lanca):** `1` (`kovanica-mainnet`), `2` (`kovanica-testnet`), `3` (`kovanica-devnet`). Stari ID `1337` (`local`) povučen je u `#284` (lokalno testiranje spojeno u devnet `3`).
+- **Kanonski testnet genesis paket:** `kovanica-testnet-genesis.tar.gz` (`#283`, mrežni tag `2-acfdf6a6c80fd28a`).
 
 ---
 

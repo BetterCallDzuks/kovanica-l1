@@ -1,6 +1,6 @@
 # External Audit / Seed / DNS — Checklist
 
-Updated to reflect canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, KVNC tokenomics, and PRO-21 address requirements (Toni 2026-11-05).
+Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, Wasmi execution, KVNC tokenomics, PRO-21 address requirements, 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#284`), canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`), and pinned `main` commit `496f874d5d71570539cdbb99d9a32bf788a19b0e`.
 
 ## 1. Seed / DNS audit (gating before public launch)
 - [x] Automated DNS probe script (`scripts/check-dns-seeds.sh`) implemented and verified
@@ -30,7 +30,8 @@ Updated to reflect canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, KVNC
 - [ ] **Cryptography & Address Format:**
   - [ ] Verify Ed25519 signatures (strict dalek v2.1: canonical S check, small-order rejection)
   - [ ] Verify PRO-21 addresses: `kvnc` + 57 base32 chars + `dag` (64 chars; 32B Ed25519 ‖ 29-bit BLAKE3 checksum)
-  - [ ] Confirm legacy hex format is strictly rejected on kovanica-mainnet (chain ID 1)
+  - [ ] Confirm legacy hex format is strictly rejected on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2), and retired chain ID `1337` (`local`) is rejected across all paths (`#284`)
+  - [ ] Verify canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`, network tag `2-acfdf6a6c80fd28a`)
   - [ ] Verify keystore v2: Argon2id (64 MiB, 3 iter, 4 parallelism) + XChaCha20-Poly1305
 - [ ] **P2P Networking & Node Security:**
   - [ ] Verify eclipse / Sybil resistance, peer discovery, gossip limits (port 8000 default)

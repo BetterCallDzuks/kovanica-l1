@@ -3,8 +3,10 @@
 **Audit Firm:** [FIRM NAME]  
 **Audit Period:** [START DATE] – [END DATE]  
 **Report Date:** [REPORT DATE]  
-**Codebase Commit:** [COMMIT HASH]  
-**Scope Document:** `docs/AUDIT-SCOPE.md` v1.0  
+**Codebase Commit:** [COMMIT HASH — latest `main`: `496f874d5d71570539cdbb99d9a32bf788a19b0e`]  
+**Scope Document:** `docs/AUDIT-SCOPE.md` v2.0  
+**Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`, network tag `2-acfdf6a6c80fd28a`)  
+**Chain Registry:** `1` (`kovanica-mainnet`), `2` (`kovanica-testnet`), `3` (`kovanica-devnet`; `1337` retired in `#284`)  
 **Classification:** [PUBLIC / PRIVATE / CONFIDENTIAL]
 
 ---
@@ -48,7 +50,7 @@
 
 #### KOVANICA-C-001: [Title]
 
-**Component:** [e.g., kovanica-consensus/mysticghost.rs]  
+**Component:** [e.g., kovanica-consensus/ghostdag.rs]  
 **CVSS:** [Score] ([Vector])  
 **Impact:** [Safety violation / Liveness failure / Fund loss / Chain halt]  
 
@@ -148,12 +150,12 @@
 
 | Component | Files Reviewed | Findings | Coverage |
 |-----------|----------------|----------|----------|
-| `kovanica-consensus` (mysticghost, engine, committer, ghostdag_scoped) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
-| `kovanica-crypto` (Ed25519, ECVRF, vote sigs, commit seals) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
+| `kovanica-consensus` (ghostdag, ghostdag_scoped, daa, committer — Hybrid PoW + GHOSTDAG K=5) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
+| `kovanica-crypto` (KovanicaHash `pow.rs`, Ed25519 strict, PRO-21 addresses, domain separation) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
 | `kovanica-mempool` (admission, in-flight, re-insert, RBF) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
-| `kovanica-network` (gossipsub, validation, scoring, sync) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
-| `kovanica-execution` + `kovanica-runtime` (WASM, host ABI, gas) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
-| `kovanica-staking` (emission, vesting, validator lifecycle, delegation, slashing) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
+| `kovanica-network` (gossipsub, edge `validate_pow_target`, scoring, sync) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
+| `kovanica-execution` + `kovanica-runtime` (Wasmi deterministic VM, host ABI, 256-page/fuel limits) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
+| `kovanica-staking` (emission `NoStake82M`, treasury vesting; legacy Mysticeti staking non-consensus) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
 | `kovanica-keystore` (Argon2id, XChaCha20-Poly1305, v1 migration) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
 | `kovanica-rpc` (JSON-RPC, WS, rate limit, auth) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
 | `kovanica-node` (genesis, recovery, committee build) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
@@ -163,15 +165,15 @@
 ## Consensus-Specific Analysis
 
 ### Safety
-- [ ] No two honest nodes can commit different blocks at same height
-- [ ] VRF leader election is unbiased (stake-weighted, quorum threshold correct)
-- [ ] Late-vote window prevents divergent commits
-- [ ] Fork resolution (min-digest) is deterministic and store-atomic
-- [ ] Skip decisions are persisted and never overwritten
+- [ ] No two honest nodes derive different GHOSTDAG K=5 linear sequences or state roots from the same DAG blocks
+- [ ] Consensus is strictly leaderless Hybrid PoW + GHOSTDAG (NO stake / VRF leader selection in consensus path)
+- [ ] KovanicaHash (`pow.rs`, BLAKE3 + 2 MiB mix) is deterministic across x86_64 and aarch64
+- [ ] DAA target clamping & timestamp-warp resistance maintain 4 s target (`TARGET_BLOCK_MS = 4000`)
+- [ ] Edge anti-DoS (`validate_pow_target`) drops invalid PoW blocks before gossip relay or DAG store write
 
 ### Liveness
-- [ ] Leader timeout ensures progress under partial synchrony
-- [ ] Round loop cannot deadlock (commit_trigger_lock serialization)
+- [ ] PoW + GHOSTDAG K=5 tip selection and commit cursor advancement maintain progress under partial synchrony
+- [ ] DAG store / commit path cannot deadlock
 - [ ] Peer scoring does not partition honest nodes
 - [ ] Mempool in-flight timeout returns transactions to queue
 
@@ -188,9 +190,9 @@
 | Item | Verified | Notes |
 |------|----------|-------|
 | Ed25519 strict verification (dalek `verify_strict`) | [ ] | Rejects non-canonical S, weak keys |
-| Vote signature domain separation (`KUNA/vote/v1`) | [ ] | Chain_id + epoch from local config only |
-| Commit seal domain separation (`KUNA/commit/v1`) | [ ] | Covers blue/non-blue roots, epoch |
-| ECVRF output uniqueness & verifiability | [ ] | `ecvrf` crate v0.4 |
+| KovanicaHash PoW (`pow.rs`) determinism & 2 MiB scratchpad | [ ] | BLAKE3 + 2 MiB mix, cross-platform |
+| PRO-21 address derivation & 29-bit BLAKE3 checksum | [ ] | `kvnc` + 57 base32 + `dag` (64 chars); hex rejected on chains 1 & 2 |
+| Transaction & mining pre-image domain separation | [ ] | Explicit domain tags, `chain_id` in `{1, 2, 3}` (`1337` rejected) |
 | Argon2id parameters (64 MiB, 3 iter, 4 parallelism) | [ ] | Constrained-memory profile |
 | XChaCha20-Poly1305 nonce uniqueness (random 24B) | [ ] | |
 | Key derivation binds address + public_key + salt + nonce (AAD) | [ ] | |
@@ -210,10 +212,8 @@
 | Initial block reward | 2.5 KVNC | [ ] |
 | Decay | ×3/4 every 8,200,000 rewarded blocks | [ ] |
 | Cumulative issuance cap | `cumulative_mining_issuance(h) ≤ 82M` | [ ] |
-| Min validator stake | 50,000 KVNC | [ ] |
-| Active validator range | 15–21 | [ ] |
-| Slashing | 500 bps (5%) | [ ] |
-| Unbonding period | 100,000 rounds | [ ] |
+| Mainnet `funded_accounts.toml` prohibition | Rejected on `chain_id = 1` | [ ] |
+| 3-chain registry enforcement | Only `1` (mainnet), `2` (testnet), `3` (devnet); `1337` retired (`#284`) | [ ] |
 
 ---
 
@@ -284,8 +284,8 @@ Errors: [List if any]
 
 ### Long-Term (Protocol Upgrades)
 1. [bincode migration]
-2. [Formal verification of GHOSTDAG k=3]
-3. [VRF bias analysis under adaptive adversary]
+2. [Formal verification of GHOSTDAG K=5]
+3. [KovanicaHash ASIC-resistance & memory-hardness follow-up]
 
 ---
 
