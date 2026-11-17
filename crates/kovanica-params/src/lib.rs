@@ -10,10 +10,8 @@
 // ============================================================
 pub const TICKER: &str = "KVNC";
 pub const DECIMALS: u32 = 9;
-/// Legacy alias name for base unit multiplier (1 KVNC = 10^9 base units).
-/// Kept as `ONE_KUNA` until a follow-up rename PR across the workspace.
-pub const ONE_KUNA: u64 = 1_000_000_000;
-pub const ONE_KVNC: u64 = ONE_KUNA;
+/// Base units per KVNC (1 KVNC = 10^9 base units).
+pub const ONE_KVNC: u64 = 1_000_000_000;
 
 /// Mainnet chain id (`1`). Canonical PRO-21 addresses only.
 pub const CHAIN_ID_MAINNET: u64 = 1;
@@ -79,16 +77,16 @@ pub const fn next_leader_slot(round: u64) -> u64 {
 // ============================================================
 // Tokenomics
 // ============================================================
-pub const TOTAL_SUPPLY: u64 = 90_200_000 * ONE_KUNA;
-pub const FOUNDER_PREMINE: u64 = 200_000 * ONE_KUNA;
-pub const GENESIS_VALIDATOR_ALLOCATION: u64 = 1_000_000 * ONE_KUNA;
-pub const TREASURY_TOTAL: u64 = 8_000_000 * ONE_KUNA;
-pub const TREASURY_ANNUAL: u64 = 1_000_000 * ONE_KUNA;
+pub const TOTAL_SUPPLY: u64 = 90_200_000 * ONE_KVNC;
+pub const FOUNDER_PREMINE: u64 = 200_000 * ONE_KVNC;
+pub const GENESIS_VALIDATOR_ALLOCATION: u64 = 1_000_000 * ONE_KVNC;
+pub const TREASURY_TOTAL: u64 = 8_000_000 * ONE_KVNC;
+pub const TREASURY_ANNUAL: u64 = 1_000_000 * ONE_KVNC;
 pub const TREASURY_YEARS: u32 = 8;
 pub const BLOCKS_PER_YEAR: u64 = 31_536_000 / LEADER_INTERVAL_SECS;
 pub const MINING_SUBSIDY_BUDGET: u64 =
     TOTAL_SUPPLY - FOUNDER_PREMINE - TREASURY_TOTAL - GENESIS_VALIDATOR_ALLOCATION;
-pub const INITIAL_BLOCK_REWARD: u64 = 5 * ONE_KUNA / 2;
+pub const INITIAL_BLOCK_REWARD: u64 = 5 * ONE_KVNC / 2;
 pub const SUBSIDY_ERA_BLOCKS: u64 = 8_100_000;
 pub const DECAY_NUM: u64 = 3;
 pub const DECAY_DEN: u64 = 4;
@@ -103,8 +101,8 @@ pub const SUBSIDY_ERA_BLOCKS_NO_STAKE_82M: u64 = 8_200_000;
 // Staking — NON-CONSENSUS under Hybrid PoW + GHOSTDAG (chains 1 and 2)
 // Retained for legacy/dev chains and historical storage compatibility.
 // ============================================================
-pub const MIN_VALIDATOR_STAKE: u64 = 50_000 * ONE_KUNA;
-pub const MIN_DELEGATION: u64 = 50_000 * ONE_KUNA;
+pub const MIN_VALIDATOR_STAKE: u64 = 50_000 * ONE_KVNC;
+pub const MIN_DELEGATION: u64 = 50_000 * ONE_KVNC;
 pub const MIN_ACTIVE_VALIDATORS: u32 = 15;
 pub const UNBONDING_ROUNDS: u64 = 100_000;
 pub const JAIL_ROUNDS: u64 = 7_200;
@@ -114,7 +112,7 @@ pub const SLASH_PCT_BPS: u16 = 500;
 
 // Light nodes
 pub const LIGHT_REWARD_BPS: u16 = 2_000;
-pub const MIN_LIGHT_BOND: u64 = 100 * ONE_KUNA;
+pub const MIN_LIGHT_BOND: u64 = 100 * ONE_KVNC;
 pub const MAX_LIGHT_NODES: usize = 4_096;
 pub const LIGHT_WITNESS_SLOTS: usize = 32;
 
@@ -190,8 +188,8 @@ mod tests {
     #[test]
     fn committee_bounds() {
         assert!(MIN_ACTIVE_VALIDATORS >= 1);
-        assert_eq!(MIN_VALIDATOR_STAKE, 50_000 * ONE_KUNA);
-        assert_eq!(MIN_DELEGATION, 50_000 * ONE_KUNA);
+        assert_eq!(MIN_VALIDATOR_STAKE, 50_000 * ONE_KVNC);
+        assert_eq!(MIN_DELEGATION, 50_000 * ONE_KVNC);
     }
 
     #[test]
@@ -220,7 +218,7 @@ mod tests {
                 + MINING_SUBSIDY_BUDGET_NO_STAKE_82M,
             TOTAL_SUPPLY
         );
-        assert_eq!(MINING_SUBSIDY_BUDGET_NO_STAKE_82M, 82_000_000 * ONE_KUNA);
+        assert_eq!(MINING_SUBSIDY_BUDGET_NO_STAKE_82M, 82_000_000 * ONE_KVNC);
         assert_eq!(SUBSIDY_ERA_BLOCKS_NO_STAKE_82M, 8_200_000);
     }
 

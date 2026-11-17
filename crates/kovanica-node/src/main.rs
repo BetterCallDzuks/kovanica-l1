@@ -73,7 +73,7 @@ impl LogPublisher for EventLogPublisher {
     }
 }
 use kovanica_staking::{
-    StakingState, FOUNDER_PREMINE, MIN_ACTIVE_VALIDATORS, MIN_VALIDATOR_STAKE, ONE_KUNA,
+    StakingState, FOUNDER_PREMINE, MIN_ACTIVE_VALIDATORS, MIN_VALIDATOR_STAKE, ONE_KVNC,
 };
 use kovanica_storage::{StateStoreError, Storage};
 use kovanica_types::{
@@ -622,11 +622,11 @@ fn run_genesis(args: GenesisArgs) -> Result<()> {
             "founder_address_hex": args.founder_address,
             "founder_address_bytes": hex::encode(founder.0),
             "founder_premine_atoms": FOUNDER_PREMINE,
-            "founder_premine_kovanica": FOUNDER_PREMINE / ONE_KUNA,
+            "founder_premine_kovanica": FOUNDER_PREMINE / ONE_KVNC,
             "mining_subsidy_budget_atoms": policy.mining_budget(),
-            "mining_subsidy_budget_kovanica": policy.mining_budget() / ONE_KUNA,
+            "mining_subsidy_budget_kovanica": policy.mining_budget() / ONE_KVNC,
             "genesis_validator_allocation_atoms": policy.genesis_validator_allocation(),
-            "genesis_validator_allocation_kovanica": policy.genesis_validator_allocation() / ONE_KUNA,
+            "genesis_validator_allocation_kovanica": policy.genesis_validator_allocation() / ONE_KVNC,
             "validators": declared_validators.iter().map(|(address, stake, pk)| {
                 let share = alloc_entries
                     .iter()
@@ -1344,7 +1344,17 @@ where
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (exec_tx, exec_rx) = mpsc::unbounded_channel::<kovanica_consensus::CommittedSubDag>();
     engine.set_commit_sender(exec_tx.clone());
-    for subdag in recover_committed_subdags(&dag_store, config.use_mysticghost)? {
+    // Bound the restart scan: leaders already recorded as executed in the
+    // persisted staking state do not need to be re-built or re-queued; their
+    // committed sub-DAGs would only replay as no-ops. Keep the unexecuted tail
+    // (and its all_previous_tips / uncommitted_history semantics) intact.
+    let already_executed = state_storage
+        .begin_read()
+        .ok()
+        .and_then(|txn| state_storage.state().load_staking_state(&txn).ok())
+        .map(|state| state.committed_leader_height as usize)
+        .unwrap_or(0);
+    for subdag in recover_committed_subdags(&dag_store, config.use_mysticghost, already_executed)? {
         exec_tx
             .send(subdag)
             .context("queueing a previously committed sub-DAG for replay")?;
@@ -2258,8 +2268,8 @@ fn init_genesis(config: &NodeConfig, dag_store: &DagStore, state_storage: &Stora
                     "genesis validator allocation ({} KVNC) cannot back a {} KVNC stake \
                      split across {} validators; at MIN_VALIDATOR_STAKE the allocation \
                      supports at most {} validators",
-                    kovanica_staking::GENESIS_VALIDATOR_ALLOCATION / kovanica_staking::ONE_KUNA,
-                    stake / kovanica_staking::ONE_KUNA,
+                    kovanica_staking::GENESIS_VALIDATOR_ALLOCATION / kovanica_staking::ONE_KVNC,
+                    stake / kovanica_staking::ONE_KVNC,
                     n,
                     kovanica_staking::GENESIS_VALIDATOR_ALLOCATION
                         / kovanica_staking::MIN_VALIDATOR_STAKE,
@@ -2276,7 +2286,7 @@ fn init_genesis(config: &NodeConfig, dag_store: &DagStore, state_storage: &Stora
         info!(
             count = n,
             allocated_kuna =
-                kovanica_staking::GENESIS_VALIDATOR_ALLOCATION / kovanica_staking::ONE_KUNA,
+                kovanica_staking::GENESIS_VALIDATOR_ALLOCATION / kovanica_staking::ONE_KVNC,
             "genesis validator allocation minted"
         );
     }
@@ -5413,6 +5423,7 @@ impl BlockManagerTrait for NodeBlockManager {
 fn recover_committed_subdags(
     dag_store: &DagStore,
     use_mysticghost: bool,
+    skip_executed: usize,
 ) -> Result<Vec<kovanica_consensus::CommittedSubDag>> {
     let rounds = dag_store.get_decided_rounds(u64::MAX)?;
     let mut subdags = Vec::new();
@@ -5487,6 +5498,15 @@ fn recover_committed_subdags(
             subdag.leader.digest.0,
         )
     });
+    // Drop already-executed leading sub-DAGs: their digests are present in the
+    // persisted execution state, so re-queueing them would only replay as
+    // no-ops. The unexecuted tail (and its all_previous_tips /
+    // uncommitted_history semantics) is left untouched.
+    if skip_executed > 0 && skip_executed < subdags.len() {
+        subdags.drain(0..skip_executed);
+    } else if skip_executed >= subdags.len() {
+        subdags.clear();
+    }
     Ok(subdags)
 }
 
@@ -5638,7 +5658,7 @@ fn build_committee(
             anyhow::bail!(
                 "enforce_min_active_validators=true requires at least {} active validators with stake >= {} KVNC, found 0; refusing the single-node genesis fallback",
                 MIN_ACTIVE_VALIDATORS,
-                MIN_VALIDATOR_STAKE / ONE_KUNA
+                MIN_VALIDATOR_STAKE / ONE_KVNC
             );
         }
         info!("no active validators in staking state; falling back to the local identity for the legacy committee path");
@@ -5659,7 +5679,7 @@ fn build_committee(
         anyhow::bail!(
             "enforce_min_active_validators=true requires at least {} active validators with stake >= {} KVNC, found {}",
             MIN_ACTIVE_VALIDATORS,
-            MIN_VALIDATOR_STAKE / ONE_KUNA,
+            MIN_VALIDATOR_STAKE / ONE_KVNC,
             active_validators.len()
         );
     }
@@ -6917,7 +6937,7 @@ mod tests {
         assert!(body.chars().all(|c| c.is_ascii_hexdigit()), "{body}");
     }
 
-    use kovanica_staking::{StakingState, MIN_VALIDATOR_STAKE, ONE_KUNA};
+    use kovanica_staking::{StakingState, MIN_VALIDATOR_STAKE, ONE_KVNC};
     use kovanica_storage::BincodeSerialize;
     use redb::{Database, TableDefinition};
     use std::collections::HashMap;
@@ -7168,7 +7188,7 @@ mod tests {
         dag.put_block(&block).unwrap();
         dag.mark_round_decided(1, &digest).unwrap();
 
-        let recovered = recover_committed_subdags(&dag, false).unwrap();
+        let recovered = recover_committed_subdags(&dag, false, 0).unwrap();
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].leader.digest, digest);
         assert_eq!(recovered[0].blocks.len(), 1);
@@ -7207,7 +7227,7 @@ mod tests {
                 .unwrap();
         }
 
-        let recovered = recover_committed_subdags(&dag, false).unwrap();
+        let recovered = recover_committed_subdags(&dag, false, 0).unwrap();
         assert_eq!(recovered.len(), 3);
         let delivered: Vec<Hash> = recovered
             .iter()
@@ -7246,7 +7266,7 @@ mod tests {
 
         // A pruned/missing decided leader must be skipped, not fatal: recovery
         // still reconstructs the decisions whose blocks remain available.
-        let recovered = recover_committed_subdags(&dag, false).unwrap();
+        let recovered = recover_committed_subdags(&dag, false, 0).unwrap();
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].leader.digest, valid_digest);
     }
@@ -7270,7 +7290,7 @@ mod tests {
         dag.put_block(&block).unwrap();
         dag.mark_round_decided(1, &digest).unwrap();
 
-        let error = recover_committed_subdags(&dag, false).unwrap_err();
+        let error = recover_committed_subdags(&dag, false, 0).unwrap_err();
         assert!(
             error.to_string().contains("round 1"),
             "unexpected recovery error: {error}"
@@ -7317,7 +7337,7 @@ mod tests {
 
         let storage = Storage::new(&db_path).unwrap();
         let dag = DagStore::new(storage).unwrap();
-        let error = recover_committed_subdags(&dag, false)
+        let error = recover_committed_subdags(&dag, false, 0)
             .unwrap_err()
             .to_string();
         assert!(
@@ -7350,7 +7370,7 @@ mod tests {
         dag.mark_round_decided(1, &digest).unwrap();
 
         // Test recovery with MysticGhost enabled (should fall back to linearizer for simple case)
-        let recovered = recover_committed_subdags(&dag, true).unwrap();
+        let recovered = recover_committed_subdags(&dag, true, 0).unwrap();
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].leader.digest, digest);
         assert_eq!(recovered[0].blocks.len(), 1);
@@ -7646,7 +7666,7 @@ mod tests {
 
         let dag =
             Arc::new(DagStore::new(Storage::new(dir.path().join("dag.redb")).unwrap()).unwrap());
-        let recovered = recover_committed_subdags(&dag, true).unwrap();
+        let recovered = recover_committed_subdags(&dag, true, 0).unwrap();
         let subdag = recovered
             .iter()
             .find(|s| s.leader_round == 3)
@@ -7942,16 +7962,16 @@ mod tests {
 
         // Validator stakes: 100K, 80K, 120K, 60K KVNC (all above MIN_VALIDATOR_STAKE = 50K)
         staking
-            .join_validator(addr1, 100_000 * ONE_KUNA, 0, Some(addr1), Some(pk1), None)
+            .join_validator(addr1, 100_000 * ONE_KVNC, 0, Some(addr1), Some(pk1), None)
             .unwrap();
         staking
-            .join_validator(addr2, 80_000 * ONE_KUNA, 0, Some(addr2), Some(pk2), None)
+            .join_validator(addr2, 80_000 * ONE_KVNC, 0, Some(addr2), Some(pk2), None)
             .unwrap();
         staking
-            .join_validator(addr3, 120_000 * ONE_KUNA, 0, Some(addr3), Some(pk3), None)
+            .join_validator(addr3, 120_000 * ONE_KVNC, 0, Some(addr3), Some(pk3), None)
             .unwrap();
         staking
-            .join_validator(addr4, 60_000 * ONE_KUNA, 0, Some(addr4), Some(pk4), None)
+            .join_validator(addr4, 60_000 * ONE_KVNC, 0, Some(addr4), Some(pk4), None)
             .unwrap();
 
         // Save to storage
@@ -8006,10 +8026,10 @@ mod tests {
 
         // Verify stakes match
         let addr_to_stake = vec![
-            (addr1, 100_000 * ONE_KUNA),
-            (addr2, 80_000 * ONE_KUNA),
-            (addr3, 120_000 * ONE_KUNA),
-            (addr4, 60_000 * ONE_KUNA),
+            (addr1, 100_000 * ONE_KVNC),
+            (addr2, 80_000 * ONE_KVNC),
+            (addr3, 120_000 * ONE_KVNC),
+            (addr4, 60_000 * ONE_KVNC),
         ];
         for (addr, expected_stake) in addr_to_stake {
             let auth = committee
@@ -8065,11 +8085,11 @@ mod tests {
 
         // Active, sufficient stake
         staking
-            .join_validator(addr1, 100_000 * ONE_KUNA, 0, Some(addr1), Some(pk1), None)
+            .join_validator(addr1, 100_000 * ONE_KVNC, 0, Some(addr1), Some(pk1), None)
             .unwrap();
         // Inactive - should be skipped
         staking
-            .join_validator(addr2, 100_000 * ONE_KUNA, 0, Some(addr2), Some(pk2), None)
+            .join_validator(addr2, 100_000 * ONE_KVNC, 0, Some(addr2), Some(pk2), None)
             .unwrap();
         staking
             .validators
@@ -8080,7 +8100,7 @@ mod tests {
         // Below MIN_VALIDATOR_STAKE - manually add (bypassing join_validator check)
         staking.validators.push(kovanica_staking::ValidatorInfo {
             address: addr3,
-            stake: 10_000 * ONE_KUNA,
+            stake: 10_000 * ONE_KVNC,
             commission_bps: 0,
             active: true,
             payout_address: addr3,
@@ -8092,7 +8112,7 @@ mod tests {
             slashed: false,
             jailed_until_height: 0,
         });
-        staking.total_staked += 10_000 * ONE_KUNA;
+        staking.total_staked += 10_000 * ONE_KVNC;
 
         let txn = state_storage.begin_write().unwrap();
         state_storage
@@ -8128,7 +8148,7 @@ mod tests {
             validators.push((addr, pk));
             staking.validators.push(kovanica_staking::ValidatorInfo {
                 address: addr,
-                stake: 100_000 * ONE_KUNA,
+                stake: 100_000 * ONE_KVNC,
                 commission_bps: 0,
                 active: true,
                 payout_address: addr,
@@ -8140,7 +8160,7 @@ mod tests {
                 slashed: false,
                 jailed_until_height: 0,
             });
-            staking.total_staked += 100_000 * ONE_KUNA;
+            staking.total_staked += 100_000 * ONE_KVNC;
         }
 
         let txn = state_storage.begin_write().unwrap();
@@ -9190,7 +9210,7 @@ mod tests {
                     &txn,
                     &validator_addr,
                     &kovanica_storage::state_store::Account {
-                        balance: 500 * kovanica_staking::ONE_KUNA,
+                        balance: 500 * kovanica_staking::ONE_KVNC,
                         nonce: 3,
                         code_hash: [0; 32],
                         code: Vec::new(),
@@ -12351,7 +12371,7 @@ mod b1_epoch_restart_repro {
             + kovanica_params::TREASURY_TOTAL
             + kovanica_params::MINING_SUBSIDY_BUDGET_NO_STAKE_82M;
         assert_eq!(total_supply, kovanica_params::TOTAL_SUPPLY);
-        assert_eq!(total_supply, 90_200_000 * kovanica_staking::ONE_KUNA);
+        assert_eq!(total_supply, 90_200_000 * kovanica_staking::ONE_KVNC);
     }
 
     #[test]

@@ -28,7 +28,7 @@ Update this file when frozen params or open product gaps change. Point-in-time d
 
 | Topic | Value |
 | --- | --- |
-| Coin | KVNC, **9** decimals (`ONE_KVNC = 10^9`, legacy alias `ONE_KUNA`) |
+| Coin | KVNC, **9** decimals (`ONE_KVNC = 10^9`) |
 | Consensus | Hybrid PoW + GHOSTDAG (NO stake in consensus path; `TARGET_BLOCK_MS = 4000`, `GHOSTDAG_K = 5`; PoW: KovanicaHash) |
 | Cap / subsidy sketch | 90.2M total; mining budget 82M; treasury 8M; genesis bootstrap-seed allocation 0 (1M folded into mining); founder premine 200k |
 | Fee split | 3/4 burned, 1/4 miner on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2); 100% burned on kovanica-devnet (chain ID 3) |
@@ -36,8 +36,8 @@ Update this file when frozen params or open product gaps change. Point-in-time d
 | Address | `kvnc` + 57 bech32-alphabet base32 + `dag` (**64** chars); 32 B Ed25519 ‖ 29-bit blake3 checksum. Legacy hex only on kovanica-devnet (chain ID 3) (`1337` retired in `#284`) |
 | Epoch (legacy) | **7200** DAG rounds ≈ 8 h ≈ **2400** leader heights (legacy Mysticeti constant still in tree until hybrid flag) |
 | Jail (legacy) | `JAIL_ROUNDS = 7200` committed leaders (legacy / non-consensus under hybrid) |
-| Min validator stake (legacy) | `50_000` KVNC (`MIN_VALIDATOR_STAKE = 50_000 * ONE_KUNA`; legacy / non-consensus) |
-| Min delegation (legacy) | `50_000` KVNC (`MIN_DELEGATION = 50_000 * ONE_KUNA`; legacy / non-consensus) |
+| Min validator stake (legacy) | `50_000` KVNC (`MIN_VALIDATOR_STAKE = 50_000 * ONE_KVNC`; legacy / non-consensus) |
+| Min delegation (legacy) | `50_000` KVNC (`MIN_DELEGATION = 50_000 * ONE_KVNC`; legacy / non-consensus) |
 | `funded_accounts.toml` / `genesis_validators.toml` | Legacy file names (accounts are mining-reward / faucet / bootstrap-seed entries, not validators). `funded_accounts.toml` allowed on every chain **except** kovanica-mainnet (chain ID 1) |
 | Hash / sig domains | `KUNA-*` / `KVNC-*` crypto context tags remain for protocol compatibility |
 

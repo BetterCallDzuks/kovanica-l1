@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use ed25519_dalek::SigningKey;
 use kovanica_crypto::{generate_keypair, sign as crypto_sign};
-use kovanica_staking::ONE_KUNA;
+use kovanica_staking::ONE_KVNC;
 use kovanica_types::{
     hash::Hash,
     signing::{chain_id, SigningContext},
@@ -45,11 +45,11 @@ const POLL_INTERVAL_MS: u64 = 500;
 const PORT_ATTEMPTS: usize = 32;
 
 /// Transfer amount: 1 KVNC.
-const TRANSFER_AMOUNT: u64 = ONE_KUNA;
+const TRANSFER_AMOUNT: u64 = ONE_KVNC;
 /// Opening balance for the sending node. A no-stake genesis mints nothing, so
 /// the transfer is funded from the chain-2 `funded_accounts.toml` (allowed off
 /// mainnet) that every node hashes into its genesis digest.
-const GENESIS_FUNDED_BALANCE: u64 = 1_000 * ONE_KUNA;
+const GENESIS_FUNDED_BALANCE: u64 = 1_000 * ONE_KVNC;
 const TRANSFER_FEE: u64 = 1_000_000;
 
 struct NodeProc {

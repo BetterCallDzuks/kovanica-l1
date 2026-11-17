@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use ed25519_dalek::SigningKey;
 use kovanica_crypto::{generate_keypair, sign as crypto_sign};
-use kovanica_staking::{MIN_VALIDATOR_STAKE, ONE_KUNA};
+use kovanica_staking::{MIN_VALIDATOR_STAKE, ONE_KVNC};
 use kovanica_types::{
     hash::Hash,
     signing::{chain_id, SigningContext},
@@ -41,7 +41,7 @@ const PORT_ATTEMPTS: usize = 32;
 
 /// Transfer submitted by the second test. The recipient is not a validator, so
 /// a matching balance can only come from executing this transaction.
-const TRANSFER_AMOUNT: u64 = 100 * ONE_KUNA;
+const TRANSFER_AMOUNT: u64 = 100 * ONE_KVNC;
 const TRANSFER_FEE: u64 = 1_000_000;
 
 struct NodeProc {

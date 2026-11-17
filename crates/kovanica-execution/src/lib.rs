@@ -94,14 +94,14 @@ fn reward_key(delegator: &Address, validator: &Address) -> [u8; 64] {
 
 /// Exact KVNC amount for logs and messages.
 ///
-/// Base units are never rounded for display either: dividing by `ONE_KUNA` alone
+/// Base units are never rounded for display either: dividing by `ONE_KVNC` alone
 /// drops the fraction, so the initial 2.5 KVNC reward would log as `2`, and the
 /// decayed 0.79 KVNC of era 4 would log as `0` while the chain still mints it.
 fn kvnc_amount(base_units: u64) -> String {
     format!(
         "{}.{:0width$}",
-        base_units / kovanica_staking::ONE_KUNA,
-        base_units % kovanica_staking::ONE_KUNA,
+        base_units / kovanica_staking::ONE_KVNC,
+        base_units % kovanica_staking::ONE_KVNC,
         width = kovanica_staking::DECIMALS as usize
     )
 }
@@ -3142,7 +3142,7 @@ mod tests {
                 &txn,
                 &sender,
                 &Account {
-                    balance: 1000 * kovanica_staking::ONE_KUNA,
+                    balance: 1000 * kovanica_staking::ONE_KVNC,
                     nonce: 0,
                     code_hash: [0u8; 32],
                     code: Vec::new(),
@@ -3167,7 +3167,7 @@ mod tests {
         let tx = create_transfer_tx(
             &sender_key,
             &recipient,
-            100 * kovanica_staking::ONE_KUNA,
+            100 * kovanica_staking::ONE_KVNC,
             0,
             1000,
         );
@@ -3213,7 +3213,7 @@ mod tests {
                 &txn,
                 &sender,
                 &Account {
-                    balance: 1000 * kovanica_staking::ONE_KUNA,
+                    balance: 1000 * kovanica_staking::ONE_KVNC,
                     nonce: 0,
                     code_hash: [0u8; 32],
                     code: Vec::new(),
@@ -3289,7 +3289,7 @@ mod tests {
                     &txn,
                     &sender,
                     &Account {
-                        balance: 1000 * kovanica_staking::ONE_KUNA,
+                        balance: 1000 * kovanica_staking::ONE_KVNC,
                         nonce: 0,
                         code_hash: [0u8; 32],
                         code: Vec::new(),
@@ -3406,7 +3406,7 @@ mod tests {
                 &txn,
                 &sender,
                 &Account {
-                    balance: 1000 * kovanica_staking::ONE_KUNA,
+                    balance: 1000 * kovanica_staking::ONE_KVNC,
                     nonce: 0,
                     code_hash: [0u8; 32],
                     code: Vec::new(),
@@ -3431,7 +3431,7 @@ mod tests {
         let tx = create_transfer_tx(
             &sender_key,
             &recipient,
-            100 * kovanica_staking::ONE_KUNA,
+            100 * kovanica_staking::ONE_KVNC,
             0,
             1000,
         );
@@ -3588,7 +3588,7 @@ mod tests {
         // Victim account the attacker does NOT hold the key for.
         let victim = address_of(&test_keypair(1));
         let attacker = Address([0xAA; 32]);
-        let initial = 1000 * kovanica_staking::ONE_KUNA;
+        let initial = 1000 * kovanica_staking::ONE_KVNC;
         let mut ctx = setup_funded_sender(&storage, &victim, initial);
 
         let mut forged = Transaction {
@@ -3596,7 +3596,7 @@ mod tests {
             nonce: 0,
             kind: TransactionKind::Transfer {
                 to: attacker,
-                amount: 500 * kovanica_staking::ONE_KUNA,
+                amount: 500 * kovanica_staking::ONE_KVNC,
             },
             fee: 1000,
             signature: Signature([1u8; 64]),
@@ -3622,7 +3622,7 @@ mod tests {
 
         let victim = address_of(&test_keypair(1));
         let attacker_key = test_keypair(2);
-        let initial = 1000 * kovanica_staking::ONE_KUNA;
+        let initial = 1000 * kovanica_staking::ONE_KVNC;
         let mut ctx = setup_funded_sender(&storage, &victim, initial);
 
         // Attacker signs a valid tx for its own address, then swaps in the
@@ -3630,7 +3630,7 @@ mod tests {
         let mut tx = create_transfer_tx(
             &attacker_key,
             &address_of(&attacker_key),
-            500 * kovanica_staking::ONE_KUNA,
+            500 * kovanica_staking::ONE_KVNC,
             0,
             1000,
         );
@@ -3656,8 +3656,8 @@ mod tests {
         let key = test_keypair(1);
         let sender = address_of(&key);
         let recipient = Address([2u8; 32]);
-        let initial = 1000 * kovanica_staking::ONE_KUNA;
-        let amount = 100 * kovanica_staking::ONE_KUNA;
+        let initial = 1000 * kovanica_staking::ONE_KVNC;
+        let amount = 100 * kovanica_staking::ONE_KVNC;
         let fee = 1000;
         let mut ctx = setup_funded_sender(&storage, &sender, initial);
 
@@ -3686,7 +3686,7 @@ mod tests {
         let storage = Storage::new(dir.path().join("test.redb")).expect("storage");
         let key = test_keypair(1);
         let sender = address_of(&key);
-        let initial = 100_000 * kovanica_staking::ONE_KUNA;
+        let initial = 100_000 * kovanica_staking::ONE_KVNC;
         let fee = 1000;
         let mut ctx = setup_funded_sender(&storage, &sender, initial);
         let staked_before = ctx.staking.total_staked;
@@ -3725,8 +3725,8 @@ mod tests {
         let key = test_keypair(1);
         let sender = address_of(&key);
         let recipient = Address([2u8; 32]);
-        let initial = 1000 * kovanica_staking::ONE_KUNA;
-        let amount = 10 * kovanica_staking::ONE_KUNA;
+        let initial = 1000 * kovanica_staking::ONE_KVNC;
+        let amount = 10 * kovanica_staking::ONE_KVNC;
         let fee = 1000;
         let mut ctx = setup_funded_sender(&storage, &sender, initial);
 
@@ -3735,7 +3735,7 @@ mod tests {
             delegate_tx(
                 &key,
                 Address([0xEE; 32]),
-                100 * kovanica_staking::ONE_KUNA,
+                100 * kovanica_staking::ONE_KVNC,
                 1,
             ),
             create_transfer_tx(&key, &recipient, amount, 2, fee),
@@ -3768,7 +3768,7 @@ mod tests {
         let storage = Storage::new(dir.path().join("test.redb")).expect("storage");
         let key = test_keypair(1);
         let sender = address_of(&key);
-        let mut ctx = setup_funded_sender(&storage, &sender, 100_000 * kovanica_staking::ONE_KUNA);
+        let mut ctx = setup_funded_sender(&storage, &sender, 100_000 * kovanica_staking::ONE_KVNC);
         let before = staking_state_bytes(&ctx.staking);
         let tx = signed_tx(
             &key,
@@ -3802,9 +3802,9 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let storage = Storage::new(dir.path().join("r.redb")).expect("storage");
             let mut ctx =
-                setup_funded_sender(&storage, &sender, 100_000 * kovanica_staking::ONE_KUNA);
+                setup_funded_sender(&storage, &sender, 100_000 * kovanica_staking::ONE_KVNC);
             let txs = vec![
-                create_transfer_tx(&key, &recipient, kovanica_staking::ONE_KUNA, 0, 1000),
+                create_transfer_tx(&key, &recipient, kovanica_staking::ONE_KVNC, 0, 1000),
                 delegate_tx(
                     &key,
                     Address([0xEE; 32]),
@@ -4451,7 +4451,7 @@ mod tests {
     }
     // ---- staking wiring -------------------------------------------------
 
-    const K: u64 = kovanica_staking::ONE_KUNA;
+    const K: u64 = kovanica_staking::ONE_KVNC;
 
     fn subdag_at(round: u64, txs: Vec<Transaction>) -> CommittedSubDag {
         let leader = sample_block_at(0, round);

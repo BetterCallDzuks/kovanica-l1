@@ -80,7 +80,7 @@ Out of this plan: `kovanica-vault` (separate private tool).
 |----|------|-------|
 | P5-1 | Stubs (codec, consensus-sim, governance, hw-signer, oracle, sync) | Leave unless assigned |
 | P5-2 | Legacy Mysticeti constants | Keep; do not re-activate |
-| P5-3 | `ONE_KUNA` alias | Keep until a rename PR |
+| P5-3 | `ONE_KUNA` alias removed (renamed to `ONE_KVNC`) | **Done** | All uses in `crates/` renamed; alias removed from `kovanica-params` and `kovanica-staking` |
 | P5-4 | Contract crates polish | No tokenomics changes |
 | P5-5 | Wasmi fuel / memory | Do not raise without Toni (2–4 GB target) |
 
