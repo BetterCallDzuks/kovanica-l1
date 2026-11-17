@@ -20,6 +20,7 @@ x-node: &node
         memory: 512m
   environment: &node-env
     KOVANICA_CHAIN_ID: "2"
+    KOVANICA_EMISSION_POLICY: "no-stake-82m"
     KOVANICA_RPC_ADDR: "0.0.0.0"
     KOVANICA_RPC_PORT: "9100"
     KOVANICA_LISTEN_ADDR: "0.0.0.0:8000"

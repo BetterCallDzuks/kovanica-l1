@@ -318,7 +318,7 @@ class SoakStats:
 def main():
     parser = argparse.ArgumentParser(description="Kovanica Soak Test Load Generator")
     parser.add_argument("--rpc-url", default="http://127.0.0.1:8545", help="Target node JSON-RPC URL")
-    parser.add_argument("--chain-id", type=int, default=5, help="Chain ID (default 5 for Hybrid PoW)")
+    parser.add_argument("--chain-id", type=int, default=2, help="Chain ID (default 2 for kovanica-testnet; registered: 1/2/3)")
     parser.add_argument("--duration", type=int, default=0, help="Duration in seconds (0 = run indefinitely)")
     parser.add_argument("--rate", type=float, default=5.0, help="Target transactions per second (0 = maximum speed)")
     parser.add_argument("--key", default="", help="Raw 32-byte hex seed of funder account")
@@ -331,6 +331,8 @@ def main():
     parser.add_argument("--report-interval", type=float, default=5.0, help="Stats reporting interval in seconds")
     parser.add_argument("--out-json", default="", help="Optional JSON file to save final run statistics")
     args = parser.parse_args()
+    if args.chain_id not in (1, 2, 3):
+        sys.exit(f"Error: unregistered chain_id {args.chain_id}; only 1 (mainnet), 2 (testnet), and 3 (devnet) are registered.")
 
     # Determine private seed
     # Default funded test key from ops/soak/funded_accounts.toml

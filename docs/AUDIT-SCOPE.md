@@ -1,9 +1,10 @@
 # Kovanica External Security Audit — Scope Document
 
 **Version:** 2.0  
-**Date:** 2026-11-09  
+**Date:** 2026-11-17  
 **Codebase:** `kovanica` (Hybrid PoW + GHOSTDAG, account-based, Wasmi execution)  
 **Repository:** `https://github.com/KovanicaDAG/kovanica-l1`  
+**Pinned Commit (`main`):** `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b`  
 **License:** GPL-3.0-or-later  
 **Native Coin:** **KVNC** (9 decimals; `ONE_KVNC = 10^9`)  
 
@@ -172,8 +173,8 @@ $$\text{TOTAL\_SUPPLY} = \text{PREMINE } (0.2\text{M}) + \text{TREASURY } (8\tex
 ## 6. Repository & Build Pinning
 
 - **Repository:** `https://github.com/KovanicaDAG/kovanica-l1`
-- **Branch / Pinned Commit:** `main` @ `496f874d5d71570539cdbb99d9a32bf788a19b0e` (post-`#284`)
-- **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`, network tag `2-acfdf6a6c80fd28a`)
+- **Branch / Pinned Commit:** `main` @ `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b` (post-`#288`, where `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0`)
+- **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: 0892ff8056b1a4d999141752d258750b02be7e141ae0e742b1721b3d2bcfd38a`, network tag `2-acfdf6a6c80fd28a`)
 - **Build Instructions:**
   ```bash
   cargo build --workspace --release
