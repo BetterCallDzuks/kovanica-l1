@@ -40,7 +40,7 @@ Kovanica is engineered from scratch in Rust for high throughput and predictable 
    - Staking parameters (legacy / non-consensus under hybrid, retained for the retired Mysticeti path only): minimum self-stake of **50,000 KVNC** (`MIN_VALIDATOR_STAKE`), minimum delegation of **50,000 KVNC** (`MIN_DELEGATION`), and the old committee sizing. None of these selects block producers on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2). Staking operations return Err and are rejected fail-closed on hybrid networks (#233).
    - Legacy: deterministic committee epoch rotation every **8 hours** (`EPOCH_ROUNDS = 7,200` DAG rounds = `EPOCH_LEADER_HEIGHTS = 2,400` committed leader heights).
    - Legacy: stake unbonding cooldown of **100,000 committed leader blocks** ($\approx 13.9$ days at 12 s/leader).
-   - Legacy: evidence-based slashing (RFC-010) with a fixed 500 bps (5%) penalty and 7,200 committed leader heights jail (`JAIL_ROUNDS = 7,200`, $\approx 1$ day = 3 epochs). Slashing is not active (`SLASHING_ACTIVE_FROM_ROUND = u64::MAX`).
+   - Legacy: evidence-based slashing (RFC-010) with a fixed 500 bps (5%) penalty and 7,200 committed leader heights jail (`JAIL_ROUNDS = 7,200`, $\approx 1$ day = 3 epochs). `SLASHING_ACTIVE_FROM_ROUND = 0` since P4-6 (active from genesis), but hybrid networks have no staking validator set, so no slash can fire.
 3. **Execution & WebAssembly Runtime:**
    - Deterministic smart contract sandbox powered by **Wasmi** (v0.40) with instruction-level fuel metering, strict memory paging limits (256 pages = 16 MiB, `DEFAULT_CONTRACT_MEMORY_PAGES = 256`), and isolated host call ABI (`Host` trait).
    - Native built-in contracts with shared execution semantics: **HTLC** (hash time-locked swaps), **Vault** (linear/cliff vesting), **Multisig** ($M$-of-$N$ threshold multi-signature), **Token** (fungible token standard), and **Name Registry** (RFC-008 decentralized comms naming).
@@ -77,7 +77,7 @@ Canonical parameters implemented in `crates/kovanica-staking/src/lib.rs` and doc
 | **Unbonding Period** | **100,000 blocks** | Legacy / non-consensus: committed leader blocks ($\approx 13.9$ days at 12 s/leader) |
 | **Jail Duration** | **7,200 blocks** | Committed leader heights (`JAIL_ROUNDS`, $\approx 1$ day = 3 epochs; legacy) |
 | **Epoch Duration** | **8 hours** | 7,200 DAG rounds = 2,400 committed leader heights (independent of era; legacy) |
-| **Slashing Penalty** | **500 bps (5%)** | Legacy / non-consensus: slashing is not active (`SLASHING_ACTIVE_FROM_ROUND = u64::MAX`) |
+| **Slashing Penalty** | **500 bps (5%)** | Legacy / non-consensus: active from genesis (`SLASHING_ACTIVE_FROM_ROUND = 0`, P4-6), but hybrid networks have no staking validator to slash |
 | **Light-Node Reward Share** | **20% (2,000 bps)** | Escrowed for light-node witnesses across 32 winning slots per epoch |
 | **Target Block Duration** | **4,000 ms (4 s)** | Target block interval (`TARGET_BLOCK_MS = 4000`), GHOSTDAG parameter $K=5$ |
 

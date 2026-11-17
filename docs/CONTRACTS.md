@@ -186,19 +186,18 @@ dispatcher, the wasm exports, and this table must stay in sync (enforced by the
 | `token_buy` | `(Amount amount_in, Amount min_out)` | `Amount` (tokens out) |
 | `token_sell` | `(Amount amount_in, Amount min_out)` | `Amount` (KVNC out) |
 
-**Entry-point gating is activation-gated.** From
-`kovanica_types::CONTRACT_HARDENING_ACTIVE_FROM_ROUND` on (default `u64::MAX`,
-i.e. inert), a wasm `Call` whose `method` is not one of the 19 names above is
-rejected **before** the interpreter runs — the same set the native
-`dispatch_entry` path already enforced. Below the activation round the check is
-skipped and any export the deployed module defines is callable (the pre-gate
-behavior).
+**Entry-point gating is active from genesis.** `kovanica_types::CONTRACT_HARDENING_ACTIVE_FROM_ROUND`
+is `0` since P4-6 (2026-11-17), so a wasm `Call` whose `method` is not one of
+the 19 names above is rejected **before** the interpreter runs — the same set
+the native `dispatch_entry` path already enforced. There is no pre-activation
+window on a fresh chain: the check applies to every call.
 
 ## 4a. Deploy rules (activation-gated)
 
 A `Deploy` transaction carries only the bytecode; the node stores it without
-running it (compilation happens on the first `Call`). From
-`CONTRACT_HARDENING_ACTIVE_FROM_ROUND` on, `execute_deploy` additionally:
+running it (compilation happens on the first `Call`). With
+`CONTRACT_HARDENING_ACTIVE_FROM_ROUND = 0` (since P4-6), `execute_deploy`
+additionally:
 
 - refuses a deploy whose `code` does not compile as a valid wasm module
   (`ContractRunner::validate_module`, the same deterministic wasmi engine used

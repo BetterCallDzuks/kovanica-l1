@@ -3952,12 +3952,20 @@ mod tests {
         w
     }
 
-    /// Hand-assembled probe contract (entry `probe`): reads the caller's
+    /// Canonical entry-point name used by the probe fixtures.
+    ///
+    /// Contract hardening is active from genesis (P4-6), so a call to a
+    /// non-entry export is rejected before the interpreter runs. The probe
+    /// fixtures are generic test contracts, not real token code; they only
+    /// need to be *callable*, so they export a canonical name.
+    const PROBE_ENTRY: &str = "token_transfer";
+
+    /// Hand-assembled probe contract (entry `PROBE_ENTRY`): reads the caller's
     /// native balance via `kovanica_balance_of`, stores it (i64 LE) under raw
     /// key `[0]`, then succeeds if `args` is empty and fails (contract
     /// error) otherwise — i.e. a failing call that already wrote its overlay.
     fn probe_wasm() -> Vec<u8> {
-        probe_wasm_named("probe")
+        probe_wasm_named(PROBE_ENTRY)
     }
 
     const PROBE_CONTRACT: Address = Address([0xC0; 32]);
@@ -3985,7 +3993,7 @@ mod tests {
         let kind = TransactionKind::Call {
             contract: PROBE_CONTRACT,
             value: 0,
-            method: "probe".to_string(),
+            method: PROBE_ENTRY.to_string(),
             args: if fail { vec![1] } else { Vec::new() },
             gas_limit: 1_000_000,
         };
@@ -4043,7 +4051,7 @@ mod tests {
         let kind = TransactionKind::Call {
             contract: BIG_CONTRACT,
             value: 0,
-            method: "probe".to_string(),
+            method: PROBE_ENTRY.to_string(),
             args: Vec::new(),
             gas_limit,
         };
@@ -4085,7 +4093,7 @@ mod tests {
             .receipts
     }
 
-    /// Hand-assembled out-of-gas contract (entry `probe`): no imports, and the
+    /// Hand-assembled out-of-gas contract (entry `PROBE_ENTRY`): no imports, and the
     /// entry point spins in an infinite `loop { br 0 }` so the wasmi store
     /// always exhausts its fuel. Same entry body the runtime suite pins in
     /// `low_gas_rejects_an_infinite_guest_loop`.
@@ -4104,7 +4112,7 @@ mod tests {
             ("memory", 2u8, 0u8),
             ("kovanica_alloc", 0, 0),
             ("kovanica_dealloc", 0, 1),
-            ("probe", 0, 2),
+            (PROBE_ENTRY, 0, 2),
         ] {
             name(&mut exports, n);
             exports.extend([kind, idx]);
@@ -4152,7 +4160,7 @@ mod tests {
         let kind = TransactionKind::Call {
             contract: OOG_CONTRACT,
             value: 0,
-            method: "probe".to_string(),
+            method: PROBE_ENTRY.to_string(),
             args: Vec::new(),
             gas_limit,
         };
@@ -4328,32 +4336,15 @@ mod tests {
     }
 
     // MEDIUM-3: a `Call` with a tiny gas limit can no longer force a full
-    // compile of a large module. From activation on, ten such calls are
-    // rejected by the module-size gas floor *before* the interpreter (and
-    // therefore before compilation); below activation they still execute.
+    // compile of a large module. The gas floor is active from genesis (P4-6),
+    // so ten such calls are rejected by the module-size gas floor *before* the
+    // interpreter (and therefore before compilation).
     #[test]
-    fn big_bytecode_tiny_gas_calls_are_rejected_at_activation() {
+    fn big_bytecode_tiny_gas_calls_are_rejected_from_genesis() {
         let active_round = kovanica_types::GAS_HARDENING_ACTIVE_FROM_ROUND;
 
-        // Below activation the floor is inert: the calls reach the interpreter
-        // (compile + run) and are never rejected for module size. This is the
-        // old behavior the gate preserves, so an un-updated node cannot diverge.
-        if let Some(below_round) = active_round.checked_sub(1) {
-            let below = with_timeout(move || run_tiny_gas_big_calls(below_round));
-            assert_eq!(below.len(), 10);
-            for receipt in &below {
-                assert!(
-                    receipt
-                        .error
-                        .as_deref()
-                        .is_none_or(|e| !e.contains("module-size floor")),
-                    "below activation the module-size floor must not fire: {receipt:?}"
-                );
-            }
-        }
-
-        // At/above activation every tiny-gas call to the large module is
-        // rejected up front, deterministically, with no interpreter work.
+        // Every tiny-gas call to the large module is rejected up front,
+        // deterministically, with no interpreter work.
         let active = with_timeout(move || run_tiny_gas_big_calls(active_round));
         assert_eq!(active.len(), 10);
         for (i, receipt) in active.iter().enumerate() {
@@ -5158,8 +5149,8 @@ mod tests {
 
     /// Execute a sub-DAG at `round` with a unique leader digest.
     ///
-    /// The activation round is `u64::MAX`, so every gated test must run at
-    /// that same round. `execute_committed_subdag` is idempotent per leader
+    /// Slashing is active from genesis (P4-6), so every gated test runs at
+    /// `GATE` (round 0). `execute_committed_subdag` is idempotent per leader
     /// digest and `subdag_at` derives it from `(author, round, [])` alone, so
     /// a second call at the same round would be a no-op; salting the digest
     /// models two different committed leaders at the same round instead.
@@ -5203,32 +5194,6 @@ mod tests {
             .delegate(reporter, v, kovanica_staking::MIN_DELEGATION)
             .expect("delegate");
         (ctx, v)
-    }
-
-    #[test]
-    fn evidence_is_rejected_below_the_activation_round() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let storage = Storage::new(dir.path().join("t.redb")).expect("storage");
-        let k = test_keypair(3);
-        let (mut ctx, _) = keyed_slash_fixture(&storage, &k);
-        let staked_before = ctx.staking.total_staked;
-        let treasury_before = read_balance(&storage, &TREASURY);
-        let tx = evidence_tx(&test_keypair(9), 0, equivocation(&k, 1));
-
-        let r = run(&mut ctx, &storage, GATE - 1, vec![tx]);
-        assert!(!r[0].success);
-        assert!(
-            r[0].error
-                .as_deref()
-                .unwrap_or("")
-                .contains("slashing not active"),
-            "{:?}",
-            r[0].error
-        );
-        assert_eq!(ctx.staking.total_staked, staked_before);
-        assert!(!ctx.staking.validators[0].slashed);
-        assert_eq!(read_balance(&storage, &TREASURY), treasury_before);
-        assert_eq!(slashed_counter(&storage), None);
     }
 
     #[test]
@@ -5300,11 +5265,14 @@ mod tests {
         let staked_before = ctx.staking.total_staked;
         let treasury_before = read_balance(&storage, &TREASURY);
 
-        // Stale: round 0 versus a leader round far beyond the age bound.
+        // Stale: evidence for round 0 committed at a leader round beyond the
+        // age bound. Slashing is active from genesis, so the leader round may
+        // be any value; only freshness rejects this evidence.
+        let stale_round = kovanica_types::EVIDENCE_MAX_AGE_ROUNDS + 1;
         let r = run(
             &mut ctx,
             &storage,
-            GATE,
+            stale_round,
             vec![evidence_tx(&test_keypair(9), 0, equivocation(&k, 0))],
         );
         assert!(!r[0].success);
@@ -5618,7 +5586,7 @@ mod tests {
         let kind = TransactionKind::Call {
             contract: PROBE_CONTRACT,
             value,
-            method: "probe".to_string(),
+            method: PROBE_ENTRY.to_string(),
             args: if fail { vec![1] } else { Vec::new() },
             gas_limit: 1_000_000,
         };
@@ -5968,38 +5936,15 @@ mod tests {
     }
 
     // A `Deploy` carries bytecode the node never compiles (compilation happens
-    // on the first call). Below activation an invalid module is therefore
-    // stored successfully; from activation it is rejected before any write,
-    // with the fee/nonce still charged.
+    // on the first call), so without the gate an invalid module would be
+    // stored verbatim. Contract hardening is active from genesis (P4-6):
+    // the deploy is rejected before any write, with the fee/nonce still
+    // charged.
     #[test]
-    fn invalid_bytecode_deploy_is_gated() {
+    fn invalid_bytecode_deploy_is_rejected() {
         let active_round = kovanica_types::CONTRACT_HARDENING_ACTIVE_FROM_ROUND;
         let invalid = b"\x00asm\x01\0\0\0this is not a valid module".to_vec();
 
-        // Below activation: old behavior — accepted and stored verbatim.
-        {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let storage = Storage::new(dir.path().join("t.redb")).expect("storage");
-            let key = test_keypair(1);
-            let sender = address_of(&key);
-            let mut ctx = setup_funded_sender(&storage, &sender, 1_000_000);
-            let tx = signed_tx(
-                &key,
-                TransactionKind::Deploy {
-                    code: invalid.clone(),
-                },
-                0,
-                1_000,
-            );
-            let receipts = run(&mut ctx, &storage, 1, vec![tx]);
-            assert!(receipts[0].success, "{:?}", receipts[0].error);
-            assert_eq!(
-                read_account_code(&storage, &deployed_address(&sender, 0)),
-                invalid
-            );
-        }
-
-        // At activation: rejected, no code write, fee + nonce still charged.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let storage = Storage::new(dir.path().join("t.redb")).expect("storage");
@@ -6033,35 +5978,13 @@ mod tests {
         }
     }
 
-    // The overwrite guard only fires from activation; below it a deploy still
-    // replaces whatever code the derived address held.
+    // Contract hardening is active from genesis (P4-6): a deploy may not
+    // replace the code of an account that already holds code.
     #[test]
-    fn deploy_overwrite_guard_is_gated() {
+    fn deploy_overwrite_guard_rejects_a_second_deploy() {
         let active_round = kovanica_types::CONTRACT_HARDENING_ACTIVE_FROM_ROUND;
 
-        // Below activation: the deploy overwrites the pre-seeded code.
-        {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let storage = Storage::new(dir.path().join("t.redb")).expect("storage");
-            let key = test_keypair(1);
-            let sender = address_of(&key);
-            let mut ctx = setup_funded_sender(&storage, &sender, 1_000_000);
-            let target = deployed_address(&sender, 0);
-            set_raw_code(&storage, &target, b"pre-seeded code".to_vec());
-            let tx = signed_tx(
-                &key,
-                TransactionKind::Deploy {
-                    code: b"replacement".to_vec(),
-                },
-                0,
-                1_000,
-            );
-            let receipts = run(&mut ctx, &storage, 1, vec![tx]);
-            assert!(receipts[0].success, "{:?}", receipts[0].error);
-            assert_eq!(read_account_code(&storage, &target), b"replacement");
-        }
-
-        // At activation: rejected, and the pre-seeded code is left untouched.
+        // The deploy is rejected and the pre-seeded code is left untouched.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let storage = Storage::new(dir.path().join("t.redb")).expect("storage");
@@ -6094,45 +6017,35 @@ mod tests {
         }
     }
 
-    // Only the 19 canonical entry points are callable from activation on; below
-    // activation any export the module defines is callable (old behavior).
+    // Only the canonical entry points are callable; contract hardening is
+    // active from genesis (P4-6), so a non-entry export is rejected before the
+    // interpreter runs.
     #[test]
-    fn wasm_entry_point_is_gated() {
+    fn wasm_non_entry_point_is_rejected() {
         let active_round = kovanica_types::CONTRACT_HARDENING_ACTIVE_FROM_ROUND;
         const ALLOWED_CONTRACT: Address = Address([0xC3; 32]);
 
-        // gate OFF: the module's non-entry export "probe" still executes.
+        // "probe" is not an entry point. The module exports it, but the call
+        // is rejected before the interpreter (no fuel, no storage write).
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let storage = Storage::new(dir.path().join("t.redb")).expect("storage");
             let key = test_keypair(1);
             let sender = address_of(&key);
             let mut ctx = setup_funded_sender(&storage, &sender, 1_000_000);
-            deploy_probe(&storage);
-            let receipts = run(
-                &mut ctx,
-                &storage,
-                1,
-                vec![probe_call(&key, false, 0, 1_000)],
-            );
-            assert!(receipts[0].success, "{:?}", receipts[0].error);
-            assert_eq!(probe_slot(&storage), Some(1_000_000 - 1_000));
-        }
-
-        // gate ON: "probe" is not an entry point — rejected before the
-        // interpreter (no fuel, no storage write).
-        {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let storage = Storage::new(dir.path().join("t.redb")).expect("storage");
-            let key = test_keypair(1);
-            let sender = address_of(&key);
-            let mut ctx = setup_funded_sender(&storage, &sender, 1_000_000);
-            deploy_probe(&storage);
+            set_raw_code(&storage, &PROBE_CONTRACT, probe_wasm_named("probe"));
+            let kind = TransactionKind::Call {
+                contract: PROBE_CONTRACT,
+                value: 0,
+                method: "probe".to_string(),
+                args: Vec::new(),
+                gas_limit: 1_000_000,
+            };
             let receipts = run(
                 &mut ctx,
                 &storage,
                 active_round,
-                vec![probe_call(&key, false, 0, 1_000)],
+                vec![signed_tx(&key, kind, 0, 1_000)],
             );
             assert!(!receipts[0].success);
             assert!(
@@ -6147,8 +6060,8 @@ mod tests {
             assert_eq!(probe_slot(&storage), None, "no storage write");
         }
 
-        // gate ON: a canonical entry point is not rejected by the gate and the
-        // call runs to completion.
+        // A canonical entry point is not rejected by the gate and the call
+        // runs to completion.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let storage = Storage::new(dir.path().join("t.redb")).expect("storage");
@@ -6178,7 +6091,7 @@ mod tests {
     }
 
     #[test]
-    fn contract_e2e_transactions_htlc_vault_multisig_gated_and_ungated() {
+    fn contract_e2e_transactions_htlc_vault_multisig() {
         let htlc_wasm = match contracts::tests::build_contract_wasm("kovanica-htlc") {
             Some(w) => w,
             None => return,
@@ -6194,8 +6107,10 @@ mod tests {
 
         let active_round = kovanica_types::CONTRACT_HARDENING_ACTIVE_FROM_ROUND;
 
-        // Test with gate inactive (round 1) and gate active (round active_round)
-        for &round in &[1u64, active_round] {
+        // Contract hardening is active from genesis (P4-6). Run the flow at
+        // the activation round and at a later round to prove the rules do not
+        // depend on a pre-activation window.
+        for &round in &[active_round, active_round + 1] {
             let dir = tempfile::tempdir().expect("tempdir");
             let storage = Storage::new(dir.path().join("e2e.redb")).expect("storage");
 

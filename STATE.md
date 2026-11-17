@@ -41,7 +41,7 @@ Update this file when frozen params or open product gaps change. Point-in-time d
 | `funded_accounts.toml` / `genesis_validators.toml` | Legacy file names (accounts are mining-reward / faucet / bootstrap-seed entries, not validators). `funded_accounts.toml` allowed on every chain **except** kovanica-mainnet (chain ID 1) |
 | Hash / sig domains | `KUNA-*` / `KVNC-*` crypto context tags remain for protocol compatibility |
 
-Gated hardening still inert on live chain until a genesis reset flips `*_ACTIVE_FROM_ROUND` to `0` (gas, contract, size limits, slashing).
+Hardening gates (`*_ACTIVE_FROM_ROUND`: gas, contract, size limits, slashing) are `0` in tree since P4-6 (2026-11-17), so fresh genesis / empty-volume re-genesis chains enforce them from round 0. Live seed1 (chain ID 2, deploy SHA `9758ffe0`) still runs the pre-flip build, so they remain inert there until an empty-volume re-genesis; seed1 is **not** re-deployed unless Toni orders it.
 
 ## Open product gaps (not archived noise)
 

@@ -58,6 +58,6 @@ graph TD
    - Svaka specifikacija mora očuvati determinizam izvršavanja i konsenzusa (bez ovisnosti o lokalnom satu, floating-point operacijama ili nedeterminističkim nasumičnim generatorima).
 2. **Kriteriji statusa:**
    - **Draft:** Prijedlog u razradi; nije dio produkcijskog koda.
-   - **Implemented (Gated):** Značajka implementirana u repozitoriju, ali zaštićena prekidačem (npr. `SLASHING_ACTIVE_FROM_ROUND = u64::MAX`).
+   - **Implemented (Gated):** Značajka implementirana u repozitoriju, ali zaštićena prekidačem (npr. `STATE_COMMITMENT_ACTIVE_FROM_ROUND = 500_000`).
    - **Implemented / Active:** Produkcijski aktivan kod na mreži.
    - **Superseded:** Zastarjela specifikacija zamijenjena novijim RFC-om.

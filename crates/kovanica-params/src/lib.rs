@@ -136,13 +136,20 @@ pub const MAX_BLOCK_BYTES: usize = 960 * 1024;
 pub const GENESIS_ROUND: u64 = 0;
 
 // ============================================================
-// Activation gates (inert by default)
+// Activation gates (active from genesis, round 0)
 // ============================================================
-pub const GAS_HARDENING_ACTIVE_FROM_ROUND: u64 = u64::MAX;
-pub const CONTRACT_HARDENING_ACTIVE_FROM_ROUND: u64 = u64::MAX;
-pub const SLASHING_ACTIVE_FROM_ROUND: u64 = u64::MAX;
+//
+// These four hardening rules were shipped inert (`u64::MAX`) so a live chain
+// could upgrade without forking. On 2026-11-17 the owner approved P4-6:
+// fresh chains (mainnet genesis and empty-volume re-genesis) activate them at
+// round 0 instead of carrying a runtime switch that is never flipped.
+//
+// Do not move them back to a non-zero round without an activation plan.
+pub const GAS_HARDENING_ACTIVE_FROM_ROUND: u64 = GENESIS_ROUND;
+pub const CONTRACT_HARDENING_ACTIVE_FROM_ROUND: u64 = GENESIS_ROUND;
+pub const SLASHING_ACTIVE_FROM_ROUND: u64 = GENESIS_ROUND;
 pub const STATE_COMMITMENT_ACTIVE_FROM_ROUND: u64 = 500_000;
-pub const SIZE_LIMITS_ACTIVE_FROM_ROUND: u64 = u64::MAX;
+pub const SIZE_LIMITS_ACTIVE_FROM_ROUND: u64 = GENESIS_ROUND;
 
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn gas_hardening_active_from(round: u64) -> bool {
@@ -188,9 +195,20 @@ mod tests {
     }
 
     #[test]
-    fn gates_inert() {
-        assert_eq!(GAS_HARDENING_ACTIVE_FROM_ROUND, u64::MAX);
-        assert_eq!(CONTRACT_HARDENING_ACTIVE_FROM_ROUND, u64::MAX);
+    fn hardening_gates_are_active_from_genesis() {
+        // P4-6 (owner-approved 2026-11-17): fresh chains enforce every
+        // hardening rule from the genesis round. A non-zero value here would
+        // silently disable consensus rules on new chains, so pin it.
+        assert_eq!(GAS_HARDENING_ACTIVE_FROM_ROUND, GENESIS_ROUND);
+        assert_eq!(CONTRACT_HARDENING_ACTIVE_FROM_ROUND, GENESIS_ROUND);
+        assert_eq!(SLASHING_ACTIVE_FROM_ROUND, GENESIS_ROUND);
+        assert_eq!(SIZE_LIMITS_ACTIVE_FROM_ROUND, GENESIS_ROUND);
+        assert!(gas_hardening_active_from(GENESIS_ROUND));
+        assert!(contract_hardening_active_from(GENESIS_ROUND));
+        assert!(slashing_active_from(GENESIS_ROUND));
+        assert!(size_limits_active_from(GENESIS_ROUND));
+        // The state-commitment root keeps its separate, finite activation.
+        assert_eq!(STATE_COMMITMENT_ACTIVE_FROM_ROUND, 500_000);
     }
 
     #[test]

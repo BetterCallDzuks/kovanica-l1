@@ -173,8 +173,7 @@ pub use kovanica_params::MAX_TX_GAS_LIMIT;
 
 /// Round from which the gas-hardening consensus rules take effect.
 ///
-/// Three new rules are gated on `block.round >= GAS_HARDENING_ACTIVE_FROM_ROUND`
-/// (below it every block validates and executes exactly as before):
+/// Three rules apply to every block at or above this round:
 ///
 /// 1. per-transaction `Call` gas cap ([`MAX_TX_GAS_LIMIT`]) in block-manager
 ///    `validate_transaction`;
@@ -182,11 +181,10 @@ pub use kovanica_params::MAX_TX_GAS_LIMIT;
 /// 3. per-call module-size gas floor in the execution layer (`Call` gas must be
 ///    at least `bytecode_len * kovanica_runtime::GAS_PER_MODULE_BYTE`).
 ///
-/// Defaults to `u64::MAX` so the rules are **inert** on the currently running
-/// testnet: activating them on a live chain without a coordinated upgrade would
-/// fork it, because a node that has not yet been updated would still accept an
-/// over-cap block that an updated node rejects. Set to `0` at the next genesis /
-/// testnet reset, after every validator runs a build containing the hardening.
+/// Since P4-6 (owner-approved 2026-11-17) the value is [`GENESIS_ROUND`], so
+/// fresh chains — mainnet genesis and empty-volume re-genesis — enforce all
+/// three from round 0. A live chain that has not been re-genesised keeps
+/// running its existing build, which still carries the old inert value.
 pub use kovanica_params::GAS_HARDENING_ACTIVE_FROM_ROUND;
 
 /// Whether the gas-hardening consensus rules apply to a block/leader at
@@ -197,9 +195,9 @@ pub use kovanica_params::GAS_HARDENING_ACTIVE_FROM_ROUND;
 /// validation, execution-time module-size floor), so the activation rule has
 /// exactly one definition.
 ///
-/// The lint is allowed because the default activation round is `u64::MAX` (so
-/// the rules are inert on the running testnet); the comparison is deliberate,
-/// not an accident, and would move here should the constant ever be redefined.
+/// The lint is allowed because the activation round is `0` (so the comparison
+/// is always true by construction); that is deliberate, not an accident, and
+/// would move here should the constant ever be redefined.
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn gas_hardening_active_from(round: Round) -> bool {
     round >= GAS_HARDENING_ACTIVE_FROM_ROUND
@@ -207,9 +205,8 @@ pub fn gas_hardening_active_from(round: Round) -> bool {
 
 /// Round from which the contract-hardening consensus rules take effect.
 ///
-/// Three new rules are gated on `block.round >= CONTRACT_HARDENING_ACTIVE_FROM_ROUND`
-/// (below it every `Deploy`/`Call` validates and executes exactly as before,
-/// so an un-updated node never diverges):
+/// Three rules apply to every block at or above
+/// `CONTRACT_HARDENING_ACTIVE_FROM_ROUND`:
 ///
 /// 1. `Deploy` bytecode validation — a deploy whose `code` is not a valid wasm
 ///    module (compiled with the same wasmi engine the interpreter uses,
@@ -222,11 +219,10 @@ pub fn gas_hardening_active_from(round: Round) -> bool {
 ///    canonical `kovanica_execution::ENTRY_POINTS` is rejected before the
 ///    interpreter runs (the native `dispatch_entry` path already gated these).
 ///
-/// Defaults to `u64::MAX` so the rules are **inert** on the currently running
-/// testnet: activating them on a live chain without a coordinated upgrade would
-/// fork it, because a node that has not yet been updated would still accept a
-/// deploy/call that an updated node rejects. Set to `0` at the next genesis /
-/// testnet reset, after every validator runs a build containing the hardening.
+/// Since P4-6 (owner-approved 2026-11-17) the value is [`GENESIS_ROUND`], so
+/// fresh chains enforce all three rules from round 0. A live chain that has
+/// not been re-genesised keeps running its existing build, which still carries
+/// the old inert value.
 pub use kovanica_params::CONTRACT_HARDENING_ACTIVE_FROM_ROUND;
 
 /// Whether the contract-hardening consensus rules apply to a block/leader at
@@ -237,9 +233,9 @@ pub use kovanica_params::CONTRACT_HARDENING_ACTIVE_FROM_ROUND;
 /// the deploy overwrite guard, and wasm entry-point gating, so the activation
 /// rule has exactly one definition.
 ///
-/// The lint is allowed because the default activation round is `u64::MAX` (so
-/// the rules are inert on the running testnet); the comparison is deliberate,
-/// not an accident, and would move here should the constant ever be redefined.
+/// The lint is allowed because the activation round is `0` (so the comparison
+/// is always true by construction); that is deliberate, not an accident, and
+/// would move here should the constant ever be redefined.
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn contract_hardening_active_from(round: Round) -> bool {
     round >= CONTRACT_HARDENING_ACTIVE_FROM_ROUND
@@ -251,14 +247,13 @@ pub fn contract_hardening_active_from(round: Round) -> bool {
 /// the transaction that carries a self-contained [`EquivocationEvidence`]
 /// proof (see `docs/rfcs/RFC-010-PRODUCTION-SLASHING.md`). Below this round
 /// every such transaction fails deterministically with "slashing not
-/// active", so a node that has not been updated never diverges: it simply
-/// keeps the transaction in the block and records a failed receipt, exactly
-/// like any other failing transaction.
+/// active".
 ///
-/// A new transaction kind changes the wire enum, so the rule cannot be
-/// activated on a running chain without a coordinated upgrade. Defaults to
-/// `u64::MAX`; set to `0` at the next genesis / testnet reset, after every
-/// validator runs a build containing the slashing implementation.
+/// A new transaction kind changes the wire enum, so the rule could not be
+/// activated on a running chain without a coordinated upgrade. Since P4-6
+/// (owner-approved 2026-11-17) the value is [`GENESIS_ROUND`]: fresh chains
+/// accept evidence from round 0. A live chain that has not been re-genesised
+/// keeps running its existing build, which still carries the old inert value.
 pub use kovanica_params::SLASHING_ACTIVE_FROM_ROUND;
 
 /// Whether production slashing applies to a block/leader at `round`.
@@ -333,19 +328,16 @@ pub use kovanica_params::MAX_BLOCK_BYTES;
 
 /// Round from which the consensus size limits take effect.
 ///
-/// Two block-validity rejections are gated on
-/// `block.round >= SIZE_LIMITS_ACTIVE_FROM_ROUND` (below it every block
-/// validates exactly as before):
+/// Two block-validity rejections apply to every block at or above
+/// `SIZE_LIMITS_ACTIVE_FROM_ROUND`:
 ///
 /// 1. a transaction whose bincode encoding exceeds [`MAX_TX_BYTES`];
 /// 2. a block whose bincode encoding exceeds [`MAX_BLOCK_BYTES`].
 ///
-/// Defaults to `u64::MAX` so the rules are **inert** on the currently running
-/// testnet: activating them on a live chain without a coordinated upgrade
-/// would fork it, because a node that has not yet been updated would still
-/// accept an oversized block that an updated node rejects. Set to `0` at the
-/// next genesis / testnet reset, after every validator runs a build containing
-/// the limits.
+/// Since P4-6 (owner-approved 2026-11-17) the value is [`GENESIS_ROUND`], so
+/// fresh chains enforce both from round 0. A live chain that has not been
+/// re-genesised keeps running its existing build, which still carries the old
+/// inert value.
 pub use kovanica_params::SIZE_LIMITS_ACTIVE_FROM_ROUND;
 
 /// Whether the consensus size limits apply to a block at `round`.
@@ -354,9 +346,9 @@ pub use kovanica_params::SIZE_LIMITS_ACTIVE_FROM_ROUND;
 /// predicate the block manager uses, so the activation rule has exactly one
 /// definition.
 ///
-/// The lint is allowed because the default activation round is `u64::MAX` (so
-/// the rules are inert on the running testnet); the comparison is deliberate,
-/// not an accident, and would move here should the constant ever be redefined.
+/// The lint is allowed because the activation round is `0` (so the comparison
+/// is always true by construction); that is deliberate, not an accident, and
+/// would move here should the constant ever be redefined.
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn size_limits_active_from(round: Round) -> bool {
     round >= SIZE_LIMITS_ACTIVE_FROM_ROUND

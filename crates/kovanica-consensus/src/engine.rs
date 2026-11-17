@@ -5437,7 +5437,8 @@ mod tests {
 
     /// Detection halves of the slashing path: two conflicting headers by the
     /// scheduled leader are turned into a signed `Evidence` transaction in the
-    /// local mempool, and nothing is submitted below the activation round.
+    /// local mempool. Slashing is active from genesis (P4-6), so reporting is
+    /// enabled from round 0.
     #[test]
     fn detected_equivocation_is_reported_as_a_signed_evidence_transaction() {
         use kovanica_types::{TransactionKind, SLASHING_ACTIVE_FROM_ROUND};
@@ -5507,14 +5508,6 @@ mod tests {
             digest,
             merkle_root: Default::default(),
         };
-
-        // Below activation: detected, but not reported.
-        let below = SLASHING_ACTIVE_FROM_ROUND - 1;
-        engine.report_equivocation(
-            &block(below, Hash::new(b"a")),
-            &block(below, Hash::new(b"b")),
-        );
-        assert_eq!(mempool.len(), 0);
 
         let a = block(SLASHING_ACTIVE_FROM_ROUND, Hash::new(b"a"));
         let b = block(SLASHING_ACTIVE_FROM_ROUND, Hash::new(b"b"));

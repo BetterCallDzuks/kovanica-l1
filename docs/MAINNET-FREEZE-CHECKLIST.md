@@ -139,7 +139,7 @@ Verify that every parameter in the release binary matches the canonical mainnet 
 | **Unbonding Period** | `100,000 blocks` | `UNBONDING_ROUNDS = 100_000` (~13.9 days; legacy, non-consensus) | `crates/kovanica-staking/src/lib.rs` | [ ] |
 | **Minimum Validator Stake**| `50,000 KVNC` | `MIN_VALIDATOR_STAKE = 50_000 * 10^9` (legacy, non-consensus) | `crates/kovanica-params/src/lib.rs` | [ ] |
 | **Minimum Delegation** | `50,000 KVNC` | `MIN_DELEGATION = 50_000 * 10^9` (legacy, non-consensus) | `crates/kovanica-params/src/lib.rs` | [ ] |
-| **Slashing Penalty** | `500 bps` (5%) | Fixed equivocation penalty (legacy; slashing not active, `SLASHING_ACTIVE_FROM_ROUND = u64::MAX`) | `crates/kovanica-staking/src/lib.rs` | [ ] |
+| **Slashing Penalty** | `500 bps` (5%) | Fixed equivocation penalty (legacy; `SLASHING_ACTIVE_FROM_ROUND = 0` since P4-6, but hybrid has no staking validator to slash) | `crates/kovanica-staking/src/lib.rs` | [ ] |
 | **Jail Duration** | `7,200 blocks` | `JAIL_ROUNDS = 7_200` (~1 day = 3 epochs; legacy, **non-consensus**) | `crates/kovanica-staking/src/lib.rs` | [ ] |
 | **Light-Node Share** | `20%` (2,000 bps) | Escrowed for 32 winning slots/epoch | `crates/kovanica-staking/src/lib.rs` | [ ] |
 
@@ -272,7 +272,7 @@ Verify that Prometheus alerting rules defined in `ops/prometheus/alerts.yml` are
   - `KovanicaCommitLatencyHigh`: `commit_latency > 5000` ms for 3 minutes (Warning).
 - [ ] **Equivocation & Slashing Evidence Alerts:**
   - Automated alert on detection of conflicting block proposals at the same round.
-  - Slashing is not active under hybrid (`SLASHING_ACTIVE_FROM_ROUND = u64::MAX`); the 500 bps penalty and 7,200-round jail below belong to the legacy committee path and must not be expected to fire.
+  - Slashing is enabled from genesis (`SLASHING_ACTIVE_FROM_ROUND = 0`, P4-6), but under hybrid there is no staking validator set; the 500 bps penalty and 7,200-round jail below belong to the legacy committee path and must not be expected to fire.
 - [ ] **Resource Limits & OOM Alerts:**
   - `KovanicaMemoryHigh`: RSS proxy $> 3000\text{ MB}$ for 5 minutes (Warning).
   - `KovanicaMemoryCritical`: RSS proxy $> 3500\text{ MB}$ for 1 minute (Critical, imminent OOM danger).

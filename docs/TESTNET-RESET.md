@@ -206,12 +206,15 @@ together.
 > **Superseded in part (ADR 0003, 2026-11-05).** This plan was written before
 > the hybrid PoW migration. Consensus is now Hybrid PoW + GHOSTDAG with **no
 > stake and no VRF leader election**, so the VRF items below no longer apply;
-> the `*_ACTIVE_FROM_ROUND` gates are still inert and unchanged. The reset
+> the `*_ACTIVE_FROM_ROUND` gates are now `0` in tree (P4-6, 2026-11-17), so the
+> next reset activates them without any code change; the live mesh still runs
+> the pre-flip build and therefore sees them as inert. The reset
 > procedure itself is still valid.
 
 This section is an operator runbook for the **next testnet genesis reset**.
-It activates the currently inert hardening gates by resetting them to `0` on a
-fresh genesis. It does **not** fork the live network today and does **not**
+It activates the hardening gates on the live mesh: the tree already ships
+them at `0` (P4-6, 2026-11-17), so the reset is the step that puts a
+pre-flip mesh on the new rules. It does **not** fork the live network today and does **not**
 change any numeric tokenomics.
 
 ## 1. Preconditions
@@ -244,8 +247,9 @@ change any numeric tokenomics.
    - `CONTRACT_HARDENING_ACTIVE_FROM_ROUND` → `0`
    - `SIZE_LIMITS_ACTIVE_FROM_ROUND` → `0`
    - `SLASHING_ACTIVE_FROM_ROUND` → `0`
-   (These are activation-round constants in `kovanica-params`; the live
-   mainnet/testnet values stay `u64::MAX` until this reset.)
+   (These are activation-round constants in `kovanica-params`; the live mesh
+   keeps the pre-flip build's inert behavior until the reset, even though the
+   tree now ships them at `0`.)
 
 ## 3. Activation matrix
 

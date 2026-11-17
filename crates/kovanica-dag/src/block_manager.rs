@@ -446,11 +446,10 @@ impl BlockManager {
             ));
         }
 
-        // Gas-hardening activation gate. Both new block-validity rejections
+        // Gas-hardening gate. Both new block-validity rejections
         // (per-block budget here, per-transaction cap in `validate_transaction`)
-        // apply only from `GAS_HARDENING_ACTIVE_FROM_ROUND`. Below it the block
-        // is validated exactly as before, so a huge-gas block still validates
-        // and a not-yet-updated node does not diverge from an updated one.
+        // apply from `GAS_HARDENING_ACTIVE_FROM_ROUND` (0 since P4-6, 2026-11-17),
+        // so on a fresh chain every block is checked.
         let gas_hardening_active = kovanica_types::gas_hardening_active_from(block.round);
 
         // Per-block gas budget: `MAX_TXS_PER_BLOCK` bounds the count, this
@@ -466,8 +465,8 @@ impl BlockManager {
             }
         }
 
-        // Consensus size limits, gated on `SIZE_LIMITS_ACTIVE_FROM_ROUND` so
-        // they are inert on a live chain that has not been upgraded in step.
+        // Consensus size limits, active from `SIZE_LIMITS_ACTIVE_FROM_ROUND`
+        // (0 since P4-6, 2026-11-17); on a fresh chain every block is checked.
         //
         // Sizes are measured on the bincode encoding, the same encoding used
         // for storage and the wire, so every node computes the same number for
@@ -1308,24 +1307,17 @@ mod tests {
         }
     }
 
-    /// Round immediately below activation, or `None` when activation is at
-    /// genesis (round 0) and there is no pre-activation behavior to observe.
-    fn round_below_activation() -> Option<u64> {
-        GAS_HARDENING_ACTIVE_FROM_ROUND.checked_sub(1)
-    }
-
     fn gas_txs(count: u64) -> Vec<Transaction> {
         (0..count)
             .map(|nonce| call_tx(nonce, MAX_TX_GAS_LIMIT))
             .collect()
     }
 
-    /// The activation gate controls the **block-validity** rejections: below
-    /// `GAS_HARDENING_ACTIVE_FROM_ROUND` a block carrying a transaction far
-    /// above the per-tx cap still validates (old behavior, no fork); from that
-    /// round on the same block is rejected.
+    /// The gas rules are **block-validity** rejections and apply from genesis
+    /// (P4-6): a block carrying a transaction far above the per-tx cap is
+    /// rejected on every round.
     #[test]
-    fn gas_hardening_gate_is_inert_below_and_enforced_at_activation() {
+    fn gas_hardening_gate_is_enforced_from_genesis() {
         let dir = tempfile::tempdir().expect("tempdir");
         let storage = kovanica_storage::Storage::new(dir.path().join("dag.redb")).unwrap();
         let store = Arc::new(DagStore::new(storage).unwrap());
@@ -1334,19 +1326,9 @@ mod tests {
         manager.set_authority_keys(HashMap::from([(0, public_key)]));
 
         let huge = MAX_TX_GAS_LIMIT * 100;
+        assert!(huge > BLOCK_GAS_BUDGET);
 
-        // Below activation: both the per-tx cap and the per-block budget are
-        // inert, so a single huge-gas call still validates (and its total is
-        // itself far above `BLOCK_GAS_BUDGET`, proving the budget is skipped).
-        if let Some(below) = round_below_activation() {
-            assert!(huge > BLOCK_GAS_BUDGET);
-            let block = gas_block_at(below, vec![call_tx(0, huge)], &key);
-            manager
-                .validate_block_content(&block)
-                .expect("below activation a huge-gas block must still validate");
-        }
-
-        // At/above activation: the same transaction is rejected.
+        // The huge-gas transaction is rejected.
         let at = GAS_HARDENING_ACTIVE_FROM_ROUND;
         let block = gas_block_at(at, vec![call_tx(0, huge)], &key);
         let err = manager
@@ -1405,11 +1387,11 @@ mod tests {
         assert!(err.to_string().contains("gas budget"), "unexpected: {err}");
     }
 
-    // Proposal keeps the per-block gas budget only once active, by dropping a
-    // tail of the (sender, nonce)-sorted list (preserving every included nonce
-    // prefix). Below activation the proposer is unchanged and keeps all txs.
+    // Proposal keeps the per-block gas budget (active from genesis, P4-6) by
+    // dropping a tail of the (sender, nonce)-sorted list, preserving every
+    // included nonce prefix.
     #[test]
-    fn propose_block_truncates_to_the_gas_budget_only_when_active() {
+    fn propose_block_truncates_to_the_gas_budget() {
         let dir = tempfile::tempdir().expect("tempdir");
         let storage = kovanica_storage::Storage::new(dir.path().join("dag.redb")).unwrap();
         let store = Arc::new(DagStore::new(storage).unwrap());
@@ -1433,22 +1415,11 @@ mod tests {
         };
         store.put_block(&genesis).unwrap();
 
-        // Below activation: no truncation (old behavior).
-        if let Some(below) = round_below_activation() {
-            manager.add_transactions(gas_txs(9));
-            let block = manager
-                .propose_block(below)
-                .expect("propose below activation");
-            assert_eq!(
-                block.transactions.len(),
-                9,
-                "below activation the proposer must not drop transactions"
-            );
-        }
-
-        // At/above activation: the ninth maximal call is dropped, the nonce
-        // prefix is preserved, and the proposal validates under the new rules.
-        let at = GAS_HARDENING_ACTIVE_FROM_ROUND;
+        // The ninth maximal call is dropped, the nonce prefix is preserved, and
+        // the proposal validates under the new rules. Round 1 is the first
+        // round that has a parent; the gate is active from round 0.
+        #[allow(clippy::unnecessary_min_or_max)]
+        let at = GAS_HARDENING_ACTIVE_FROM_ROUND.max(1);
         manager.add_transactions(gas_txs(9));
         let block = manager.propose_block(at).expect("propose at activation");
 
@@ -1791,11 +1762,9 @@ mod tests {
         tx
     }
 
-    /// The size limits are gated exactly like the gas rules: inert below
-    /// `SIZE_LIMITS_ACTIVE_FROM_ROUND`, enforced from it, so an upgraded node
-    /// never diverges from one that has not been upgraded yet.
+    /// The size limits apply from genesis (P4-6), exactly like the gas rules.
     #[test]
-    fn size_limits_gate_is_inert_below_and_enforced_at_activation() {
+    fn size_limits_gate_is_enforced_from_genesis() {
         let dir = tempfile::tempdir().expect("tempdir");
         let storage = kovanica_storage::Storage::new(dir.path().join("dag.redb")).unwrap();
         let store = Arc::new(DagStore::new(storage).unwrap());
@@ -1803,26 +1772,10 @@ mod tests {
         let (key, public_key) = crypto::generate_keypair();
         manager.set_authority_keys(HashMap::from([(0, public_key)]));
 
-        // A transaction whose encoding is over the cap, and a block made of
-        // them that is over the block cap.
+        // A transaction whose encoding is over the cap.
         let oversized = deploy_tx(0, MAX_TX_BYTES);
-        let oversized_block_txs: Vec<Transaction> =
-            (0..4).map(|n| deploy_tx(n, 300 * 1024)).collect();
 
-        // Below activation both are still accepted: that is the behavior a
-        // node without the limits has, and matching it is what avoids a fork.
-        if let Some(below) = SIZE_LIMITS_ACTIVE_FROM_ROUND.checked_sub(1) {
-            let block = gas_block_at(below, vec![oversized.clone()], &key);
-            manager
-                .validate_block_content(&block)
-                .expect("below activation an oversized transaction must still validate");
-            let block = gas_block_at(below, oversized_block_txs.clone(), &key);
-            manager
-                .validate_block_content(&block)
-                .expect("below activation an oversized block must still validate");
-        }
-
-        // At activation the transaction is rejected on its own size.
+        // The transaction is rejected on its own size.
         let at = SIZE_LIMITS_ACTIVE_FROM_ROUND;
         let block = gas_block_at(at, vec![oversized], &key);
         let err = manager

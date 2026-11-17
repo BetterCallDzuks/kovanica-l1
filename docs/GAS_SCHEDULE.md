@@ -10,12 +10,14 @@
 | Marker | Meaning |
 |--------|---------|
 | **Implemented** | In the code on `main` today, and enforced where it says it is. |
-| **Gated** | Implemented but inert until `kovanica_types::GAS_HARDENING_ACTIVE_FROM_ROUND` is reached (currently `u64::MAX`, so inert; set to `0` at the next genesis / testnet reset). |
+| **Gated** | Implemented but behind a round gate. Since P4-6 (2026-11-17) the gas, contract, size-limit and slashing gates are `0` (active from genesis); `STATE_COMMITMENT_ACTIVE_FROM_ROUND = 500_000` is the one remaining gated rule. |
 | **PLANNED** | Target design only. Not implemented anywhere in the repo. |
 
-The host-call and base-cost tables below are **Gated**: implemented behind
-`GAS_HARDENING_ACTIVE_FROM_ROUND` (currently inert). Contracts still pay only
-wasmi instruction fuel until the gate activates.
+The host-call and base-cost tables below are **active from genesis**:
+`GAS_HARDENING_ACTIVE_FROM_ROUND = 0` since P4-6 (2026-11-17), so on a fresh
+chain contracts pay wasmi instruction fuel **plus** the charges below on every
+call. A live chain that has not been re-genesised keeps running its existing
+build.
 
 ## 1. Canonical constants
 
@@ -26,13 +28,16 @@ Canonical source: `crates/kovanica-params` (re-exported by `kovanica-types`).
 | `kovanica_types::MAX_TX_GAS_LIMIT` | `10_000_000` | `crates/kovanica-types/src/lib.rs` | Implemented |
 | `kovanica_runtime::GAS_PER_MODULE_BYTE` | `8` | `crates/kovanica-runtime/src/lib.rs` | Implemented |
 | `kovanica_runtime::min_gas_for_module(byte_len)` | `byte_len * GAS_PER_MODULE_BYTE` (saturating) | `crates/kovanica-runtime/src/lib.rs` | Implemented |
-| Per-block gas budget (`BLOCK_GAS_BUDGET`) | `MAX_TX_GAS_LIMIT * 8` = `80_000_000` | `crates/kovanica-dag/src/block_manager.rs` (private const) | Gated |
+| Per-block gas budget (`BLOCK_GAS_BUDGET`) | `MAX_TX_GAS_LIMIT * 8` = `80_000_000` | `crates/kovanica-dag/src/block_manager.rs` (private const) | Implemented (from genesis) |
 | `ExecutionConfig::default().gas_limit` | `MAX_TX_GAS_LIMIT` (`10_000_000`) | `crates/kovanica-runtime/src/lib.rs` | Implemented |
 | `ExecutionConfig::default().memory_limit_pages` | `256` (64 KiB pages = 16 MiB, `DEFAULT_CONTRACT_MEMORY_PAGES = 256`) | `crates/kovanica-runtime/src/lib.rs` | Implemented |
 | `MempoolConfig::max_gas_limit` | `MAX_TX_GAS_LIMIT` (`10_000_000`) | `crates/kovanica-mempool/src/lib.rs` | Implemented |
 | `MempoolConfig::min_fee_rate` | `0` (operator policy) | `crates/kovanica-mempool/src/lib.rs` | Implemented |
-| `kovanica_types::GAS_HARDENING_ACTIVE_FROM_ROUND` | `u64::MAX` (inert) | `crates/kovanica-types/src/lib.rs` | Implemented |
-| `kovanica_types::CONTRACT_HARDENING_ACTIVE_FROM_ROUND` | `u64::MAX` (inert) | `crates/kovanica-types/src/lib.rs` | Implemented |
+| `kovanica_types::GAS_HARDENING_ACTIVE_FROM_ROUND` | `0` (active from genesis) | `crates/kovanica-types/src/lib.rs` | Implemented |
+| `kovanica_types::CONTRACT_HARDENING_ACTIVE_FROM_ROUND` | `0` (active from genesis) | `crates/kovanica-types/src/lib.rs` | Implemented |
+| `kovanica_types::SLASHING_ACTIVE_FROM_ROUND` | `0` (active from genesis) | `crates/kovanica-types/src/lib.rs` | Implemented |
+| `kovanica_types::SIZE_LIMITS_ACTIVE_FROM_ROUND` | `0` (active from genesis) | `crates/kovanica-types/src/lib.rs` | Implemented |
+| `kovanica_types::STATE_COMMITMENT_ACTIVE_FROM_ROUND` | `500_000` | `crates/kovanica-types/src/lib.rs` | Gated |
 
 `MAX_TX_GAS_LIMIT` is the **single source of truth** for the per-transaction
 cap: `kovanica-runtime` re-exports it, the mempool derives `max_gas_limit`
@@ -59,24 +64,25 @@ per executed WebAssembly instruction; the exact per-instruction schedule is
 defined by the pinned wasmi version, not by this repo, and is therefore not
 enumerated here. The budget is the total fuel a call may burn.
 
-**Gated — module-size floor.** Compiling a wasm module is host-side work that
-wasmi fuel does not pay for. Once hardening is active, a `Call` must carry at
+**Active from genesis — module-size floor.** Compiling a wasm module is
+host-side work that wasmi fuel does not pay for, so a `Call` must carry at
 least `min_gas_for_module(bytecode_len)` = `bytecode_len * GAS_PER_MODULE_BYTE`
 so the requested gas is proportional to the compile work it forces every
 validator to do.
 
-**Gated — per-transaction cap and per-block budget.** Once hardening is active:
+**Active from genesis — per-transaction cap and per-block budget.**
 
 - `kovanica-dag`'s `validate_transaction` rejects a `Call` with
   `gas_limit > MAX_TX_GAS_LIMIT`;
 - `validate_block_content` rejects a block whose summed `Call` gas limits
   exceed `BLOCK_GAS_BUDGET` (`MAX_TX_GAS_LIMIT * 8`).
 
-Below the activation round all three rules are skipped, so pre-activation
-blocks validate and execute exactly as before.
+There is no pre-activation window on a fresh chain: all three rules apply to
+every block. A chain that has not been re-genesised keeps running its existing
+build, which carries the old inert value, so no live node forks on upgrade.
 
-**Gated — contract hardening (deploy / entry points).** From
-`CONTRACT_HARDENING_ACTIVE_FROM_ROUND` on (separate, also inert gate):
+**Active from genesis — contract hardening (deploy / entry points).**
+`CONTRACT_HARDENING_ACTIVE_FROM_ROUND = 0` since P4-6 (separate gate):
 
 - a `Deploy` is rejected unless its bytecode compiles as a valid wasm module
   (the same wasmi engine the interpreter uses) **and** the derived contract
@@ -85,9 +91,7 @@ blocks validate and execute exactly as before.
   **before** the interpreter runs (so it charges no fuel and writes nothing).
 
 All checks are deterministic. A rejected deploy/call still charges fee and
-nonce, matching every other body failure. Below the activation round the checks
-are skipped, so an invalid deploy and any exported method remain callable
-exactly as before.
+nonce, matching every other body failure.
 
 ## 4. Implemented: memory limits
 
@@ -102,11 +106,12 @@ exactly as before.
 - **No refunds**: unused gas is not returned to the caller.
 - The receipt's `gas_used` reports fuel actually consumed.
 
-## 6. Gated: base / intrinsic costs
+## 6. Active from genesis: base / intrinsic costs
 
-> **Gated — implemented behind `GAS_HARDENING_ACTIVE_FROM_ROUND`.** Host-call
-> charges are applied by `kovanica-runtime` when the gate is active; below the
-> gate behavior is bit-identical to legacy (no charges).
+> **Active from genesis.** Host-call charges are applied by `kovanica-runtime`
+> on every call because `GAS_HARDENING_ACTIVE_FROM_ROUND = 0` since P4-6. The
+> "target" column is the `kovanica-fee` schedule; a live chain that has not
+> been re-genesised keeps the legacy no-charge behavior.
 
 | Operation | Target gas cost | Notes |
 |-----------|-----------------|-------|
@@ -119,11 +124,11 @@ exactly as before.
 | Event emit (`kovanica_emit_event`) | 500 | per call |
 | Contract creation (`Deploy`) | 32,000 | code hash, account init |
 
-## 7. Gated: host-function per-call costs
+## 7. Active from genesis: host-function per-call costs
 
-> **Gated — implemented behind `GAS_HARDENING_ACTIVE_FROM_ROUND`.** The `env`
-> host functions in `kovanica-runtime` now debit fuel per `kovanica-fee` when
-> the gate is active.
+> **Active from genesis.** The `env` host functions in `kovanica-runtime` debit
+> fuel per `kovanica-fee` on every call since `GAS_HARDENING_ACTIVE_FROM_ROUND =
+> 0` (P4-6).
 
 | Host function | Target base gas | Target per-call cost |
 |---------------|-----------------|----------------------|
@@ -178,9 +183,9 @@ Unit tests in `kovanica-runtime`:
 - `memory_grow_is_limited_by_configured_page_cap` — memory cap enforced
 - `packed_contract_error_codes_are_decoded` — error packing deterministic
 
-`kovanica-dag` (`block_manager`) has gas-hardening gate tests covering the
-per-transaction cap and the per-block budget at and below the activation
-round.
+`kovanica-dag` (`block_manager`) has gas-hardening tests covering the
+per-transaction cap, the per-block budget and proposer truncation, all
+enforced from the genesis round.
 
 E2E test in `kovanica-execution` (`wasmi_e2e_kovanica_token_wasm`):
 
@@ -193,8 +198,9 @@ every validator must compute the same fee/gas outcome from the same
 transaction. Any change then requires:
 
 1. an RFC proposing the change;
-2. activation at a specific round via `GAS_HARDENING_ACTIVE_FROM_ROUND` (or a
-   hard fork);
+2. an activation plan: fresh genesis / empty-volume re-genesis (the gates are
+   `0` since P4-6), or a round gate if a future change must not apply to an
+   existing chain;
 3. migration tooling if existing contracts are affected.
 
 ## Appendix: fuel-to-gas conversion

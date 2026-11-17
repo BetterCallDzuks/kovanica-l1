@@ -670,9 +670,13 @@ fn test_equivocation_detection_and_proof_generation() {
         Some(mempool.clone()),
     );
 
-    // Target round at or above SLASHING_ACTIVE_FROM_ROUND (u64::MAX).
-    // u64::MAX % 3 == 0 (leader round), and (u64::MAX / 3) % 4 == 1 (scheduled leader is authority 1).
-    let slash_round = SLASHING_ACTIVE_FROM_ROUND;
+    // Round 3 is at/above SLASHING_ACTIVE_FROM_ROUND (0, genesis since P4-6),
+    // is a leader round (3 % 3 == 0), and (3 / 3) % 4 == 1, so the scheduled
+    // leader is authority 1 (the offender).
+    let slash_round = 3;
+    #[allow(clippy::absurd_extreme_comparisons)]
+    let active = slash_round >= SLASHING_ACTIVE_FROM_ROUND;
+    assert!(active);
     assert_eq!(engine.scheduled_leader_for_round(slash_round), Some(1));
 
     let slash_tx1 = make_transfer_tx(offender_key, 1, 5_000_000_000);

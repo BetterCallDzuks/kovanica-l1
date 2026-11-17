@@ -1,6 +1,6 @@
 # RFC-010 — Production Slashing: Verifiable Evidence and Unbonding Coverage
 
-- **Status:** Accepted & Implemented (2026-10-22, gated behind `SLASHING_ACTIVE_FROM_ROUND = u64::MAX`); legacy under ADR 0003 — not part of kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) consensus
+- **Status:** Accepted & Implemented (2026-10-22); activation flipped to `SLASHING_ACTIVE_FROM_ROUND = 0` by P4-6 (2026-11-17) on fresh genesis / empty-volume re-genesis. Legacy under ADR 0003 — not part of kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2) consensus
 - **Crate Scope:** `kovanica-staking`, `kovanica-types`, `kovanica-consensus`, `kovanica-execution`
 - **Tracks:** TASKLIST item 8, Linear PRO-12, PRO-19
 - **Primary References:**
@@ -221,16 +221,18 @@ committee. `slash()` sets `slashed = true` but leaves `active = true`; with a
 (#80, merged 2026-10-23) adds immediate deactivation and a jail of
 `JAIL_ROUNDS = 7 200` committed leaders (about 1 day; 3 epochs of 8 h once the
 staking epoch is 2 400 leaders, PRO-37). After the jail the validator returns
-only through an explicit stake transaction. The feature stays gated off
-(`SLASHING_ACTIVE_FROM_ROUND`).
+only through an explicit stake transaction. The feature is enabled from genesis
+(`SLASHING_ACTIVE_FROM_ROUND = 0`) since P4-6 (2026-11-17); on a live mesh
+that has not been re-genesised the pre-flip build still rejects evidence.
 
 ## 9. Activation
 
-- `pub const SLASHING_ACTIVE_FROM_ROUND: u64 = u64::MAX;` in `kovanica-types`,
-  with `slashing_active_from(round)` as the single predicate (same shape as
-  `GAS_HARDENING_ACTIVE_FROM_ROUND`, `CONTRACT_HARDENING_ACTIVE_FROM_ROUND`,
-  `SIZE_LIMITS_ACTIVE_FROM_ROUND`).
-- Set to `0` at genesis reset, together with the other three gates.
+- `pub const SLASHING_ACTIVE_FROM_ROUND: u64 = 0;` in `kovanica-types` since
+  P4-6 (2026-11-17), with `slashing_active_from(round)` as the single
+  predicate (same shape as `GAS_HARDENING_ACTIVE_FROM_ROUND`,
+  `CONTRACT_HARDENING_ACTIVE_FROM_ROUND`, `SIZE_LIMITS_ACTIVE_FROM_ROUND`).
+- The live mesh keeps the pre-flip build's inert behaviour until an
+  empty-volume re-genesis.
 - kovanica-testnet (chain ID 2) must not activate it: adding a `TransactionKind` variant changes the
   wire enum, so an activated evidence tx would be undecodable by old nodes.
 
@@ -245,15 +247,15 @@ consistent; treasury credit equals the total; supply unchanged.
 
 Unit (execution): a second submission returns `EvidenceProcessed`; failure rolls
 back staking and balances together; evidence older than the age bound is
-rejected; everything is rejected below `SLASHING_ACTIVE_FROM_ROUND`.
+rejected; evidence is rejected on chains that have not been re-genesised (pre-flip build).
 
 Integration (`crates/kovanica-node/tests/`): node A signs two blocks for one
 round → within 2 waves every honest node commits the evidence tx; identical
 stake via `kovanica_getStake` and identical state root; replay after restart
 gives the same root.
 
-Regression: with the gate at `u64::MAX`, an `Evidence` tx is rejected and no
-existing behaviour changes; the full workspace suite must stay green.
+Regression: on a pre-flip build an `Evidence` tx is rejected and no existing
+behaviour changes; the full workspace suite must stay green.
 
 ## 11. Out of scope
 
@@ -262,7 +264,8 @@ rewards; slashing past a matured, withdrawn unbond.
 
 ## 11. Implementation (2026-10-22)
 
-Shipped behind `SLASHING_ACTIVE_FROM_ROUND = u64::MAX`, so kovanica-testnet (chain ID 2) behaviour is
+Shipped with `SLASHING_ACTIVE_FROM_ROUND = 0` since P4-6 (2026-11-17), so a
+fresh genesis activates the evidence path from round 0; kovanica-testnet (chain ID 2) that has not been re-genesised keeps the pre-flip behaviour
 bit-identical.
 
 | Layer | Change |

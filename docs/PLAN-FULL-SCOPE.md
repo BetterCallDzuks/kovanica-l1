@@ -71,7 +71,7 @@ Out of this plan: `kovanica-vault` (separate private tool).
 | P4-2 | Mainnet runbook for PoW + no-stake | l1 | PR #261 |
 | P4-3 | Offline genesis ceremony (addresses OPEN) | Toni | Open |
 | P4-4 | External audit of KovanicaHash + Wasmi | l1 | Scope docs exist |
-| P4-5 | Height-gated hardening still inert | l1 | Do not flip `*_ACTIVE_FROM_ROUND` without Toni |
+| P4-5 | Height-gated hardening | l1 | IN PROGRESS — Toni approved 2026-11-17; `*_ACTIVE_FROM_ROUND` → `0` (P4-6), PR pending |
 
 ## P5 — L1 codebase polish (non-consensus)
 
