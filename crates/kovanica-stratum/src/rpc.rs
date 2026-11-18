@@ -207,7 +207,9 @@ impl NodeRpcClient {
         } else if let Some(b) = result.as_bool() {
             Ok(b)
         } else {
-            Ok(true)
+            Err(anyhow!(
+                "unexpected kovanica_submitWork result shape: {result}"
+            ))
         }
     }
 }

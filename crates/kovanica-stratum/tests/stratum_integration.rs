@@ -8,17 +8,17 @@
 //! - Error cases: unauthorized submissions, malformed JSON, and unknown jobs.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use kovanica_crypto::generate_keypair;
+use kovanica_crypto::{generate_keypair, KovanicaHasher};
 use kovanica_stratum::config::StratumConfig;
 use kovanica_stratum::gateway::StratumGateway;
-use kovanica_types::block::BlockHeader;
+use kovanica_types::block::{check_pow_hash_meets_target, BlockHeader};
 use kovanica_types::signing::chain_id::HYBRID_TESTNET;
 use kovanica_types::{Address, Hash};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 
@@ -33,6 +33,9 @@ async fn start_test_gateway(initial_difficulty: f64) -> (Arc<StratumGateway>, So
         listen_addr: local_addr,
         difficulty: initial_difficulty,
         chain_id: HYBRID_TESTNET,
+        // Point the poller at a closed port so tests never depend on a live node or receive an
+        // unsolicited `mining.notify` before the test injects its own job.
+        rpc_url: "http://127.0.0.1:1/rpc".to_string(),
         // Set a very long poll interval so the test doesn't log unneeded upstream errors
         poll_interval: Duration::from_secs(3600),
         ..Default::default()
@@ -103,6 +106,22 @@ fn create_test_header(round: u64, target_bits: u32) -> BlockHeader {
         0,
     )
     .with_payout(payout)
+}
+
+/// Find a nonce that satisfies the template's real network target, so the gateway will forward
+/// the solved header upstream instead of only accepting it as a share.
+fn find_network_solution(header: &BlockHeader, extranonce2: u32) -> u64 {
+    let mut candidate = header.clone();
+    let mut hasher = KovanicaHasher::new();
+    for nonce in 0..100_000u64 {
+        let full_nonce = ((extranonce2 as u64) << 32) | nonce;
+        candidate.nonce = full_nonce;
+        let pow_hash = hasher.hash(&candidate.preimage());
+        if check_pow_hash_meets_target(&pow_hash, candidate.target_bits) {
+            return full_nonce;
+        }
+    }
+    panic!("no network solution found in nonce range");
 }
 
 #[tokio::test]
@@ -316,6 +335,230 @@ async fn test_multiple_subscribers_unique_extranonce1() {
         en1_1, en1_2,
         "each subscriber must receive unique extranonce1"
     );
+
+    gateway.shutdown();
+}
+
+/// Minimal JSON-RPC node stub that serves one work template and records submitted headers.
+async fn spawn_mock_node(header: BlockHeader) -> (String, Arc<Mutex<Vec<BlockHeader>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock node must bind ephemeral listener");
+    let addr = listener.local_addr().expect("mock node local addr");
+    let submitted = Arc::new(Mutex::new(Vec::new()));
+    let submitted_srv = Arc::clone(&submitted);
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let header = header.clone();
+            let submitted = Arc::clone(&submitted_srv);
+
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                let header_end = loop {
+                    let Ok(n) = socket.read(&mut tmp).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break pos + 4;
+                    }
+                };
+
+                let header_text = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                let content_len = header_text
+                    .lines()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        if key.eq_ignore_ascii_case("content-length") {
+                            value.trim().parse::<usize>().ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                while buf.len() < header_end + content_len {
+                    let Ok(n) = socket.read(&mut tmp).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+
+                let req: Value =
+                    match serde_json::from_slice(&buf[header_end..header_end + content_len]) {
+                        Ok(v) => v,
+                        Err(_) => return,
+                    };
+                let method = req["method"].as_str().unwrap_or("");
+
+                let result = match method {
+                    "kovanica_getWork" => {
+                        let mut work =
+                            serde_json::to_value(&header).expect("header must serialize");
+                        let obj = work
+                            .as_object_mut()
+                            .expect("header must serialize to object");
+                        obj.insert("chain_id".into(), json!(HYBRID_TESTNET));
+                        obj.insert("round".into(), json!(header.round));
+                        obj.insert("author".into(), json!(header.author));
+                        obj.insert("parents".into(), json!([]));
+                        obj.insert("parent_refs".into(), json!([]));
+                        obj.insert(
+                            "merkle_root".into(),
+                            json!(hex::encode(header.merkle_root.0)),
+                        );
+                        obj.insert("timestamp".into(), json!(header.timestamp));
+                        obj.insert(
+                            "target_bits".into(),
+                            json!(format!("0x{:08x}", header.target_bits)),
+                        );
+                        obj.insert(
+                            "payout_address".into(),
+                            json!(header.payout.expect("test header has payout").encode()),
+                        );
+                        obj.insert("header".into(), serde_json::to_value(&header).unwrap());
+                        work
+                    }
+                    "kovanica_submitWork" => {
+                        if let Ok(solved) =
+                            serde_json::from_value::<BlockHeader>(req["params"]["header"].clone())
+                        {
+                            submitted
+                                .lock()
+                                .expect("lock submitted headers")
+                                .push(solved);
+                        }
+                        json!({ "accepted": true })
+                    }
+                    _ => Value::Null,
+                };
+
+                let resp = json!({ "jsonrpc": "2.0", "id": 1, "result": result });
+                let body = serde_json::to_vec(&resp).expect("response must serialize");
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(&body).await;
+            });
+        }
+    });
+
+    (format!("http://{addr}/rpc"), submitted)
+}
+
+#[tokio::test]
+async fn test_gateway_and_builtin_client_hash_and_submit_same_template() {
+    let (_sk, pk) = generate_keypair();
+    let worker_payout = Address(pk.0);
+    let header = create_test_header(4242, 0x207fffff).with_payout(worker_payout);
+    let (rpc_url, submitted) = spawn_mock_node(header.clone()).await;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("must bind ephemeral listener");
+    let addr = listener.local_addr().expect("must get local addr");
+    let config = StratumConfig {
+        listen_addr: addr,
+        rpc_url,
+        difficulty: 0.0,
+        poll_interval: Duration::from_millis(20),
+        ..Default::default()
+    };
+    let gateway = Arc::new(StratumGateway::new(config));
+    let gw_clone = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = gw_clone.run_with_listener(listener).await;
+    });
+
+    let mut client = TestClient::connect(addr).await;
+    client
+        .send_line(
+            &json!({"id": 1, "method": "mining.subscribe", "params": ["kovanica-miner/test"]})
+                .to_string(),
+        )
+        .await;
+    let _ = client.read_json().await;
+
+    let username = format!("{}.rig_01", worker_payout.encode());
+    client
+        .send_line(
+            &json!({"id": 2, "method": "mining.authorize", "params": [username.clone(), "x"]})
+                .to_string(),
+        )
+        .await;
+    let _ = client.read_json().await; // auth result
+    let _ = client.read_json().await; // set_difficulty
+
+    // Wait for the poller to deliver a job from the mock node.
+    let notify = loop {
+        let mut line = String::new();
+        timeout(Duration::from_secs(5), client.reader.read_line(&mut line))
+            .await
+            .expect("timed out waiting for mining.notify")
+            .expect("notify I/O");
+        let value: Value = serde_json::from_str(&line).expect("notify must be JSON");
+        if value["method"].as_str() == Some("mining.notify") {
+            break value;
+        }
+    };
+
+    let params = notify["params"].as_array().expect("notify params");
+    let job_id = params[0].as_str().expect("job id");
+    let coinb1 = params[2].as_str().expect("coinb1 preimage prefix");
+    let prefix = hex::decode(coinb1).expect("coinb1 must be hex");
+    assert!(
+        prefix.len() > 32,
+        "coinb1 must carry the Kovanica preimage prefix"
+    );
+
+    // This mirrors the fixed built-in client: append an 8-byte nonce slot and submit the
+    // (extranonce2 << 32) | nonce value that the gateway will write back into the header.
+    let extranonce2 = "00000001";
+    let full_nonce = find_network_solution(&header, 1);
+    client
+        .send_line(
+            &json!({
+                "id": 3,
+                "method": "mining.submit",
+                "params": [username, job_id, extranonce2, "00000000", format!("{full_nonce:016x}")]
+            })
+            .to_string(),
+        )
+        .await;
+    let submit_resp = client.read_json().await;
+    assert_eq!(submit_resp["result"], true, "share must be accepted");
+
+    // The upstream node must receive the reconstructed header with the worker payout and the
+    // same full nonce the miner hashed.
+    let recorded = timeout(Duration::from_secs(5), async {
+        loop {
+            let found = submitted
+                .lock()
+                .expect("lock submitted headers")
+                .first()
+                .cloned();
+            if let Some(header) = found {
+                return header;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("upstream submitWork must be called");
+    assert_eq!(recorded.nonce, full_nonce);
+    assert_eq!(recorded.payout, Some(worker_payout));
 
     gateway.shutdown();
 }

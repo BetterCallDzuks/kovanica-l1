@@ -321,7 +321,7 @@ Mining pools aggregate hashrate across multiple mining rigs and distribute block
 
 ### Stratum V1 Protocol Mapping
 
-The Stratum pool bridge translates standard Stratum V1 TCP socket communications into Kovanica JSON-RPC calls.
+The Stratum pool bridge translates a Stratum V1-style TCP session into Kovanica JSON-RPC calls. The shipped `kovanica-stratum` gateway and the built-in `kovanica-cli` Stratum miner are designed to work together; generic ASIC/GPU Stratum V1 miners are not yet supported because Kovanica headers are not Bitcoin-style 80-byte headers with a coinbase/merkle tree.
 
 #### 1. Connection & Subscription (`mining.subscribe`)
 
@@ -350,7 +350,7 @@ Pool response:
 #### 2. Worker Authorization (`mining.authorize`)
 
 ```json
-{"id": 2, "method": "mining.authorize", "params": ["kvnc1...dag.worker1", "x"]}
+{"id": 2, "method": "mining.authorize", "params": ["kvnc...dag.worker1", "x"]}
 ```
 
 Pool response:
@@ -361,7 +361,7 @@ Pool response:
 
 #### 3. Share Difficulty Adjustment (`mining.set_difficulty`)
 
-The pool sends difficulty targets suited for worker hashrates so workers submit frequent proof-of-work shares (e.g., 5–15 shares/minute):
+The pool sends the configured static share difficulty. Variable difficulty based on measured worker hashrate is not implemented yet:
 
 ```json
 {"id": null, "method": "mining.set_difficulty", "params": [0.05]}
@@ -371,22 +371,35 @@ The pool sends difficulty targets suited for worker hashrates so workers submit 
 
 When new DAG tips arrive at the node (detected via `kovanica_getWork`), the pool broadcasts a new job:
 
+The gateway emits the standard 9-parameter `mining.notify` layout. For Kovanica jobs, `coinb1` carries the canonical header preimage prefix (everything except the trailing 8-byte nonce); `coinb2` and `merkle_branch` are empty.
+
 ```json
 {
   "id": null,
   "method": "mining.notify",
   "params": [
     "job_42a",
-    "000000050000002a...",
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "...canonical preimage prefix hex...",
+    "",
+    [],
+    "00001092",
     "207fffff",
+    "673a5f20",
     true
   ]
 }
 ```
+
 - Parameter 1: `job_id`.
-- Parameter 2: Serialized block header preimage template prefix.
-- Parameter 3: Network compact difficulty bits (`target_bits`).
-- Parameter 4: `clean_jobs` (boolean flag instructing workers to immediately abort previous work upon true).
+- Parameter 2: First DAG parent digest (or zero hash).
+- Parameter 3: `coinb1` — Kovanica header preimage prefix, used by the built-in client.
+- Parameter 4: `coinb2` — empty.
+- Parameter 5: `merkle_branch` — empty.
+- Parameter 6: `version` — DAG round (hex).
+- Parameter 7: `nbits` — network compact difficulty bits.
+- Parameter 8: `ntime` — template timestamp (hex).
+- Parameter 9: `clean_jobs` — always `true` for a new template.
 
 #### 5. Share Submission (`mining.submit`)
 
@@ -397,26 +410,30 @@ When a worker finds a nonce meeting the assigned pool share target, it submits:
   "id": 4,
   "method": "mining.submit",
   "params": [
-    "kvnc1...dag.worker1",
+    "kvnc...dag.worker1",
     "job_42a",
     "00000001",
-    "000000000002e412"
+    "673a5f20",
+    "0000000100000042"
   ]
 }
 ```
-- Param 3: `extranonce2` (hex).
-- Param 4: 64-bit `nonce` (hex).
+- Param 1: worker username (`<payout address>[.worker]`).
+- Param 2: `job_id`.
+- Param 3: `extranonce2` (hex, 4 bytes).
+- Param 4: `ntime` (hex); accepted but ignored by the gateway.
+- Param 5: 64-bit nonce (hex) assembled as `(extranonce2 << 32) | nonce`. The gateway also accepts the legacy 4-parameter form without `ntime`.
 
 ### Share Validation & Network Block Submission
 
 1. **Pool Share Verification:**
-   The pool reconstructs the header preimage using the worker's `extranonce1 + extranonce2 + nonce`, computes `KovanicaHash`, and verifies that the resulting hash satisfies the worker's assigned share difficulty. Valid shares are recorded for miner reward accounting (PPLNS or PPS).
+   The gateway reconstructs the header from its cached template, sets `nonce = (extranonce2 << 32) | nonce`, replaces the payout with the address from the authorized worker username, computes `KovanicaHash`, and checks it against the assigned share target. `extranonce1` is a session identifier only and is not part of the hashed preimage. Duplicate shares are tracked in memory per connection.
 2. **Network Solution Check:**
-   If the solution hash additionally satisfies the full network target (`check_pow_hash_meets_target(&hash, target_bits) == true`), the pool immediately packages the header and submits it to the local node via `kovanica_submitWork`.
+   If the hash also satisfies the full network target, the gateway submits the solved header to the local node via `kovanica_submitWork`. Reward accounting and payout distribution (PPLNS/PPS) are not implemented; accepted-share/block counters are in-memory statistics only.
 
 ### Running the Stratum V1 Gateway (`kovanica-stratum`)
 
-The `kovanica-stratum` binary serves as the official production Stratum V1 TCP gateway:
+The `kovanica-stratum` binary serves as the Stratum V1 TCP gateway for the built-in Kovanica miner:
 
 ```bash
 # Launch Stratum V1 gateway on port 3333 connecting to local node JSON-RPC
@@ -434,7 +451,7 @@ kovanica-stratum \
 | `--rpc-url <URL>` | `http://127.0.0.1:8545` | Upstream Kovanica node JSON-RPC endpoint. |
 | `--difficulty <DIFF>` | `1.0` | Initial share difficulty assigned to connected miners. |
 | `--chain-id <ID>` | `2` | Target network chain ID (1 = Mainnet, 2 = Testnet). |
-| `--payout-address <ADDR>` | `None` | Fallback pool payout address (`kvnc...dag`) used when fetching work. |
+| `--payout-address <ADDR>` | Canonical burn address | Pool payout address (`kvnc...dag`) used when fetching work; must be 64-character canonical PRO-21. |
 | `--poll-interval-ms <MS>` | `500` | Upstream work template polling interval in milliseconds. |
 
 ### Mining via CLI with Stratum Client
@@ -457,14 +474,14 @@ Terminal Output:
    Kovanica Stratum V1 CPU Miner (kovanica-testnet)
 ============================================================
  Stratum Endpoint: pool.kovanica.online:3333
- Worker Identity:  kvnca0b1c2d3...dag.rig01
+ Worker Identity:  kvncqqq...dag.rig01
  Worker Threads:   8
  PoW Hash:         KovanicaHash (BLAKE3 + 2 MiB mix)
  Press Ctrl-C to stop mining gracefully.
 ============================================================
 [INFO] Connected to Stratum pool at pool.kovanica.online:3333
 [INFO] Subscribed: extranonce1=01a4b8, extranonce2_size=4
-[INFO] Authorized worker kvnca0b1c2d3...dag.rig01
+[INFO] Authorized worker kvncqqq...dag.rig01
 [INFO] Set difficulty target: 0.05
 [INFO] Received new job: job_42a (clean: true)
 [INFO] Share accepted by pool! (Total accepted: 1, rejected: 0)

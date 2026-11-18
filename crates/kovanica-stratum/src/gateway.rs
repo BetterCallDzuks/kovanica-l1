@@ -13,7 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::config::StratumConfig;
+use crate::config::{StratumConfig, DEFAULT_PAYOUT_ADDRESS};
 use crate::difficulty::{check_network_solution, check_share_hash_meets_difficulty};
 use crate::job::{Job, JobManager};
 use crate::protocol::{StratumNotification, StratumRequest, StratumResponse};
@@ -131,10 +131,8 @@ impl StratumGateway {
         tokio::spawn(async move {
             let mut last_round = 0u64;
             let mut last_target_bits = 0u32;
-            let fallback_payout = poller_payout.unwrap_or_else(|| {
-                // Default testnet burn/dev address if none specified
-                "kvnc1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqr6u57dag".to_string()
-            });
+            let fallback_payout =
+                poller_payout.unwrap_or_else(|| DEFAULT_PAYOUT_ADDRESS.to_string());
 
             while !poller_shutdown.load(Ordering::Relaxed) {
                 match poller_rpc.get_work(&fallback_payout).await {

@@ -274,10 +274,12 @@ impl StratumMiner {
                             continue;
                         }
 
-                        // Hash in batches of 64 nonces
+                        // Hash in batches of 64 nonces. The gateway reconstructs the header
+                        // nonce as (extranonce2 << 32) | nonce, so hash that exact value.
                         for _ in 0..64 {
+                            let full_nonce = Self::share_nonce(&job.extranonce2, nonce);
                             let len = preimage_buf.len();
-                            preimage_buf[len - 8..].copy_from_slice(&nonce.to_le_bytes());
+                            preimage_buf[len - 8..].copy_from_slice(&full_nonce.to_le_bytes());
                             let pow_hash = hasher.hash(&preimage_buf);
 
                             // Check share target (256-bit big-endian comparison)
@@ -285,7 +287,7 @@ impl StratumMiner {
                                 let meets_network = pow_hash.0 <= job.network_target;
                                 let _ = share_tx_clone.send(StratumShare {
                                     job_id: job.job_id.clone(),
-                                    nonce,
+                                    nonce: full_nonce,
                                     ntime: job.ntime,
                                     extranonce2: job.extranonce2.clone(),
                                     pow_hash,
@@ -397,10 +399,15 @@ impl StratumMiner {
                                             }
                                             "mining.notify" => {
                                                 if let Some(params) = val.get("params").and_then(|p| p.as_array()) {
+                                                    // params[6] is nbits in Stratum V1; derive the
+                                                    // real network target from the job template.
+                                                    let network_target = Self::parse_hex_u32(params.get(6))
+                                                        .map(compact_to_target)
+                                                        .unwrap_or_else(|| *current_network_target.read().unwrap());
                                                     if let Some(job) = Self::parse_notify(
                                                         params,
                                                         &current_share_target.read().unwrap(),
-                                                        &current_network_target.read().unwrap(),
+                                                        &network_target,
                                                         job_version.load(Ordering::Relaxed) + 1,
                                                     ) {
                                                         info!(job_id = job.job_id, "received new Stratum mining job");
@@ -462,26 +469,54 @@ impl StratumMiner {
     }
 
     /// Convert Stratum difficulty factor into a 256-bit big-endian target array.
+    ///
+    /// This matches `kovanica_stratum::difficulty::target_from_difficulty`: difficulty 1 is the
+    /// canonical compact target `0x1d00ffff`, and larger difficulties scale it down exactly.
     pub fn difficulty_to_target(diff: f64) -> [u8; 32] {
+        const DIFFICULTY_1_TARGET_BITS: u32 = 0x1d00ffff;
         if diff <= 0.0 {
             return [0xff; 32];
         }
-        // Base diff1 target for Kovanica testnet: 0x1f7fffff / easy target
-        let base_bits = 0x1f7fffffu32;
-        let base_target = compact_to_target(base_bits);
-
-        // Scale base target by diff
-        let mut target = base_target;
-        if diff > 1.0 {
-            let shift = (diff.log2().floor() as usize).min(200);
-            let byte_shift = shift / 8;
-            if byte_shift > 0 && byte_shift < 32 {
-                let mut shifted = [0u8; 32];
-                shifted[byte_shift..].copy_from_slice(&target[..32 - byte_shift]);
-                target = shifted;
-            }
+        if (diff - 1.0).abs() < 1e-9 {
+            return compact_to_target(DIFFICULTY_1_TARGET_BITS);
         }
+
+        let scaled = (65535.0 / diff) * 65536.0 * 18446744073709551616.0;
+        if scaled >= u128::MAX as f64 {
+            return [0xff; 32];
+        }
+        let mut target = [0u8; 32];
+        target[..16].copy_from_slice(&(scaled as u128).to_be_bytes());
         target
+    }
+
+    /// Parse a compact-hex JSON value into a `u32`.
+    fn parse_hex_u32(value: Option<&Value>) -> Option<u32> {
+        match value? {
+            Value::String(s) => {
+                let clean = s.strip_prefix("0x").unwrap_or(s);
+                u32::from_str_radix(clean, 16).ok()
+            }
+            other => other.as_u64().and_then(|n| u32::try_from(n).ok()),
+        }
+    }
+
+    /// Parse a compact-hex JSON value into a `u64`.
+    fn parse_hex_u64(value: Option<&Value>) -> Option<u64> {
+        match value? {
+            Value::String(s) => {
+                let clean = s.strip_prefix("0x").unwrap_or(s);
+                u64::from_str_radix(clean, 16).ok()
+            }
+            other => other.as_u64(),
+        }
+    }
+
+    /// Combine worker extranonce2 and rotating nonce into the 64-bit header nonce used by the
+    /// Kovanica Stratum gateway.
+    pub fn share_nonce(extranonce2: &str, nonce: u64) -> u64 {
+        let en2 = u32::from_str_radix(extranonce2.trim_start_matches("0x"), 16).unwrap_or(0);
+        ((en2 as u64) << 32) | nonce
     }
 
     /// Parse `mining.notify` parameters into an `ActiveStratumJob`.
@@ -496,43 +531,34 @@ impl StratumMiner {
         }
 
         let job_id = params[0].as_str()?.to_string();
+        let ntime = Self::parse_hex_u64(params.get(7)).unwrap_or(0);
 
-        // Support both Kovanica template format and standard Stratum V1 parameters
-        let (preimage, ntime, extranonce2) = if params.len() >= 4
-            && params[1].is_string()
-            && params[1].as_str().is_some_and(|s| s.len() >= 64)
-        {
-            // Direct header preimage hex or candidate template
-            let hex_str = params[1].as_str()?;
-            let clean_hex = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-            let bytes = hex::decode(clean_hex).ok()?;
-            let ntime = params.get(2).and_then(|v| v.as_u64()).unwrap_or(0);
-            (bytes, ntime, "00000000".to_string())
-        } else if params.len() >= 8 {
-            // Standard Stratum V1 parameters:
-            // [job_id, prevhash, coinb1, coinb2, merkle_branch, version, nbits, ntime, clean_jobs]
-            let prevhash = params[1].as_str().unwrap_or_default();
-            let clean_prev = prevhash.strip_prefix("0x").unwrap_or(prevhash);
-            let mut buf = hex::decode(clean_prev).unwrap_or_else(|_| vec![0u8; 32]);
-            buf.resize(80, 0u8);
-            let ntime = params
-                .get(7)
-                .and_then(|v| {
-                    if let Some(s) = v.as_str() {
-                        let clean = s.strip_prefix("0x").unwrap_or(s);
-                        u64::from_str_radix(clean, 16).ok()
-                    } else {
-                        v.as_u64()
-                    }
-                })
-                .unwrap_or(0);
-            (buf, ntime, "00000000".to_string())
-        } else {
-            // Minimal test fallback: construct standard candidate template
-            let mut dummy = vec![0x42u8; 72];
-            dummy.extend_from_slice(&0u64.to_le_bytes()); // nonce slot
-            (dummy, 0, "00000000".to_string())
-        };
+        // The Kovanica gateway puts the canonical header preimage prefix (everything except the
+        // trailing 8-byte nonce) in `coinb1`. Decode that first so the client hashes exactly the
+        // same bytes the gateway reconstructs when it validates a share.
+        let kovanica_prefix = params.get(2).and_then(Value::as_str).and_then(|hex_str| {
+            let clean = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+            hex::decode(clean).ok()
+        });
+
+        let (preimage, extranonce2) =
+            if let Some(mut prefix) = kovanica_prefix.filter(|p| p.len() > 32) {
+                prefix.extend_from_slice(&0u64.to_le_bytes());
+                (prefix, "00000000".to_string())
+            } else if params.len() >= 8 {
+                // Standard Stratum V1 parameters (kept for compatibility with non-Kovanica pools).
+                // [job_id, prevhash, coinb1, coinb2, merkle_branch, version, nbits, ntime, clean_jobs]
+                let prevhash = params[1].as_str().unwrap_or_default();
+                let clean_prev = prevhash.strip_prefix("0x").unwrap_or(prevhash);
+                let mut buf = hex::decode(clean_prev).unwrap_or_else(|_| vec![0u8; 32]);
+                buf.resize(80, 0u8);
+                (buf, "00000000".to_string())
+            } else {
+                // Minimal test fallback: construct a candidate template with a nonce slot.
+                let mut dummy = vec![0x42u8; 72];
+                dummy.extend_from_slice(&0u64.to_le_bytes());
+                (dummy, "00000000".to_string())
+            };
 
         Some(ActiveStratumJob {
             version,
@@ -543,5 +569,64 @@ impl StratumMiner {
             ntime,
             extranonce2,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn difficulty_one_matches_gateway_target() {
+        assert_eq!(
+            StratumMiner::difficulty_to_target(1.0),
+            compact_to_target(0x1d00ffff)
+        );
+    }
+
+    #[test]
+    fn share_nonce_folds_extranonce2_into_high_half() {
+        assert_eq!(
+            StratumMiner::share_nonce("00000001", 0x00000042),
+            0x0000000100000042
+        );
+        assert_eq!(
+            StratumMiner::share_nonce("0x00000002", 0x00000042),
+            0x0000000200000042
+        );
+    }
+
+    #[test]
+    fn parse_notify_uses_kovanica_preimage_prefix_from_coinb1() {
+        let prefix = vec![0x42u8; 96];
+        let params = json!([
+            "job_1",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            hex::encode(&prefix),
+            "",
+            [],
+            "00000001",
+            "207fffff",
+            "673a5f20",
+            true
+        ]);
+        let share_target = [0xffu8; 32];
+        let network_target = [0x7fu8; 32];
+
+        let job = StratumMiner::parse_notify(
+            params.as_array().unwrap(),
+            &share_target,
+            &network_target,
+            7,
+        )
+        .expect("must parse Kovanica notify");
+
+        assert_eq!(job.job_id, "job_1");
+        assert_eq!(job.version, 7);
+        assert_eq!(job.preimage.len(), prefix.len() + 8);
+        assert_eq!(&job.preimage[..prefix.len()], &prefix[..]);
+        assert_eq!(&job.preimage[prefix.len()..], &[0u8; 8]);
+        assert_eq!(job.ntime, 0x673a5f20);
+        assert_eq!(job.network_target, network_target);
     }
 }

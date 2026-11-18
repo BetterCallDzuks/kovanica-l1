@@ -23,6 +23,7 @@ async fn main() -> Result<()> {
     );
 
     let config = StratumConfig::from(args);
+    config.validate()?;
     let gateway = StratumGateway::new(config);
 
     gateway.run().await

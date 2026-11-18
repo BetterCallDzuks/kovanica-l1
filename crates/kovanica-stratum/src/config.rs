@@ -3,7 +3,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use anyhow::{bail, Result};
 use clap::Parser;
+use kovanica_types::Address;
 
 /// Default Stratum V1 TCP listening port.
 pub const DEFAULT_STRATUM_PORT: u16 = 3333;
@@ -15,6 +17,12 @@ pub const DEFAULT_SHARE_DIFFICULTY: f64 = 1.0;
 pub const DEFAULT_CHAIN_ID: u64 = 2;
 /// Default polling interval for new work templates from upstream node.
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
+/// Valid canonical PRO-21 burn address used when the operator does not supply a payout.
+///
+/// This replaces the previous invalid placeholder, which made `kovanica_getWork` fail on every
+/// poll and left the gateway with no jobs to broadcast.
+pub const DEFAULT_PAYOUT_ADDRESS: &str =
+    "kvncqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc07228f2dag";
 
 /// Command-line arguments for `kovanica-stratum`.
 #[derive(Parser, Debug, Clone)]
@@ -74,9 +82,24 @@ impl Default for StratumConfig {
             rpc_url: DEFAULT_NODE_RPC_URL.to_string(),
             difficulty: DEFAULT_SHARE_DIFFICULTY,
             chain_id: DEFAULT_CHAIN_ID,
-            payout_address: None,
+            payout_address: Some(DEFAULT_PAYOUT_ADDRESS.to_string()),
             poll_interval: Duration::from_millis(DEFAULT_POLL_INTERVAL_MS),
         }
+    }
+}
+
+impl StratumConfig {
+    /// Validate runtime configuration before starting the gateway.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(addr) = &self.payout_address {
+            if Address::decode(addr).is_err() {
+                bail!("invalid payout address: {addr}");
+            }
+        }
+        if self.difficulty < 0.0 {
+            bail!("difficulty must be non-negative");
+        }
+        Ok(())
     }
 }
 
@@ -87,8 +110,42 @@ impl From<StratumArgs> for StratumConfig {
             rpc_url: args.rpc_url,
             difficulty: args.difficulty,
             chain_id: args.chain_id,
-            payout_address: args.payout_address,
+            payout_address: Some(
+                args.payout_address
+                    .unwrap_or_else(|| DEFAULT_PAYOUT_ADDRESS.to_string()),
+            ),
             poll_interval: Duration::from_millis(args.poll_interval_ms),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_payout_address_is_canonical() {
+        let addr = DEFAULT_PAYOUT_ADDRESS;
+        assert_eq!(addr.len(), 64);
+        assert!(Address::decode(addr).is_ok());
+    }
+
+    #[test]
+    fn config_uses_valid_default_payout() {
+        let config = StratumConfig::default();
+        assert_eq!(
+            config.payout_address.as_deref(),
+            Some(DEFAULT_PAYOUT_ADDRESS)
+        );
+        config.validate().expect("default config must be valid");
+    }
+
+    #[test]
+    fn invalid_payout_address_is_rejected() {
+        let config = StratumConfig {
+            payout_address: Some("kvnc1notvalid".to_string()),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
     }
 }
