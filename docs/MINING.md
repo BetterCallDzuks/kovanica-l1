@@ -194,7 +194,7 @@ kovanica import --keystore ~/.kovanica/miner.json
 ```
 
 Example payout address:
-`kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag`
+`kvncqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc07228f2dag`
 
 ### Step 2: Launch Mining Worker
 
@@ -204,7 +204,7 @@ The standalone CLI solo miner connects to a local or remote node on kovanica-tes
 
 ```bash
 kovanica miner run \
-  --address kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag \
+  --address kvncqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc07228f2dag \
   --threads 4 \
   --poll-interval-ms 1000 \
   --rpc-url http://127.0.0.1:8545
@@ -230,7 +230,7 @@ Terminal Output:
 ============================================================
  Chain ID:        2
  RPC Endpoint:    http://127.0.0.1:8545
- Payout Address:  kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag
+ Payout Address:  kvncqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc07228f2dag
  Worker Threads:  4
  Poll Interval:   1000 ms
  PoW Hash:        KovanicaHash (BLAKE3 + 2 MiB mix)
@@ -249,11 +249,11 @@ For production Linux deployments, unattended VPS nodes, or systemd services, Kov
 
 ```bash
 # Basic run with auto-detected CPU cores
-./scripts/mining/run-solo-miner.sh --address kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag
+./scripts/mining/run-solo-miner.sh --address kvncqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc07228f2dag
 
 # Customized production run
 ./scripts/mining/run-solo-miner.sh \
-  --address kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag \
+  --address kvncqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc07228f2dag \
   --threads 8 \
   --rpc http://seed1.kovanica.online:8545 \
   --log-file /var/log/kovanica/miner.log
@@ -277,7 +277,7 @@ chain_id = 2
 enabled = true
 author = 0
 threads = 4
-payout_address = "kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag"
+payout_address = "kvncqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc07228f2dag"
 # Optional (for local/dev/private chains; leave false on public mainnet/testnet miners):
 # on_demand = true
 # on_demand_trailing_blocks = 0
@@ -444,7 +444,7 @@ Miners can connect directly to any Kovanica Stratum V1 pool endpoint using the b
 ```bash
 kovanica miner run \
   --stratum pool.kovanica.online:3333 \
-  --address kvnca0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5dag \
+  --address kvncqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc07228f2dag \
   --worker rig01 \
   --password x \
   --threads 8
