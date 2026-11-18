@@ -1,0 +1,31 @@
+[package]
+name = "kovanica-stratum"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Stratum V1 Mining Pool Gateway for Kovanica"
+
+[[bin]]
+name = "kovanica-stratum"
+path = "src/bin/main.rs"
+
+[dependencies]
+kovanica-types = { path = "../kovanica-types" }
+kovanica-crypto = { path = "../kovanica-crypto" }
+kovanica-sdk = { path = "../kovanica-sdk", default-features = false, features = ["http"] }
+
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+reqwest = { workspace = true, features = ["json"] }
+hex = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.8"

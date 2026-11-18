@@ -414,6 +414,29 @@ When a worker finds a nonce meeting the assigned pool share target, it submits:
 2. **Network Solution Check:**
    If the solution hash additionally satisfies the full network target (`check_pow_hash_meets_target(&hash, target_bits) == true`), the pool immediately packages the header and submits it to the local node via `kovanica_submitWork`.
 
+### Running the Stratum V1 Gateway (`kovanica-stratum`)
+
+The `kovanica-stratum` binary serves as the official production Stratum V1 TCP gateway:
+
+```bash
+# Launch Stratum V1 gateway on port 3333 connecting to local node JSON-RPC
+kovanica-stratum \
+  --listen 0.0.0.0:3333 \
+  --rpc-url http://127.0.0.1:8545 \
+  --difficulty 1.0 \
+  --chain-id 2
+```
+
+##### Command-Line Options:
+| Flag | Default | Description |
+|---|---|---|
+| `--listen <IP:PORT>` | `0.0.0.0:3333` | Stratum TCP listener address. |
+| `--rpc-url <URL>` | `http://127.0.0.1:8545` | Upstream Kovanica node JSON-RPC endpoint. |
+| `--difficulty <DIFF>` | `1.0` | Initial share difficulty assigned to connected miners. |
+| `--chain-id <ID>` | `2` | Target network chain ID (1 = Mainnet, 2 = Testnet). |
+| `--payout-address <ADDR>` | `None` | Fallback pool payout address (`kvnc...dag`) used when fetching work. |
+| `--poll-interval-ms <MS>` | `500` | Upstream work template polling interval in milliseconds. |
+
 ### Mining via CLI with Stratum Client
 
 Miners can connect directly to any Kovanica Stratum V1 pool endpoint using the built-in Stratum client:

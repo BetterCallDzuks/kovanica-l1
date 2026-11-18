@@ -49,6 +49,7 @@ members = [
     "crates/kovanica-contract-sdk",
     "crates/kovanica-codec",
     "crates/kovanica-consensus-sim",
+    "crates/kovanica-stratum",
 ]
 
 [workspace.package]
