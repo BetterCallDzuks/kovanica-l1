@@ -34,6 +34,7 @@ async fn main() -> Result<()> {
         listen = %args.listen,
         rpc_url = %args.rpc_url,
         difficulty = args.difficulty,
+        vardiff_enabled = args.vardiff_enabled,
         chain_id = args.chain_id,
         tls = args.tls,
         metrics_addr = %args.metrics_addr,

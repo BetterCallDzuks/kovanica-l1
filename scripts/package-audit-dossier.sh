@@ -44,7 +44,7 @@ echo "[3/6] Running Fuzz parser & deserialization smoke suite (14 boundaries)...
 bash scripts/run-fuzz-smoke.sh
 
 echo "[4/6] Running Core Invariant Tests (Consensus, Wasmi, Crypto, Network)..."
-cargo test -p kovanica-types --test pow
+cargo test -p kovanica-types --lib pow
 cargo test -p kovanica-crypto
 cargo test -p kovanica-consensus --test hybrid_pow_simulation
 cargo test -p kovanica-execution --test wasmi_gas_memory_metering

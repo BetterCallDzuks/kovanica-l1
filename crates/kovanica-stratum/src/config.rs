@@ -28,6 +28,18 @@ pub const DEFAULT_MAX_CONNECTION_RATE_PER_IP: usize = 10;
 pub const DEFAULT_MAX_REQUEST_RATE_PER_CONNECTION: usize = 50;
 /// Default metrics/health HTTP server listen address.
 pub const DEFAULT_METRICS_ADDR: &str = "127.0.0.1:9090";
+/// Default VarDiff enabled flag (disabled by default to preserve static difficulty behavior).
+pub const DEFAULT_VARDIFF_ENABLED: bool = false;
+/// Default minimum share difficulty for VarDiff.
+pub const DEFAULT_VARDIFF_MIN_DIFFICULTY: f64 = 0.01;
+/// Default maximum share difficulty for VarDiff.
+pub const DEFAULT_VARDIFF_MAX_DIFFICULTY: f64 = 1_000_000.0;
+/// Default target time between shares (seconds) for VarDiff.
+pub const DEFAULT_VARDIFF_TARGET_SHARE_SECS: f64 = 15.0;
+/// Default retarget evaluation interval (seconds) for VarDiff.
+pub const DEFAULT_VARDIFF_RETARGET_INTERVAL_SECS: u64 = 60;
+/// Default deadband variance tolerance (percent) around target share time for VarDiff.
+pub const DEFAULT_VARDIFF_VARIANCE_PERCENT: f64 = 30.0;
 /// Valid canonical PRO-21 burn address used when the operator does not supply a payout.
 ///
 /// This replaces the previous invalid placeholder, which made `kovanica_getWork` fail on every
@@ -112,6 +124,60 @@ pub struct StratumArgs {
     /// Falls back to `KOVANICA_RPC_WRITE_TOKEN` or the first token in `KOVANICA_RPC_WRITE_TOKENS`.
     #[arg(long)]
     pub rpc_token: Option<String>,
+
+    /// Enable bounded per-worker variable difficulty (VarDiff) retargeting.
+    #[arg(long, default_value_t = DEFAULT_VARDIFF_ENABLED)]
+    pub vardiff_enabled: bool,
+
+    /// Minimum share difficulty allowed under VarDiff.
+    #[arg(long, default_value_t = DEFAULT_VARDIFF_MIN_DIFFICULTY)]
+    pub vardiff_min_difficulty: f64,
+
+    /// Maximum share difficulty allowed under VarDiff.
+    #[arg(long, default_value_t = DEFAULT_VARDIFF_MAX_DIFFICULTY)]
+    pub vardiff_max_difficulty: f64,
+
+    /// Target average seconds between shares per worker under VarDiff.
+    #[arg(long, default_value_t = DEFAULT_VARDIFF_TARGET_SHARE_SECS)]
+    pub vardiff_target_share_secs: f64,
+
+    /// Minimum interval in seconds between VarDiff retargets for a worker.
+    #[arg(long, default_value_t = DEFAULT_VARDIFF_RETARGET_INTERVAL_SECS)]
+    pub vardiff_retarget_interval_secs: u64,
+
+    /// Percentage deadband around target share time within which VarDiff does not retarget (0..100).
+    #[arg(long, default_value_t = DEFAULT_VARDIFF_VARIANCE_PERCENT)]
+    pub vardiff_variance_percent: f64,
+}
+
+/// Bounded per-worker Variable Difficulty (VarDiff) settings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VarDiffConfig {
+    /// Whether per-worker VarDiff retargeting is enabled.
+    pub enabled: bool,
+    /// Minimum allowed share difficulty.
+    pub min_difficulty: f64,
+    /// Maximum allowed share difficulty.
+    pub max_difficulty: f64,
+    /// Desired average seconds between shares per worker.
+    pub target_share_secs: f64,
+    /// Retarget evaluation window and minimum interval between retargets (seconds).
+    pub retarget_interval_secs: u64,
+    /// Deadband tolerance percentage around `target_share_secs` (e.g. `30.0` = ±30%).
+    pub variance_percent: f64,
+}
+
+impl Default for VarDiffConfig {
+    fn default() -> Self {
+        Self {
+            enabled: DEFAULT_VARDIFF_ENABLED,
+            min_difficulty: DEFAULT_VARDIFF_MIN_DIFFICULTY,
+            max_difficulty: DEFAULT_VARDIFF_MAX_DIFFICULTY,
+            target_share_secs: DEFAULT_VARDIFF_TARGET_SHARE_SECS,
+            retarget_interval_secs: DEFAULT_VARDIFF_RETARGET_INTERVAL_SECS,
+            variance_percent: DEFAULT_VARDIFF_VARIANCE_PERCENT,
+        }
+    }
 }
 
 /// Runtime configuration for `StratumGateway`.
@@ -151,6 +217,18 @@ pub struct StratumConfig {
     pub log_format: String,
     /// Optional bearer token for authenticated upstream node RPC write calls (`kovanica_submitWork`).
     pub rpc_token: Option<String>,
+    /// Enable bounded per-worker variable difficulty (VarDiff) retargeting.
+    pub vardiff_enabled: bool,
+    /// Minimum share difficulty allowed under VarDiff.
+    pub vardiff_min_difficulty: f64,
+    /// Maximum share difficulty allowed under VarDiff.
+    pub vardiff_max_difficulty: f64,
+    /// Target average seconds between shares per worker under VarDiff.
+    pub vardiff_target_share_secs: f64,
+    /// Minimum interval in seconds between VarDiff retargets for a worker.
+    pub vardiff_retarget_interval_secs: u64,
+    /// Percentage deadband around target share time within which VarDiff does not retarget.
+    pub vardiff_variance_percent: f64,
 }
 
 /// Resolve the bearer token for node write RPC calls from the environment.
@@ -192,11 +270,29 @@ impl Default for StratumConfig {
             metrics_addr: DEFAULT_METRICS_ADDR.parse().unwrap(),
             log_format: "json".to_string(),
             rpc_token: resolve_rpc_token_from_env(),
+            vardiff_enabled: DEFAULT_VARDIFF_ENABLED,
+            vardiff_min_difficulty: DEFAULT_VARDIFF_MIN_DIFFICULTY,
+            vardiff_max_difficulty: DEFAULT_VARDIFF_MAX_DIFFICULTY,
+            vardiff_target_share_secs: DEFAULT_VARDIFF_TARGET_SHARE_SECS,
+            vardiff_retarget_interval_secs: DEFAULT_VARDIFF_RETARGET_INTERVAL_SECS,
+            vardiff_variance_percent: DEFAULT_VARDIFF_VARIANCE_PERCENT,
         }
     }
 }
 
 impl StratumConfig {
+    /// Extract the VarDiff configuration subset.
+    pub fn vardiff_config(&self) -> VarDiffConfig {
+        VarDiffConfig {
+            enabled: self.vardiff_enabled,
+            min_difficulty: self.vardiff_min_difficulty,
+            max_difficulty: self.vardiff_max_difficulty,
+            target_share_secs: self.vardiff_target_share_secs,
+            retarget_interval_secs: self.vardiff_retarget_interval_secs,
+            variance_percent: self.vardiff_variance_percent,
+        }
+    }
+
     /// Validate runtime configuration before starting the gateway.
     pub fn validate(&self) -> Result<()> {
         if let Some(addr) = &self.payout_address {
@@ -204,8 +300,28 @@ impl StratumConfig {
                 bail!("invalid payout address: {addr}");
             }
         }
-        if self.difficulty < 0.0 {
-            bail!("difficulty must be non-negative");
+        if !self.difficulty.is_finite() || self.difficulty < 0.0 {
+            bail!("difficulty must be finite and non-negative");
+        }
+        if !self.vardiff_min_difficulty.is_finite() || self.vardiff_min_difficulty <= 0.0 {
+            bail!("vardiff_min_difficulty must be finite and > 0");
+        }
+        if !self.vardiff_max_difficulty.is_finite() || self.vardiff_max_difficulty <= 0.0 {
+            bail!("vardiff_max_difficulty must be finite and > 0");
+        }
+        if self.vardiff_min_difficulty > self.vardiff_max_difficulty {
+            bail!("vardiff_min_difficulty must be <= vardiff_max_difficulty");
+        }
+        if !self.vardiff_target_share_secs.is_finite() || self.vardiff_target_share_secs <= 0.0 {
+            bail!("vardiff_target_share_secs must be finite and > 0");
+        }
+        if self.vardiff_retarget_interval_secs == 0 {
+            bail!("vardiff_retarget_interval_secs must be > 0");
+        }
+        if !self.vardiff_variance_percent.is_finite()
+            || !(0.0..100.0).contains(&self.vardiff_variance_percent)
+        {
+            bail!("vardiff_variance_percent must be finite and in [0, 100)");
         }
         if self.max_connections == 0 {
             bail!("max_connections must be > 0");
@@ -278,6 +394,12 @@ impl From<StratumArgs> for StratumConfig {
                 .map(|t| t.trim().to_string())
                 .filter(|t| !t.is_empty())
                 .or_else(resolve_rpc_token_from_env),
+            vardiff_enabled: args.vardiff_enabled,
+            vardiff_min_difficulty: args.vardiff_min_difficulty,
+            vardiff_max_difficulty: args.vardiff_max_difficulty,
+            vardiff_target_share_secs: args.vardiff_target_share_secs,
+            vardiff_retarget_interval_secs: args.vardiff_retarget_interval_secs,
+            vardiff_variance_percent: args.vardiff_variance_percent,
         }
     }
 }
@@ -402,5 +524,103 @@ mod tests {
         assert!(parsed.tls);
         assert_eq!(parsed.tls_cert, Some(PathBuf::from("c.pem")));
         assert_eq!(parsed.tls_key, Some(PathBuf::from("k.pem")));
+    }
+
+    #[test]
+    fn vardiff_config_defaults_and_validation() {
+        let default_cfg = StratumConfig::default();
+        assert!(!default_cfg.vardiff_enabled);
+        assert!(default_cfg.validate().is_ok());
+
+        let valid_enabled = StratumConfig {
+            vardiff_enabled: true,
+            vardiff_min_difficulty: 0.05,
+            vardiff_max_difficulty: 1000.0,
+            vardiff_target_share_secs: 10.0,
+            vardiff_retarget_interval_secs: 30,
+            vardiff_variance_percent: 25.0,
+            ..Default::default()
+        };
+        assert!(valid_enabled.validate().is_ok());
+        let vd = valid_enabled.vardiff_config();
+        assert!(vd.enabled);
+        assert_eq!(vd.min_difficulty, 0.05);
+        assert_eq!(vd.max_difficulty, 1000.0);
+        assert_eq!(vd.target_share_secs, 10.0);
+        assert_eq!(vd.retarget_interval_secs, 30);
+        assert_eq!(vd.variance_percent, 25.0);
+
+        // Invalid min/max bounds
+        assert!(StratumConfig {
+            vardiff_min_difficulty: 0.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(StratumConfig {
+            vardiff_min_difficulty: -1.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(StratumConfig {
+            vardiff_min_difficulty: 10.0,
+            vardiff_max_difficulty: 5.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        // Invalid target share secs / retarget interval / variance percent
+        assert!(StratumConfig {
+            vardiff_target_share_secs: 0.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(StratumConfig {
+            vardiff_retarget_interval_secs: 0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(StratumConfig {
+            vardiff_variance_percent: -1.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(StratumConfig {
+            vardiff_variance_percent: 100.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn stratum_args_vardiff_flags_parse() {
+        let parsed = StratumArgs::try_parse_from([
+            "kovanica-stratum",
+            "--vardiff-enabled",
+            "--vardiff-min-difficulty",
+            "0.25",
+            "--vardiff-max-difficulty",
+            "512.0",
+            "--vardiff-target-share-secs",
+            "12.5",
+            "--vardiff-retarget-interval-secs",
+            "45",
+            "--vardiff-variance-percent",
+            "20.0",
+        ])
+        .expect("valid VarDiff CLI flags must parse");
+        let cfg = StratumConfig::from(parsed);
+        assert!(cfg.vardiff_enabled);
+        assert_eq!(cfg.vardiff_min_difficulty, 0.25);
+        assert_eq!(cfg.vardiff_max_difficulty, 512.0);
+        assert_eq!(cfg.vardiff_target_share_secs, 12.5);
+        assert_eq!(cfg.vardiff_retarget_interval_secs, 45);
+        assert_eq!(cfg.vardiff_variance_percent, 20.0);
+        assert!(cfg.validate().is_ok());
     }
 }

@@ -21,14 +21,14 @@ pub mod protocol;
 pub mod rpc;
 pub mod session;
 
-pub use config::{StratumArgs, StratumConfig};
+pub use config::{StratumArgs, StratumConfig, VarDiffConfig};
 pub use difficulty::{
     check_network_solution, check_share_hash_meets_difficulty, check_share_hash_meets_target,
     target_from_difficulty, DIFFICULTY_1_TARGET_BITS,
 };
 pub use gateway::{
-    validate_extranonce2, validate_ntime, GatewayMetrics, StratumGateway, MAX_NTIME_DRIFT_MS,
-    MAX_NTIME_DRIFT_SECS,
+    validate_extranonce2, validate_ntime, GatewayMetrics, ShareRejectReason, StratumGateway,
+    MAX_NTIME_DRIFT_MS, MAX_NTIME_DRIFT_SECS,
 };
 pub use job::{Job, JobManager};
 pub use protocol::{StratumNotification, StratumRequest, StratumResponse};

@@ -1187,3 +1187,195 @@ async fn test_tls_stratum_e2e_handshake_notify_and_submit() {
 
     gateway.shutdown();
 }
+
+#[tokio::test]
+async fn test_vardiff_e2e_retargeting_and_expanded_prometheus_metrics() {
+    init_test_logging();
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral listener");
+    let stratum_addr = listener.local_addr().expect("stratum local addr");
+
+    // Initial difficulty 1e-10 yields target [0xff; 32] so every share is accepted immediately,
+    // allowing fast deterministic verification of VarDiff ramp-up and `mining.set_difficulty`.
+    let initial_diff = 1e-10;
+    let max_diff = 1e-6;
+    let config = StratumConfig {
+        listen_addr: stratum_addr,
+        difficulty: initial_diff,
+        chain_id: HYBRID_TESTNET,
+        rpc_url: "http://127.0.0.1:1/rpc".to_string(),
+        poll_interval: Duration::from_secs(3600),
+        vardiff_enabled: true,
+        vardiff_min_difficulty: initial_diff,
+        vardiff_max_difficulty: max_diff,
+        vardiff_target_share_secs: 30.0,
+        vardiff_retarget_interval_secs: 60,
+        vardiff_variance_percent: 20.0,
+        ..Default::default()
+    };
+    config.validate().expect("VarDiff config must validate");
+
+    let gateway = Arc::new(StratumGateway::new(config).expect("gateway creation failed"));
+    let gw_clone = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = gw_clone.run_with_listener(listener).await;
+    });
+
+    // Start observability HTTP server
+    let obs_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind observability listener");
+    let obs_addr = obs_listener.local_addr().expect("observability local addr");
+    let obs_gw = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = obs_gw.serve_observability(obs_listener).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let job = gateway
+        .job_manager()
+        .add_template(create_test_header(99, 0x207f_ffff));
+
+    let mut client = TestClient::connect(stratum_addr).await;
+
+    // 1. Subscribe & authorize
+    client
+        .send_line(
+            &json!({"id": 1, "method": "mining.subscribe", "params": ["vardiff-miner/1.0"]})
+                .to_string(),
+        )
+        .await;
+    let _ = client.read_json().await;
+
+    let (_sk, pk) = generate_keypair();
+    let username = format!("{}.vardiff_rig", Address(pk.0).encode());
+    client
+        .send_line(
+            &json!({"id": 2, "method": "mining.authorize", "params": [username.clone(), "x"]})
+                .to_string(),
+        )
+        .await;
+    let auth_resp = client.read_json().await;
+    assert_eq!(auth_resp["result"], true);
+
+    let init_diff_notif = client.read_json().await;
+    assert_eq!(init_diff_notif["method"], "mining.set_difficulty");
+    let init_diff_sent = init_diff_notif["params"][0].as_f64().expect("initial diff");
+    assert!((init_diff_sent - initial_diff).abs() < 1e-18);
+
+    let notify_msg = client.read_json().await;
+    assert_eq!(notify_msg["method"], "mining.notify");
+
+    // 2. Submit 5 valid shares rapidly -> triggers VarDiff ramp-up on the 5th share
+    // (5 shares in 60s = 12s/share vs 30s target => ratio 2.5 => new_diff = 2.5e-10)
+    for idx in 1..=5u64 {
+        let nonce_hex = format!("{idx:08x}");
+        client
+            .send_line(
+                &json!({
+                    "id": 10 + idx,
+                    "method": "mining.submit",
+                    "params": [username, job.job_id, "00000001", nonce_hex]
+                })
+                .to_string(),
+            )
+            .await;
+        let resp = client.read_json().await;
+        assert_eq!(resp["id"], 10 + idx);
+        assert_eq!(resp["result"], true);
+    }
+
+    // 3. Expect server-pushed mining.set_difficulty with increased bounded difficulty
+    let retarget_notif = client.read_json().await;
+    assert_eq!(retarget_notif["method"], "mining.set_difficulty");
+    let retargeted_diff = retarget_notif["params"][0]
+        .as_f64()
+        .expect("retargeted difficulty f64");
+    assert!(
+        retargeted_diff > initial_diff && retargeted_diff <= max_diff,
+        "expected retargeted diff in ({initial_diff}, {max_diff}], got {retargeted_diff}"
+    );
+
+    // 4. Submit one duplicate share and one stale share to verify per-reason metrics
+    client
+        .send_line(
+            &json!({
+                "id": 20,
+                "method": "mining.submit",
+                "params": [username, job.job_id, "00000001", "00000001"]
+            })
+            .to_string(),
+        )
+        .await;
+    let dup_resp = client.read_json().await;
+    assert_eq!(dup_resp["error"][0], 22);
+
+    client
+        .send_line(
+            &json!({
+                "id": 21,
+                "method": "mining.submit",
+                "params": [username, "stale_job_id", "00000001", "00000099"]
+            })
+            .to_string(),
+        )
+        .await;
+    let stale_resp = client.read_json().await;
+    assert_eq!(stale_resp["error"][0], 21);
+
+    // 5. Scrape /metrics and verify VarDiff + per-reason rejection + TLS handshake metrics
+    let http = reqwest::Client::new();
+    let metrics_body = http
+        .get(format!("http://{obs_addr}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics")
+        .text()
+        .await
+        .expect("read /metrics body");
+
+    assert!(
+        metrics_body.contains("stratum_vardiff_retargets_total 1"),
+        "body:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("stratum_vardiff_retargets_by_direction_total{direction=\"up\"} 1"),
+        "body:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("stratum_shares_rejected_by_reason_total{reason=\"duplicate\"} 1"),
+        "body:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("stratum_shares_rejected_by_reason_total{reason=\"stale\"} 1"),
+        "body:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("stratum_tls_handshakes_total{result=\"success\"} 0"),
+        "body:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("stratum_tls_handshakes_total{result=\"failure\"} 0"),
+        "body:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("stratum_worker_difficulty_avg "),
+        "body:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("stratum_worker_difficulty_min "),
+        "body:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("stratum_worker_difficulty_max "),
+        "body:\n{metrics_body}"
+    );
+    assert!(
+        (gateway.metrics().worker_difficulty_avg.get() - retargeted_diff).abs() < 1e-18,
+        "worker_difficulty_avg gauge must match retargeted difficulty"
+    );
+
+    gateway.shutdown();
+}

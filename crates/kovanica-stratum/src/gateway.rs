@@ -280,7 +280,7 @@ impl AsyncWrite for MaybeTlsStream {
 
 impl Unpin for MaybeTlsStream {}
 
-use crate::config::{StratumConfig, DEFAULT_PAYOUT_ADDRESS};
+use crate::config::{StratumConfig, VarDiffConfig, DEFAULT_PAYOUT_ADDRESS};
 use crate::difficulty::{check_network_solution, check_share_hash_meets_difficulty};
 use crate::job::{Job, JobManager};
 use crate::protocol::{StratumNotification, StratumRequest, StratumResponse};
@@ -354,6 +354,55 @@ pub struct WorkerLabel {
     pub worker: String,
 }
 
+/// Reason a submitted share was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareRejectReason {
+    InvalidParams,
+    Duplicate,
+    Stale,
+    LowDifficulty,
+    Unauthorized,
+}
+
+impl ShareRejectReason {
+    /// Canonical Prometheus label value for this rejection reason.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidParams => "invalid_params",
+            Self::Duplicate => "duplicate",
+            Self::Stale => "stale",
+            Self::LowDifficulty => "low_difficulty",
+            Self::Unauthorized => "unauthorized",
+        }
+    }
+
+    const ALL: [Self; 5] = [
+        Self::InvalidParams,
+        Self::Duplicate,
+        Self::Stale,
+        Self::LowDifficulty,
+        Self::Unauthorized,
+    ];
+}
+
+/// Label for per-reason share rejection metrics.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ShareRejectReasonLabel {
+    pub reason: &'static str,
+}
+
+/// Label for VarDiff retarget direction metrics.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct RetargetDirectionLabel {
+    pub direction: &'static str,
+}
+
+/// Label for TLS handshake result metrics.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct TlsHandshakeResultLabel {
+    pub result: &'static str,
+}
+
 /// Map a share difficulty to a bounded Prometheus label bucket to avoid cardinality explosion.
 fn difficulty_bucket_label(difficulty: f64) -> &'static str {
     if difficulty < 1.0 {
@@ -402,7 +451,15 @@ pub struct GatewayMetrics {
     pub shares_rejected_duplicate: Counter,
     pub shares_rejected_unauthorized: Counter,
     pub shares_rejected_invalid_params: Counter,
+    pub shares_rejected_by_reason: Family<ShareRejectReasonLabel, Counter>,
     pub shares_by_difficulty_bucket: Family<DifficultyBucketLabel, Counter>,
+
+    // VarDiff & active worker difficulty metrics
+    pub vardiff_retargets: Counter,
+    pub vardiff_retargets_by_direction: Family<RetargetDirectionLabel, Counter>,
+    pub worker_difficulty_min: Gauge<f64, AtomicU64>,
+    pub worker_difficulty_max: Gauge<f64, AtomicU64>,
+    pub worker_difficulty_avg: Gauge<f64, AtomicU64>,
 
     // Hashrate metrics
     pub worker_hashrate: Family<WorkerLabel, Gauge>,
@@ -423,6 +480,7 @@ pub struct GatewayMetrics {
     // TLS metrics
     pub tls_handshake_success: Counter,
     pub tls_handshake_failure: Counter,
+    pub tls_handshakes: Family<TlsHandshakeResultLabel, Counter>,
 
     // Block metrics
     pub blocks_found: Counter,
@@ -535,11 +593,63 @@ impl GatewayMetrics {
             shares_rejected_invalid_params.clone(),
         );
 
+        let shares_rejected_by_reason = Family::<ShareRejectReasonLabel, Counter>::default();
+        for reason in ShareRejectReason::ALL {
+            let _ = shares_rejected_by_reason.get_or_create(&ShareRejectReasonLabel {
+                reason: reason.as_str(),
+            });
+        }
+        registry.register(
+            "stratum_shares_rejected_by_reason",
+            "Total shares rejected labeled by rejection reason",
+            shares_rejected_by_reason.clone(),
+        );
+
         let shares_by_difficulty_bucket = Family::<DifficultyBucketLabel, Counter>::default();
         registry.register(
             "stratum_shares_by_difficulty_bucket",
             "Shares submitted grouped by difficulty bucket",
             shares_by_difficulty_bucket.clone(),
+        );
+
+        // VarDiff & active worker difficulty metrics
+        let vardiff_retargets = Counter::default();
+        registry.register(
+            "stratum_vardiff_retargets",
+            "Total per-worker VarDiff difficulty retargets",
+            vardiff_retargets.clone(),
+        );
+
+        let vardiff_retargets_by_direction = Family::<RetargetDirectionLabel, Counter>::default();
+        for direction in ["up", "down"] {
+            let _ =
+                vardiff_retargets_by_direction.get_or_create(&RetargetDirectionLabel { direction });
+        }
+        registry.register(
+            "stratum_vardiff_retargets_by_direction",
+            "Total per-worker VarDiff retargets labeled by direction",
+            vardiff_retargets_by_direction.clone(),
+        );
+
+        let worker_difficulty_min = Gauge::<f64, AtomicU64>::default();
+        registry.register(
+            "stratum_worker_difficulty_min",
+            "Minimum share difficulty across currently connected workers",
+            worker_difficulty_min.clone(),
+        );
+
+        let worker_difficulty_max = Gauge::<f64, AtomicU64>::default();
+        registry.register(
+            "stratum_worker_difficulty_max",
+            "Maximum share difficulty across currently connected workers",
+            worker_difficulty_max.clone(),
+        );
+
+        let worker_difficulty_avg = Gauge::<f64, AtomicU64>::default();
+        registry.register(
+            "stratum_worker_difficulty_avg",
+            "Average share difficulty across currently connected workers",
+            worker_difficulty_avg.clone(),
         );
 
         // Hashrate metrics
@@ -620,6 +730,16 @@ impl GatewayMetrics {
             tls_handshake_failure.clone(),
         );
 
+        let tls_handshakes = Family::<TlsHandshakeResultLabel, Counter>::default();
+        for result in ["success", "failure"] {
+            let _ = tls_handshakes.get_or_create(&TlsHandshakeResultLabel { result });
+        }
+        registry.register(
+            "stratum_tls_handshakes",
+            "Total TLS handshakes labeled by result",
+            tls_handshakes.clone(),
+        );
+
         // Block metrics
         let blocks_found = Counter::default();
         registry.register(
@@ -671,7 +791,13 @@ impl GatewayMetrics {
             shares_rejected_duplicate,
             shares_rejected_unauthorized,
             shares_rejected_invalid_params,
+            shares_rejected_by_reason,
             shares_by_difficulty_bucket,
+            vardiff_retargets,
+            vardiff_retargets_by_direction,
+            worker_difficulty_min,
+            worker_difficulty_max,
+            worker_difficulty_avg,
             worker_hashrate,
             request_rate_limit_hits,
             rpc_getwork_latency,
@@ -682,6 +808,7 @@ impl GatewayMetrics {
             job_broadcast_errors,
             tls_handshake_success,
             tls_handshake_failure,
+            tls_handshakes,
             blocks_found,
             blocks_submitted,
             blocks_accepted,
@@ -719,6 +846,56 @@ impl GatewayMetrics {
                 .set(hashrate);
         }
     }
+
+    /// Record a rejected share across the aggregate counter, legacy reason counter,
+    /// and labeled `stratum_shares_rejected_by_reason_total{reason=...}` counter.
+    pub fn record_share_rejected(&self, reason: ShareRejectReason) {
+        self.shares_rejected.inc();
+        match reason {
+            ShareRejectReason::InvalidParams => self.shares_rejected_invalid_params.inc(),
+            ShareRejectReason::Duplicate => self.shares_rejected_duplicate.inc(),
+            ShareRejectReason::Stale => self.shares_rejected_stale.inc(),
+            ShareRejectReason::LowDifficulty => self.shares_rejected_low_difficulty.inc(),
+            ShareRejectReason::Unauthorized => self.shares_rejected_unauthorized.inc(),
+        };
+        self.shares_rejected_by_reason
+            .get_or_create(&ShareRejectReasonLabel {
+                reason: reason.as_str(),
+            })
+            .inc();
+    }
+
+    /// Record a VarDiff retarget event across aggregate and directional counters.
+    pub fn record_vardiff_retarget(&self, old_diff: f64, new_diff: f64) {
+        self.vardiff_retargets.inc();
+        let direction = if new_diff >= old_diff { "up" } else { "down" };
+        self.vardiff_retargets_by_direction
+            .get_or_create(&RetargetDirectionLabel { direction })
+            .inc();
+    }
+
+    /// Record a successful TLS handshake across legacy and labeled counters.
+    pub fn record_tls_handshake_success(&self) {
+        self.tls_handshake_success.inc();
+        self.tls_handshakes
+            .get_or_create(&TlsHandshakeResultLabel { result: "success" })
+            .inc();
+    }
+
+    /// Record a failed TLS handshake across legacy and labeled counters.
+    pub fn record_tls_handshake_failure(&self) {
+        self.tls_handshake_failure.inc();
+        self.tls_handshakes
+            .get_or_create(&TlsHandshakeResultLabel { result: "failure" })
+            .inc();
+    }
+
+    /// Update active worker difficulty summary gauges (min, max, avg).
+    pub fn set_worker_difficulty_stats(&self, min: f64, max: f64, avg: f64) {
+        self.worker_difficulty_min.set(min);
+        self.worker_difficulty_max.set(max);
+        self.worker_difficulty_avg.set(avg);
+    }
 }
 
 /// Production Stratum V1 mining pool gateway.
@@ -729,6 +906,8 @@ pub struct StratumGateway {
     job_manager: Arc<JobManager>,
     session_registry: Arc<SessionRegistry>,
     active_subscribers: Arc<RwLock<HashMap<String, ClientSender>>>,
+    /// Active worker sessions keyed by `session_id` for difficulty telemetry aggregation.
+    active_sessions: Arc<RwLock<HashMap<String, Arc<WorkerSession>>>>,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
     tls_acceptor: Option<TlsAcceptor>,
@@ -773,6 +952,7 @@ impl StratumGateway {
             job_manager: Arc::new(JobManager::new()),
             session_registry: Arc::new(SessionRegistry::new()),
             active_subscribers: Arc::new(RwLock::new(HashMap::new())),
+            active_sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Arc::new(Notify::new()),
             tls_acceptor,
@@ -842,6 +1022,7 @@ impl StratumGateway {
                         gw.metrics
                             .uptime_seconds
                             .set(gw.start_time.elapsed().as_secs() as i64);
+                        gw.refresh_difficulty_metrics();
                         let mut buffer = String::new();
                         if let Err(e) = encode(&mut buffer, &gw.metrics_registry) {
                             error!(%e, "failed to encode Prometheus metrics");
@@ -911,6 +1092,44 @@ impl StratumGateway {
     /// Sweep expired per-IP connection rate-limiter entries.
     pub fn cleanup_rate_limiter(&self) {
         self.connection_rate_limiter.cleanup();
+    }
+
+    /// Recompute active worker difficulty min/max/avg gauges from connected sessions.
+    pub fn refresh_difficulty_metrics(&self) {
+        Self::refresh_difficulty_metrics_from(&self.active_sessions, &self.metrics);
+    }
+
+    fn refresh_difficulty_metrics_from(
+        active_sessions: &RwLock<HashMap<String, Arc<WorkerSession>>>,
+        metrics: &GatewayMetrics,
+    ) {
+        let sessions = active_sessions.read();
+        if sessions.is_empty() {
+            metrics.set_worker_difficulty_stats(0.0, 0.0, 0.0);
+            return;
+        }
+        let mut min_d = f64::INFINITY;
+        let mut max_d = f64::NEG_INFINITY;
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for sess in sessions.values() {
+            let d = sess.get_difficulty();
+            if d.is_finite() {
+                if d < min_d {
+                    min_d = d;
+                }
+                if d > max_d {
+                    max_d = d;
+                }
+                sum += d;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            metrics.set_worker_difficulty_stats(0.0, 0.0, 0.0);
+        } else {
+            metrics.set_worker_difficulty_stats(min_d, max_d, sum / count as f64);
+        }
     }
 
     /// Broadcast a new job notification to all active subscribed miners.
@@ -1176,8 +1395,16 @@ impl StratumGateway {
 
                     let tls_acceptor = self.tls_acceptor.clone();
                     let session = self.session_registry.create_session(self.config.difficulty);
+                    {
+                        self.active_sessions
+                            .write()
+                            .insert(session.session_id.clone(), Arc::clone(&session));
+                    }
+                    self.refresh_difficulty_metrics();
+                    let vardiff_config = self.config.vardiff_config();
                     let gateway_jobs = Arc::clone(&self.job_manager);
                     let gateway_subscribers = Arc::clone(&self.active_subscribers);
+                    let gateway_active_sessions = Arc::clone(&self.active_sessions);
                     let gateway_rpc = self.rpc_client.clone();
                     let gateway_self = Arc::new(self.clone());
                     let request_rate_limiter = Arc::new(RequestRateLimiter::new(
@@ -1209,12 +1436,12 @@ impl StratumGateway {
                                 .await
                                 {
                                     Ok(Ok(tls_stream)) => {
-                                        gateway_self.metrics.tls_handshake_success.inc();
+                                        gateway_self.metrics.record_tls_handshake_success();
                                         debug!(%correlation_id, %remote_addr, "TLS handshake successful");
                                         Some(MaybeTlsStream::Tls(Box::new(tls_stream)))
                                     }
                                     Ok(Err(e)) => {
-                                        gateway_self.metrics.tls_handshake_failure.inc();
+                                        gateway_self.metrics.record_tls_handshake_failure();
                                         warn!(
                                             event = "stratum_access_tls_error",
                                             %correlation_id,
@@ -1225,7 +1452,7 @@ impl StratumGateway {
                                         None
                                     }
                                     Err(_) => {
-                                        gateway_self.metrics.tls_handshake_failure.inc();
+                                        gateway_self.metrics.record_tls_handshake_failure();
                                         warn!(
                                             event = "stratum_access_tls_timeout",
                                             %correlation_id,
@@ -1248,15 +1475,26 @@ impl StratumGateway {
                                     session,
                                     gateway_jobs,
                                     gateway_subscribers,
+                                    gateway_active_sessions,
                                     gateway_rpc,
                                     request_rate_limiter,
                                     gateway_self.metrics.clone(),
+                                    vardiff_config,
                                     correlation_id.clone(),
                                 )
                                 .await
                             } else {
                                 Ok(())
                             };
+
+                            // Remove session from active difficulty tracking
+                            {
+                                gateway_self
+                                    .active_sessions
+                                    .write()
+                                    .remove(&session_for_log.session_id);
+                            }
+                            gateway_self.refresh_difficulty_metrics();
 
                             // Decrement per-IP count on disconnect
                             let new_per_ip = {
@@ -1331,9 +1569,11 @@ impl StratumGateway {
         session: Arc<WorkerSession>,
         job_manager: Arc<JobManager>,
         active_subscribers: Arc<RwLock<HashMap<String, ClientSender>>>,
+        active_sessions: Arc<RwLock<HashMap<String, Arc<WorkerSession>>>>,
         rpc_client: NodeRpcClient,
         request_rate_limiter: Arc<RequestRateLimiter>,
         metrics: GatewayMetrics,
+        vardiff_config: VarDiffConfig,
         correlation_id: String,
     ) -> Result<()> {
         info!(
@@ -1499,8 +1739,7 @@ impl StratumGateway {
                         .inc();
 
                     if !session.is_authorized() {
-                        metrics.shares_rejected.inc();
-                        metrics.shares_rejected_unauthorized.inc();
+                        metrics.record_share_rejected(ShareRejectReason::Unauthorized);
                         let err_resp = StratumResponse::unauthorized(
                             req_id,
                             "Unauthorized: please call mining.authorize first",
@@ -1512,8 +1751,7 @@ impl StratumGateway {
 
                     let params = req.params.as_array().cloned().unwrap_or_default();
                     if params.len() < 4 {
-                        metrics.shares_rejected.inc();
-                        metrics.shares_rejected_invalid_params.inc();
+                        metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                         let err_resp = StratumResponse::invalid_params(
                             req_id,
                             "mining.submit requires at least [worker, job_id, extranonce2, nonce]",
@@ -1525,8 +1763,7 @@ impl StratumGateway {
 
                     let Some(_worker_name) = params[0].as_str() else {
                         session.record_rejected_share();
-                        metrics.shares_rejected.inc();
-                        metrics.shares_rejected_invalid_params.inc();
+                        metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                         let _ = outbound_tx
                             .send(
                                 StratumResponse::invalid_params(
@@ -1541,8 +1778,7 @@ impl StratumGateway {
                     };
                     let Some(job_id) = params[1].as_str() else {
                         session.record_rejected_share();
-                        metrics.shares_rejected.inc();
-                        metrics.shares_rejected_invalid_params.inc();
+                        metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                         let _ = outbound_tx
                             .send(
                                 StratumResponse::invalid_params(req_id, "job_id must be a string")
@@ -1554,8 +1790,7 @@ impl StratumGateway {
                     };
                     let Some(extranonce2_raw) = params[2].as_str() else {
                         session.record_rejected_share();
-                        metrics.shares_rejected.inc();
-                        metrics.shares_rejected_invalid_params.inc();
+                        metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                         let _ = outbound_tx
                             .send(
                                 StratumResponse::invalid_params(
@@ -1575,8 +1810,7 @@ impl StratumGateway {
                             Ok(normalized) => normalized,
                             Err(msg) => {
                                 session.record_rejected_share();
-                                metrics.shares_rejected.inc();
-                                metrics.shares_rejected_invalid_params.inc();
+                                metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                                 let _ = outbound_tx
                                     .send(
                                         StratumResponse::invalid_params(req_id, &msg)
@@ -1594,8 +1828,7 @@ impl StratumGateway {
                     let (ntime_opt, nonce_str) = if params.len() >= 5 {
                         let Some(ntime_raw) = params[3].as_str() else {
                             session.record_rejected_share();
-                            metrics.shares_rejected.inc();
-                            metrics.shares_rejected_invalid_params.inc();
+                            metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                             let _ = outbound_tx
                                 .send(
                                     StratumResponse::invalid_params(
@@ -1610,8 +1843,7 @@ impl StratumGateway {
                         };
                         if let Err(msg) = parse_ntime_hex(ntime_raw) {
                             session.record_rejected_share();
-                            metrics.shares_rejected.inc();
-                            metrics.shares_rejected_invalid_params.inc();
+                            metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                             let _ = outbound_tx
                                 .send(StratumResponse::invalid_params(req_id, &msg).to_wire_line())
                                 .await;
@@ -1620,8 +1852,7 @@ impl StratumGateway {
                         }
                         let Some(nonce_raw) = params[4].as_str() else {
                             session.record_rejected_share();
-                            metrics.shares_rejected.inc();
-                            metrics.shares_rejected_invalid_params.inc();
+                            metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                             let _ = outbound_tx
                                 .send(
                                     StratumResponse::invalid_params(
@@ -1638,8 +1869,7 @@ impl StratumGateway {
                     } else {
                         let Some(nonce_raw) = params[3].as_str() else {
                             session.record_rejected_share();
-                            metrics.shares_rejected.inc();
-                            metrics.shares_rejected_invalid_params.inc();
+                            metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                             let _ = outbound_tx
                                 .send(
                                     StratumResponse::invalid_params(
@@ -1659,8 +1889,7 @@ impl StratumGateway {
                         Some(j) => j,
                         None => {
                             session.record_rejected_share();
-                            metrics.shares_rejected.inc();
-                            metrics.shares_rejected_stale.inc();
+                            metrics.record_share_rejected(ShareRejectReason::Stale);
                             let _ = outbound_tx
                                 .send(StratumResponse::job_not_found(req_id).to_wire_line())
                                 .await;
@@ -1673,8 +1902,7 @@ impl StratumGateway {
                     if let Some(ntime_raw) = ntime_opt {
                         if let Err(msg) = validate_ntime(ntime_raw, job.header.timestamp) {
                             session.record_rejected_share();
-                            metrics.shares_rejected.inc();
-                            metrics.shares_rejected_invalid_params.inc();
+                            metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                             let _ = outbound_tx
                                 .send(StratumResponse::invalid_params(req_id, &msg).to_wire_line())
                                 .await;
@@ -1690,8 +1918,7 @@ impl StratumGateway {
                                 Ok(n) => n,
                                 Err(_) => {
                                     session.record_rejected_share();
-                                    metrics.shares_rejected.inc();
-                                    metrics.shares_rejected_invalid_params.inc();
+                                    metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                                     let _ = outbound_tx
                                         .send(
                                             StratumResponse::invalid_params(
@@ -1712,8 +1939,7 @@ impl StratumGateway {
                             Ok(n) => n,
                             Err(_) => {
                                 session.record_rejected_share();
-                                metrics.shares_rejected.inc();
-                                metrics.shares_rejected_invalid_params.inc();
+                                metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                                 let _ = outbound_tx
                                     .send(
                                         StratumResponse::invalid_params(
@@ -1732,8 +1958,7 @@ impl StratumGateway {
                     // Check duplicate share
                     if session.check_and_record_share(job_id, &extranonce2, nonce) {
                         session.record_rejected_share();
-                        metrics.shares_rejected.inc();
-                        metrics.shares_rejected_duplicate.inc();
+                        metrics.record_share_rejected(ShareRejectReason::Duplicate);
                         let _ = outbound_tx
                             .send(StratumResponse::duplicate_share(req_id).to_wire_line())
                             .await;
@@ -1756,8 +1981,7 @@ impl StratumGateway {
 
                     if !meets_share {
                         session.record_rejected_share();
-                        metrics.shares_rejected.inc();
-                        metrics.shares_rejected_low_difficulty.inc();
+                        metrics.record_share_rejected(ShareRejectReason::LowDifficulty);
                         debug!(
                             %remote_addr,
                             job_id,
@@ -1778,7 +2002,10 @@ impl StratumGateway {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    session.record_share_timestamp(now);
+                    session.record_share_timestamp_with_window(
+                        now,
+                        vardiff_config.retarget_interval_secs,
+                    );
                     session.record_accepted_share();
                     metrics.shares_accepted.inc();
                     let _ = outbound_tx
@@ -1788,26 +2015,26 @@ impl StratumGateway {
                     // Update worker hashrate metric
                     let hashrate = session.estimated_hashrate();
                     if let Some(worker) = session.authorized_worker.read().as_ref() {
-                        let worker_label = WorkerLabel {
-                            worker: worker.worker_name.clone(),
-                        };
-                        metrics
-                            .worker_hashrate
-                            .get_or_create(&worker_label)
-                            .set(hashrate as i64);
+                        metrics.set_worker_hashrate(worker.worker_name.clone(), hashrate as i64);
                     }
 
-                    // Check for difficulty retarget
-                    if let Some(new_diff) = session.maybe_retarget_difficulty() {
-                        info!(
-                            %remote_addr,
-                            session_id = %session.session_id,
-                            old_diff = session.get_difficulty(),
-                            new_diff = new_diff,
-                            "retargeting share difficulty"
-                        );
-                        let diff_notif = StratumNotification::set_difficulty(new_diff);
-                        let _ = outbound_tx.send(diff_notif.to_wire_line()).await;
+                    // Check for bounded per-worker VarDiff retarget
+                    if vardiff_config.enabled {
+                        if let Some(new_diff) =
+                            session.maybe_retarget_difficulty_with_config(&vardiff_config, now)
+                        {
+                            info!(
+                                %remote_addr,
+                                session_id = %session.session_id,
+                                old_diff = current_diff,
+                                new_diff = new_diff,
+                                "retargeting share difficulty via VarDiff"
+                            );
+                            metrics.record_vardiff_retarget(current_diff, new_diff);
+                            Self::refresh_difficulty_metrics_from(&active_sessions, &metrics);
+                            let diff_notif = StratumNotification::set_difficulty(new_diff);
+                            let _ = outbound_tx.send(diff_notif.to_wire_line()).await;
+                        }
                     }
 
                     // Check if solution also meets full network target
@@ -1891,10 +2118,22 @@ impl StratumGateway {
                         .and_then(|a| a.first())
                         .and_then(Value::as_f64)
                     {
-                        if diff > 0.0 {
-                            session.set_difficulty(diff);
-                            let notif = StratumNotification::set_difficulty(diff);
-                            let _ = outbound_tx.send(notif.to_wire_line()).await;
+                        if diff.is_finite() && diff > 0.0 {
+                            let applied = if vardiff_config.enabled {
+                                session.set_difficulty_bounded(
+                                    diff,
+                                    vardiff_config.min_difficulty,
+                                    vardiff_config.max_difficulty,
+                                )
+                            } else {
+                                session.set_difficulty(diff);
+                                Some(session.get_difficulty())
+                            };
+                            if let Some(applied_diff) = applied {
+                                Self::refresh_difficulty_metrics_from(&active_sessions, &metrics);
+                                let notif = StratumNotification::set_difficulty(applied_diff);
+                                let _ = outbound_tx.send(notif.to_wire_line()).await;
+                            }
                         }
                     }
                     let _ = outbound_tx
@@ -2046,6 +2285,13 @@ mod tests {
             .set(2);
         metrics.shares_submitted.inc();
         metrics.shares_accepted.inc();
+        metrics.record_share_rejected(ShareRejectReason::Stale);
+        metrics.record_share_rejected(ShareRejectReason::Duplicate);
+        metrics.record_vardiff_retarget(1.0, 2.0);
+        metrics.record_vardiff_retarget(2.0, 1.0);
+        metrics.set_worker_difficulty_stats(0.5, 4.0, 2.25);
+        metrics.record_tls_handshake_success();
+        metrics.record_tls_handshake_failure();
         metrics
             .shares_by_difficulty_bucket
             .get_or_create(&DifficultyBucketLabel { bucket: "1" })
@@ -2067,6 +2313,28 @@ mod tests {
         assert!(encoded.contains("stratum_connections_per_ip{ip=\"127.0.0.1\"} 2"));
         assert!(encoded.contains("stratum_shares_submitted_total 1"));
         assert!(encoded.contains("stratum_shares_accepted_total 1"));
+        assert!(encoded.contains("stratum_shares_rejected_total 2"));
+        assert!(encoded.contains("stratum_shares_rejected_by_reason_total{reason=\"stale\"} 1"));
+        assert!(encoded.contains("stratum_shares_rejected_by_reason_total{reason=\"duplicate\"} 1"));
+        assert!(encoded
+            .contains("stratum_shares_rejected_by_reason_total{reason=\"invalid_params\"} 0"));
+        assert!(encoded
+            .contains("stratum_shares_rejected_by_reason_total{reason=\"low_difficulty\"} 0"));
+        assert!(
+            encoded.contains("stratum_shares_rejected_by_reason_total{reason=\"unauthorized\"} 0")
+        );
+        assert!(encoded.contains("stratum_vardiff_retargets_total 2"));
+        assert!(
+            encoded.contains("stratum_vardiff_retargets_by_direction_total{direction=\"up\"} 1")
+        );
+        assert!(
+            encoded.contains("stratum_vardiff_retargets_by_direction_total{direction=\"down\"} 1")
+        );
+        assert!(encoded.contains("stratum_worker_difficulty_min 0.5"));
+        assert!(encoded.contains("stratum_worker_difficulty_max 4.0"));
+        assert!(encoded.contains("stratum_worker_difficulty_avg 2.25"));
+        assert!(encoded.contains("stratum_tls_handshakes_total{result=\"success\"} 1"));
+        assert!(encoded.contains("stratum_tls_handshakes_total{result=\"failure\"} 1"));
         assert!(encoded.contains("stratum_shares_by_difficulty_bucket_total{bucket=\"1\"} 1"));
         assert!(encoded.contains("stratum_worker_hashrate{worker=\"rig1\"} 4200"));
         assert!(encoded.contains("stratum_rpc_getwork_latency_seconds_count 1"));
