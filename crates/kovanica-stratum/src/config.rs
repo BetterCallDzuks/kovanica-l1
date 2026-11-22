@@ -40,6 +40,10 @@ pub const DEFAULT_VARDIFF_TARGET_SHARE_SECS: f64 = 15.0;
 pub const DEFAULT_VARDIFF_RETARGET_INTERVAL_SECS: u64 = 60;
 /// Default deadband variance tolerance (percent) around target share time for VarDiff.
 pub const DEFAULT_VARDIFF_VARIANCE_PERCENT: f64 = 30.0;
+/// Default number of invalid/rejected shares from an IP before triggering a temporary ban.
+pub const DEFAULT_BAN_THRESHOLD_INVALID_SHARES: u32 = 25;
+/// Default duration (in seconds) of a temporary IP ban after crossing the invalid-share threshold (15 minutes).
+pub const DEFAULT_BAN_DURATION_SECS: u64 = 900;
 /// Valid canonical PRO-21 burn address used when the operator does not supply a payout.
 ///
 /// This replaces the previous invalid placeholder, which made `kovanica_getWork` fail on every
@@ -148,6 +152,14 @@ pub struct StratumArgs {
     /// Percentage deadband around target share time within which VarDiff does not retarget (0..100).
     #[arg(long, default_value_t = DEFAULT_VARDIFF_VARIANCE_PERCENT)]
     pub vardiff_variance_percent: f64,
+
+    /// Cumulative invalid/rejected shares per IP before triggering a temporary ban (0 disables banning).
+    #[arg(long, default_value_t = DEFAULT_BAN_THRESHOLD_INVALID_SHARES)]
+    pub ban_threshold_invalid_shares: u32,
+
+    /// Duration in seconds of a temporary per-IP ban after exceeding the invalid-share threshold.
+    #[arg(long, default_value_t = DEFAULT_BAN_DURATION_SECS)]
+    pub ban_duration_secs: u64,
 }
 
 /// Bounded per-worker Variable Difficulty (VarDiff) settings.
@@ -229,6 +241,10 @@ pub struct StratumConfig {
     pub vardiff_retarget_interval_secs: u64,
     /// Percentage deadband around target share time within which VarDiff does not retarget.
     pub vardiff_variance_percent: f64,
+    /// Cumulative invalid/rejected shares per IP before triggering a temporary ban (0 disables banning).
+    pub ban_threshold_invalid_shares: u32,
+    /// Duration in seconds of a temporary per-IP ban after exceeding the invalid-share threshold.
+    pub ban_duration_secs: u64,
 }
 
 /// Resolve the bearer token for node write RPC calls from the environment.
@@ -276,6 +292,8 @@ impl Default for StratumConfig {
             vardiff_target_share_secs: DEFAULT_VARDIFF_TARGET_SHARE_SECS,
             vardiff_retarget_interval_secs: DEFAULT_VARDIFF_RETARGET_INTERVAL_SECS,
             vardiff_variance_percent: DEFAULT_VARDIFF_VARIANCE_PERCENT,
+            ban_threshold_invalid_shares: DEFAULT_BAN_THRESHOLD_INVALID_SHARES,
+            ban_duration_secs: DEFAULT_BAN_DURATION_SECS,
         }
     }
 }
@@ -334,6 +352,9 @@ impl StratumConfig {
         }
         if self.max_request_rate_per_connection == 0 {
             bail!("max_request_rate_per_connection must be > 0");
+        }
+        if self.ban_threshold_invalid_shares > 0 && self.ban_duration_secs == 0 {
+            bail!("ban_duration_secs must be > 0 when ban_threshold_invalid_shares > 0");
         }
         if self.log_format != "json" && self.log_format != "pretty" {
             bail!(
@@ -400,6 +421,8 @@ impl From<StratumArgs> for StratumConfig {
             vardiff_target_share_secs: args.vardiff_target_share_secs,
             vardiff_retarget_interval_secs: args.vardiff_retarget_interval_secs,
             vardiff_variance_percent: args.vardiff_variance_percent,
+            ban_threshold_invalid_shares: args.ban_threshold_invalid_shares,
+            ban_duration_secs: args.ban_duration_secs,
         }
     }
 }
@@ -621,6 +644,46 @@ mod tests {
         assert_eq!(cfg.vardiff_target_share_secs, 12.5);
         assert_eq!(cfg.vardiff_retarget_interval_secs, 45);
         assert_eq!(cfg.vardiff_variance_percent, 20.0);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn ban_config_defaults_and_validation() {
+        let default_cfg = StratumConfig::default();
+        assert_eq!(
+            default_cfg.ban_threshold_invalid_shares,
+            DEFAULT_BAN_THRESHOLD_INVALID_SHARES
+        );
+        assert_eq!(default_cfg.ban_duration_secs, DEFAULT_BAN_DURATION_SECS);
+        assert!(default_cfg.validate().is_ok());
+
+        // Zero ban duration when threshold > 0 must fail validation
+        let invalid = StratumConfig {
+            ban_threshold_invalid_shares: 5,
+            ban_duration_secs: 0,
+            ..Default::default()
+        };
+        assert!(invalid.validate().is_err());
+
+        // Zero threshold (banning disabled) with zero duration is allowed
+        let disabled = StratumConfig {
+            ban_threshold_invalid_shares: 0,
+            ban_duration_secs: 0,
+            ..Default::default()
+        };
+        assert!(disabled.validate().is_ok());
+
+        let parsed = StratumArgs::try_parse_from([
+            "kovanica-stratum",
+            "--ban-threshold-invalid-shares",
+            "10",
+            "--ban-duration-secs",
+            "300",
+        ])
+        .expect("valid ban CLI flags must parse");
+        let cfg = StratumConfig::from(parsed);
+        assert_eq!(cfg.ban_threshold_invalid_shares, 10);
+        assert_eq!(cfg.ban_duration_secs, 300);
         assert!(cfg.validate().is_ok());
     }
 }

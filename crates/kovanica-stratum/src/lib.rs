@@ -27,8 +27,9 @@ pub use difficulty::{
     target_from_difficulty, DIFFICULTY_1_TARGET_BITS,
 };
 pub use gateway::{
-    validate_extranonce2, validate_ntime, GatewayMetrics, ShareRejectReason, StratumGateway,
-    MAX_NTIME_DRIFT_MS, MAX_NTIME_DRIFT_SECS,
+    validate_extranonce2, validate_ntime, GatewayMetrics, IpBanScorer, IpPenaltyRecord,
+    ShareRejectReason, StratumGateway, MAX_BAN_SCORER_IPS, MAX_NTIME_DRIFT_MS,
+    MAX_NTIME_DRIFT_SECS,
 };
 pub use job::{Job, JobManager};
 pub use protocol::{StratumNotification, StratumRequest, StratumResponse};

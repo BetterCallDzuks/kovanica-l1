@@ -1379,3 +1379,184 @@ async fn test_vardiff_e2e_retargeting_and_expanded_prometheus_metrics() {
 
     gateway.shutdown();
 }
+
+#[tokio::test]
+async fn test_per_ip_invalid_share_rate_limit_temporary_ban_and_expiry_e2e() {
+    init_test_logging();
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral listener");
+    let stratum_addr = listener.local_addr().expect("stratum local addr");
+
+    // Configure gateway with ban_threshold_invalid_shares = 3 and ban_duration_secs = 1
+    let config = StratumConfig {
+        listen_addr: stratum_addr,
+        difficulty: 0.0,
+        chain_id: HYBRID_TESTNET,
+        rpc_url: "http://127.0.0.1:1/rpc".to_string(),
+        poll_interval: Duration::from_secs(3600),
+        ban_threshold_invalid_shares: 3,
+        ban_duration_secs: 1,
+        ..Default::default()
+    };
+    config.validate().expect("ban config must validate");
+
+    let gateway = Arc::new(StratumGateway::new(config).expect("gateway creation failed"));
+    let gw_clone = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = gw_clone.run_with_listener(listener).await;
+    });
+
+    // Start observability HTTP server to verify Prometheus ban metrics
+    let obs_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind observability listener");
+    let obs_addr = obs_listener.local_addr().expect("observability local addr");
+    let obs_gw = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = obs_gw.serve_observability(obs_listener).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    let job = gateway
+        .job_manager()
+        .add_template(create_test_header(303, 0x207f_ffff));
+
+    // 1. Connect client, subscribe, and authorize
+    let mut client = TestClient::connect(stratum_addr).await;
+    client
+        .send_line(
+            &json!({"id": 1, "method": "mining.subscribe", "params": ["misbehaving-miner/1.0"]})
+                .to_string(),
+        )
+        .await;
+    let _ = client.read_json().await;
+
+    let (_sk, pk) = generate_keypair();
+    let username = format!("{}.bad_rig", Address(pk.0).encode());
+    client
+        .send_line(
+            &json!({"id": 2, "method": "mining.authorize", "params": [username.clone(), "x"]})
+                .to_string(),
+        )
+        .await;
+    let _ = client.read_json().await; // auth result
+    let _ = client.read_json().await; // set_difficulty
+    let _ = client.read_json().await; // notify
+
+    // 2. Submit 1st invalid share (stale job) -> rejected with 21, connection stays open
+    client
+        .send_line(
+            &json!({
+                "id": 10,
+                "method": "mining.submit",
+                "params": [username, "stale_job_1", "00000001", "00000001"]
+            })
+            .to_string(),
+        )
+        .await;
+    let r1 = client.read_json().await;
+    assert_eq!(r1["error"][0], 21);
+    assert_eq!(gateway.metrics().ip_bans.get(), 0);
+    assert_eq!(gateway.metrics().banned_ips_active.get(), 0);
+
+    // 3. Submit 2nd invalid share (invalid extranonce2) -> rejected with 25, connection stays open
+    client
+        .send_line(
+            &json!({
+                "id": 11,
+                "method": "mining.submit",
+                "params": [username, job.job_id, "bad_hex", "00000002"]
+            })
+            .to_string(),
+        )
+        .await;
+    let r2 = client.read_json().await;
+    assert_eq!(r2["error"][0], 25);
+    assert_eq!(gateway.metrics().ip_bans.get(), 0);
+
+    // 4. Submit 3rd invalid share (stale job) -> reaches threshold (3), triggers ban and closes connection
+    client
+        .send_line(
+            &json!({
+                "id": 12,
+                "method": "mining.submit",
+                "params": [username, "stale_job_3", "00000001", "00000003"]
+            })
+            .to_string(),
+        )
+        .await;
+    let r3 = client.read_json().await;
+    assert_eq!(r3["error"][0], 21);
+
+    // Active misbehaving connection must now be closed by the gateway
+    let mut eof_buf = String::new();
+    let eof_res = timeout(
+        Duration::from_secs(2),
+        client.reader.read_line(&mut eof_buf),
+    )
+    .await
+    .expect("gateway must close connection after crossing ban threshold");
+    assert!(
+        matches!(eof_res, Ok(0) | Err(_)),
+        "expected EOF on banned active connection, got {eof_res:?}"
+    );
+
+    assert_eq!(gateway.metrics().ip_bans.get(), 1);
+    assert_eq!(gateway.metrics().banned_ips_active.get(), 1);
+
+    // Verify Prometheus /metrics endpoint exposes stratum_ip_bans_total and stratum_banned_ips_active
+    let http = reqwest::Client::new();
+    let metrics_body = http
+        .get(format!("http://{obs_addr}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics")
+        .text()
+        .await
+        .expect("read /metrics body");
+    assert!(
+        metrics_body.contains("stratum_ip_bans_total 1"),
+        "body:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("stratum_banned_ips_active 1"),
+        "body:\n{metrics_body}"
+    );
+
+    // 5. Attempt to reconnect while ban is active -> immediately dropped by gateway
+    let mut banned_reconnect = TestClient::connect(stratum_addr).await;
+    let _ = banned_reconnect
+        .writer
+        .write_all(b"{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[\"reconnect/1.0\"]}\n")
+        .await;
+    let _ = banned_reconnect.writer.flush().await;
+    let mut reconnect_buf = String::new();
+    let reconnect_res = timeout(
+        Duration::from_secs(2),
+        banned_reconnect.reader.read_line(&mut reconnect_buf),
+    )
+    .await
+    .expect("banned reconnect must be closed immediately");
+    assert!(
+        matches!(reconnect_res, Ok(0) | Err(_)),
+        "banned IP must not receive a Stratum response on reconnect, got {reconnect_res:?} ({reconnect_buf:?})"
+    );
+
+    // 6. Wait for ban duration (1s) to expire and verify client can reconnect and subscribe cleanly
+    tokio::time::sleep(Duration::from_millis(1_150)).await;
+    let mut clean_client = TestClient::connect(stratum_addr).await;
+    clean_client
+        .send_line(
+            &json!({"id": 1, "method": "mining.subscribe", "params": ["recovered-miner/1.0"]})
+                .to_string(),
+        )
+        .await;
+    let sub_resp = clean_client.read_json().await;
+    assert_eq!(sub_resp["id"], 1);
+    assert!(sub_resp["error"].is_null());
+    assert_eq!(gateway.metrics().banned_ips_active.get(), 0);
+
+    gateway.shutdown();
+}

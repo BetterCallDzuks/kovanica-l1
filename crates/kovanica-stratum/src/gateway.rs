@@ -51,6 +51,243 @@ pub const CLIENT_OUTBOUND_CHANNEL_CAP: usize = 64;
 /// Maximum distinct IPs tracked in the connection rate limiter.
 pub const MAX_RATE_LIMITER_IPS: usize = 100_000;
 
+/// Maximum distinct IPs tracked in the per-IP misbehavior scorer (`IpBanScorer`).
+pub const MAX_BAN_SCORER_IPS: usize = 100_000;
+
+/// Default idle eviction timeout (in seconds) for non-banned IP penalty records.
+pub const DEFAULT_BAN_SCORER_IDLE_EVICT_SECS: u64 = 3_600;
+
+/// Per-IP misbehavior and invalid-share record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IpPenaltyRecord {
+    /// Target remote IP address.
+    pub ip: std::net::IpAddr,
+    /// Cumulative invalid/rejected share count within the current penalty cycle.
+    pub invalid_shares: u32,
+    /// Monotonic instant until which the IP is temporarily banned.
+    pub banned_until: Option<Instant>,
+    /// Whether the IP is actively banned.
+    pub is_banned: bool,
+    /// Time of last recorded activity or penalty.
+    pub last_seen: Instant,
+}
+
+impl IpPenaltyRecord {
+    /// Create a clean penalty record for `ip` at `now`.
+    pub fn new(ip: std::net::IpAddr, now: Instant) -> Self {
+        Self {
+            ip,
+            invalid_shares: 0,
+            banned_until: None,
+            is_banned: false,
+            last_seen: now,
+        }
+    }
+}
+
+/// Bounded per-IP misbehavior scorer and temporary ban tracker for Stratum connections.
+///
+/// Tracks per-IP invalid share penalties, triggers temporary bans when
+/// `ban_threshold_invalid_shares` is reached, automatically expires bans after `ban_duration`,
+/// and enforces a hard memory cap (`max_tracked_ips`) with idle/LRU eviction.
+#[derive(Debug)]
+pub struct IpBanScorer {
+    ban_threshold_invalid_shares: u32,
+    ban_duration: Duration,
+    max_tracked_ips: usize,
+    idle_evict_duration: Duration,
+    state: RwLock<HashMap<std::net::IpAddr, IpPenaltyRecord>>,
+}
+
+impl IpBanScorer {
+    /// Create a new `IpBanScorer` with the given invalid-share threshold and ban duration.
+    pub fn new(ban_threshold_invalid_shares: u32, ban_duration: Duration) -> Self {
+        Self::with_capacity_and_idle(
+            ban_threshold_invalid_shares,
+            ban_duration,
+            MAX_BAN_SCORER_IPS,
+            Duration::from_secs(DEFAULT_BAN_SCORER_IDLE_EVICT_SECS),
+        )
+    }
+
+    /// Create a new `IpBanScorer` with explicit capacity and idle-eviction bounds (useful for tests).
+    pub fn with_capacity_and_idle(
+        ban_threshold_invalid_shares: u32,
+        ban_duration: Duration,
+        max_tracked_ips: usize,
+        idle_evict_duration: Duration,
+    ) -> Self {
+        Self {
+            ban_threshold_invalid_shares,
+            ban_duration,
+            max_tracked_ips: max_tracked_ips.max(1),
+            idle_evict_duration,
+            state: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Check if `ip` is actively banned.
+    ///
+    /// Automatically clears expired bans on query so callers never observe stale bans.
+    pub fn is_banned(&self, ip: &std::net::IpAddr) -> bool {
+        let now = Instant::now();
+        {
+            let state = self.state.read();
+            let Some(rec) = state.get(ip) else {
+                return false;
+            };
+            let Some(until) = rec.banned_until else {
+                return false;
+            };
+            if now < until {
+                return true;
+            }
+        }
+
+        // Expired ban: acquire write lock and clear
+        let mut state = self.state.write();
+        if let Some(rec) = state.get_mut(ip) {
+            if let Some(until) = rec.banned_until {
+                if now >= until {
+                    rec.banned_until = None;
+                    rec.is_banned = false;
+                    rec.invalid_shares = 0;
+                    rec.last_seen = now;
+                    debug!(%ip, "cleared expired Stratum IP ban on query");
+                    return false;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Record an invalid/rejected share penalty for `ip`.
+    ///
+    /// Returns `true` if this penalty caused the IP to transition into an active ban
+    /// (or if `ban_threshold_invalid_shares > 0` and the threshold was crossed on this call).
+    pub fn record_invalid_share(&self, ip: std::net::IpAddr, reason: ShareRejectReason) -> bool {
+        if self.ban_threshold_invalid_shares == 0 {
+            return false;
+        }
+        let now = Instant::now();
+        let mut state = self.state.write();
+
+        // Enforce bounded map capacity before inserting a new IP
+        if !state.contains_key(&ip) && state.len() >= self.max_tracked_ips {
+            Self::evict_locked(&mut state, now, self.idle_evict_duration);
+            if state.len() >= self.max_tracked_ips {
+                // Evict oldest non-banned entry first; fallback to oldest entry overall
+                let victim = state
+                    .iter()
+                    .filter(|(_, r)| r.banned_until.is_none_or(|u| now >= u))
+                    .min_by_key(|(_, r)| r.last_seen)
+                    .or_else(|| state.iter().min_by_key(|(_, r)| r.last_seen))
+                    .map(|(k, _)| *k);
+                if let Some(v) = victim {
+                    state.remove(&v);
+                }
+            }
+        }
+
+        let rec = state
+            .entry(ip)
+            .or_insert_with(|| IpPenaltyRecord::new(ip, now));
+
+        // Clear any expired ban before accumulating a new cycle
+        if let Some(until) = rec.banned_until {
+            if now >= until {
+                rec.banned_until = None;
+                rec.is_banned = false;
+                rec.invalid_shares = 0;
+            }
+        }
+
+        let was_banned = rec.banned_until.is_some_and(|u| now < u);
+        rec.last_seen = now;
+        rec.invalid_shares = rec.invalid_shares.saturating_add(1);
+
+        if !was_banned && rec.invalid_shares >= self.ban_threshold_invalid_shares {
+            let until = now + self.ban_duration;
+            rec.banned_until = Some(until);
+            rec.is_banned = true;
+            warn!(
+                event = "stratum_ip_banned",
+                %ip,
+                invalid_shares = rec.invalid_shares,
+                threshold = self.ban_threshold_invalid_shares,
+                reason = reason.as_str(),
+                ban_duration_secs = self.ban_duration.as_secs(),
+                "Stratum client IP temporarily banned for excessive invalid shares"
+            );
+            true
+        } else {
+            debug!(
+                %ip,
+                invalid_shares = rec.invalid_shares,
+                threshold = self.ban_threshold_invalid_shares,
+                reason = reason.as_str(),
+                "recorded Stratum invalid share penalty for IP"
+            );
+            false
+        }
+    }
+
+    /// Return the current invalid-share count for `ip` (0 if unseen or expired).
+    pub fn invalid_share_count(&self, ip: &std::net::IpAddr) -> u32 {
+        let _ = self.is_banned(ip);
+        self.state.read().get(ip).map_or(0, |r| r.invalid_shares)
+    }
+
+    /// Return the number of currently active banned IPs.
+    pub fn active_banned_count(&self) -> usize {
+        let now = Instant::now();
+        self.state
+            .read()
+            .values()
+            .filter(|r| r.banned_until.is_some_and(|u| now < u))
+            .count()
+    }
+
+    /// Return the total number of tracked IP records in the map.
+    pub fn tracked_ip_count(&self) -> usize {
+        self.state.read().len()
+    }
+
+    /// Purge expired bans and evict idle non-banned entries.
+    /// Returns the number of currently active banned IPs after cleanup.
+    pub fn cleanup(&self) -> usize {
+        let now = Instant::now();
+        let mut state = self.state.write();
+        Self::evict_locked(&mut state, now, self.idle_evict_duration);
+        state
+            .values()
+            .filter(|r| r.banned_until.is_some_and(|u| now < u))
+            .count()
+    }
+
+    fn evict_locked(
+        state: &mut HashMap<std::net::IpAddr, IpPenaltyRecord>,
+        now: Instant,
+        idle_evict: Duration,
+    ) {
+        for (ip, rec) in state.iter_mut() {
+            if let Some(until) = rec.banned_until {
+                if now >= until {
+                    rec.banned_until = None;
+                    rec.is_banned = false;
+                    rec.invalid_shares = 0;
+                    debug!(%ip, "purged expired Stratum IP ban");
+                }
+            }
+        }
+        state.retain(|_, rec| {
+            rec.banned_until.is_some_and(|u| now < u)
+                || (rec.invalid_shares > 0 && now.duration_since(rec.last_seen) < idle_evict)
+        });
+    }
+}
+
 /// Maximum distinct labels tracked in Prometheus per-IP and per-worker gauge families
 /// to prevent label cardinality explosion.
 pub const MAX_PROMETHEUS_LABEL_CARDINALITY: usize = 1_024;
@@ -441,6 +678,8 @@ pub struct GatewayMetrics {
     pub connection_rate_limit_hits: Counter,
     pub connection_rejected_max: Counter,
     pub connection_rejected_per_ip: Counter,
+    pub ip_bans: Counter,
+    pub banned_ips_active: Gauge,
 
     // Share metrics
     pub shares_submitted: Counter,
@@ -534,6 +773,20 @@ impl GatewayMetrics {
             "stratum_connections_rejected_per_ip",
             "Total connections rejected due to per-IP limit",
             connection_rejected_per_ip.clone(),
+        );
+
+        let ip_bans = Counter::default();
+        registry.register(
+            "stratum_ip_bans",
+            "Total temporary per-IP bans triggered by excessive invalid shares",
+            ip_bans.clone(),
+        );
+
+        let banned_ips_active = Gauge::default();
+        registry.register(
+            "stratum_banned_ips_active",
+            "Current number of actively banned miner IP addresses",
+            banned_ips_active.clone(),
         );
 
         // Share metrics
@@ -783,6 +1036,8 @@ impl GatewayMetrics {
             connection_rate_limit_hits,
             connection_rejected_max,
             connection_rejected_per_ip,
+            ip_bans,
+            banned_ips_active,
             shares_submitted,
             shares_accepted,
             shares_rejected,
@@ -915,6 +1170,8 @@ pub struct StratumGateway {
     connection_semaphore: Arc<Semaphore>,
     /// Rate limiter for connection attempts per IP.
     connection_rate_limiter: Arc<ConnectionRateLimiter>,
+    /// Bounded per-IP misbehavior scorer and temporary ban manager.
+    ip_ban_scorer: Arc<IpBanScorer>,
     /// Active connection count per IP.
     connections_per_ip: Arc<RwLock<HashMap<std::net::IpAddr, usize>>>,
     /// Monotonic counter for connection correlation IDs.
@@ -932,6 +1189,8 @@ impl StratumGateway {
     pub fn new(config: StratumConfig) -> Result<Self> {
         let max_connections = config.max_connections;
         let max_connection_rate_per_ip = config.max_connection_rate_per_ip;
+        let ban_threshold = config.ban_threshold_invalid_shares;
+        let ban_duration = Duration::from_secs(config.ban_duration_secs);
         let rpc_client = NodeRpcClient::with_token(&config.rpc_url, config.rpc_token.clone());
 
         // Build TLS acceptor if TLS is enabled
@@ -960,6 +1219,7 @@ impl StratumGateway {
             connection_rate_limiter: Arc::new(ConnectionRateLimiter::new(
                 max_connection_rate_per_ip,
             )),
+            ip_ban_scorer: Arc::new(IpBanScorer::new(ban_threshold, ban_duration)),
             connections_per_ip: Arc::new(RwLock::new(HashMap::new())),
             next_conn_id: Arc::new(AtomicU64::new(1)),
             metrics,
@@ -986,6 +1246,37 @@ impl StratumGateway {
     /// Access the metrics collector.
     pub fn metrics(&self) -> &GatewayMetrics {
         &self.metrics
+    }
+
+    /// Access the per-IP misbehavior scorer and temporary ban manager.
+    pub fn ip_ban_scorer(&self) -> &Arc<IpBanScorer> {
+        &self.ip_ban_scorer
+    }
+
+    /// Check if `ip` is currently banned and update the `stratum_banned_ips_active` gauge.
+    pub fn is_ip_banned(&self, ip: &std::net::IpAddr) -> bool {
+        let banned = self.ip_ban_scorer.is_banned(ip);
+        self.metrics
+            .banned_ips_active
+            .set(self.ip_ban_scorer.active_banned_count() as i64);
+        banned
+    }
+
+    /// Record an invalid/rejected share penalty for `ip`, updating `stratum_ip_bans_total`
+    /// and `stratum_banned_ips_active` if a temporary ban is triggered.
+    pub fn record_invalid_share_for_ip(
+        &self,
+        ip: std::net::IpAddr,
+        reason: ShareRejectReason,
+    ) -> bool {
+        let newly_banned = self.ip_ban_scorer.record_invalid_share(ip, reason);
+        if newly_banned {
+            self.metrics.ip_bans.inc();
+        }
+        self.metrics
+            .banned_ips_active
+            .set(self.ip_ban_scorer.active_banned_count() as i64);
+        newly_banned
     }
 
     /// Access the metrics registry for Prometheus exposition.
@@ -1023,6 +1314,9 @@ impl StratumGateway {
                             .uptime_seconds
                             .set(gw.start_time.elapsed().as_secs() as i64);
                         gw.refresh_difficulty_metrics();
+                        gw.metrics
+                            .banned_ips_active
+                            .set(gw.ip_ban_scorer.cleanup() as i64);
                         let mut buffer = String::new();
                         if let Err(e) = encode(&mut buffer, &gw.metrics_registry) {
                             error!(%e, "failed to encode Prometheus metrics");
@@ -1089,9 +1383,11 @@ impl StratumGateway {
         self.shutdown_notify.notify_waiters();
     }
 
-    /// Sweep expired per-IP connection rate-limiter entries.
+    /// Sweep expired per-IP connection rate-limiter and ban-scorer entries.
     pub fn cleanup_rate_limiter(&self) {
         self.connection_rate_limiter.cleanup();
+        let active_bans = self.ip_ban_scorer.cleanup();
+        self.metrics.banned_ips_active.set(active_bans as i64);
     }
 
     /// Recompute active worker difficulty min/max/avg gauges from connected sessions.
@@ -1281,16 +1577,20 @@ impl StratumGateway {
             }
         });
 
-        // Spawn periodic connection rate-limiter cleanup task
+        // Spawn periodic connection rate-limiter and ban-scorer cleanup task
         let cleanup_shutdown = Arc::clone(&self.shutdown);
         let cleanup_shutdown_notify = Arc::clone(&self.shutdown_notify);
         let cleanup_limiter = Arc::clone(&self.connection_rate_limiter);
+        let cleanup_ban_scorer = Arc::clone(&self.ip_ban_scorer);
+        let cleanup_metrics = self.metrics.clone();
         tokio::spawn(async move {
             while !cleanup_shutdown.load(Ordering::Relaxed) {
                 tokio::select! {
                     _ = cleanup_shutdown_notify.notified() => break,
                     _ = tokio::time::sleep(Duration::from_secs(10)) => {
                         cleanup_limiter.cleanup();
+                        let active_bans = cleanup_ban_scorer.cleanup();
+                        cleanup_metrics.banned_ips_active.set(active_bans as i64);
                     }
                 }
             }
@@ -1310,6 +1610,19 @@ impl StratumGateway {
                     let client_ip = remote_addr.ip();
                     let conn_seq = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
                     let correlation_id = format!("conn-{conn_seq:08x}");
+
+                    // Reject new connections from actively banned IPs immediately
+                    if self.is_ip_banned(&client_ip) {
+                        warn!(
+                            event = "stratum_access_denied",
+                            reason = "ip_banned",
+                            %correlation_id,
+                            %remote_addr,
+                            "connection rejected: client IP is temporarily banned for invalid shares"
+                        );
+                        drop(socket);
+                        continue;
+                    }
 
                     // Check global connection limit and acquire permit up front
                     let connection_permit =
@@ -1478,6 +1791,7 @@ impl StratumGateway {
                                     gateway_active_sessions,
                                     gateway_rpc,
                                     request_rate_limiter,
+                                    Arc::clone(&gateway_self.ip_ban_scorer),
                                     gateway_self.metrics.clone(),
                                     vardiff_config,
                                     correlation_id.clone(),
@@ -1572,10 +1886,22 @@ impl StratumGateway {
         active_sessions: Arc<RwLock<HashMap<String, Arc<WorkerSession>>>>,
         rpc_client: NodeRpcClient,
         request_rate_limiter: Arc<RequestRateLimiter>,
+        ip_ban_scorer: Arc<IpBanScorer>,
         metrics: GatewayMetrics,
         vardiff_config: VarDiffConfig,
         correlation_id: String,
     ) -> Result<()> {
+        let client_ip = remote_addr.ip();
+        let penalize_invalid_share = |reason: ShareRejectReason| -> bool {
+            let newly_banned = ip_ban_scorer.record_invalid_share(client_ip, reason);
+            if newly_banned {
+                metrics.ip_bans.inc();
+            }
+            metrics
+                .banned_ips_active
+                .set(ip_ban_scorer.active_banned_count() as i64);
+            newly_banned || ip_ban_scorer.is_banned(&client_ip)
+        };
         info!(
             event = "stratum_handle_connection_start",
             %correlation_id,
@@ -1739,24 +2065,40 @@ impl StratumGateway {
                         .inc();
 
                     if !session.is_authorized() {
+                        session.record_rejected_share();
                         metrics.record_share_rejected(ShareRejectReason::Unauthorized);
                         let err_resp = StratumResponse::unauthorized(
                             req_id,
                             "Unauthorized: please call mining.authorize first",
                         );
                         let _ = outbound_tx.send(err_resp.to_wire_line()).await;
+                        if penalize_invalid_share(ShareRejectReason::Unauthorized) {
+                            warn!(
+                                %remote_addr,
+                                "closing connection: IP crossed invalid-share ban threshold"
+                            );
+                            break;
+                        }
                         line.clear();
                         continue;
                     }
 
                     let params = req.params.as_array().cloned().unwrap_or_default();
                     if params.len() < 4 {
+                        session.record_rejected_share();
                         metrics.record_share_rejected(ShareRejectReason::InvalidParams);
                         let err_resp = StratumResponse::invalid_params(
                             req_id,
                             "mining.submit requires at least [worker, job_id, extranonce2, nonce]",
                         );
                         let _ = outbound_tx.send(err_resp.to_wire_line()).await;
+                        if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                            warn!(
+                                %remote_addr,
+                                "closing connection: IP crossed invalid-share ban threshold"
+                            );
+                            break;
+                        }
                         line.clear();
                         continue;
                     }
@@ -1773,6 +2115,13 @@ impl StratumGateway {
                                 .to_wire_line(),
                             )
                             .await;
+                        if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                            warn!(
+                                %remote_addr,
+                                "closing connection: IP crossed invalid-share ban threshold"
+                            );
+                            break;
+                        }
                         line.clear();
                         continue;
                     };
@@ -1785,6 +2134,13 @@ impl StratumGateway {
                                     .to_wire_line(),
                             )
                             .await;
+                        if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                            warn!(
+                                %remote_addr,
+                                "closing connection: IP crossed invalid-share ban threshold"
+                            );
+                            break;
+                        }
                         line.clear();
                         continue;
                     };
@@ -1800,6 +2156,13 @@ impl StratumGateway {
                                 .to_wire_line(),
                             )
                             .await;
+                        if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                            warn!(
+                                %remote_addr,
+                                "closing connection: IP crossed invalid-share ban threshold"
+                            );
+                            break;
+                        }
                         line.clear();
                         continue;
                     };
@@ -1817,6 +2180,13 @@ impl StratumGateway {
                                             .to_wire_line(),
                                     )
                                     .await;
+                                if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                                    warn!(
+                                        %remote_addr,
+                                        "closing connection: IP crossed invalid-share ban threshold"
+                                    );
+                                    break;
+                                }
                                 line.clear();
                                 continue;
                             }
@@ -1838,6 +2208,13 @@ impl StratumGateway {
                                     .to_wire_line(),
                                 )
                                 .await;
+                            if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                                warn!(
+                                    %remote_addr,
+                                    "closing connection: IP crossed invalid-share ban threshold"
+                                );
+                                break;
+                            }
                             line.clear();
                             continue;
                         };
@@ -1847,6 +2224,13 @@ impl StratumGateway {
                             let _ = outbound_tx
                                 .send(StratumResponse::invalid_params(req_id, &msg).to_wire_line())
                                 .await;
+                            if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                                warn!(
+                                    %remote_addr,
+                                    "closing connection: IP crossed invalid-share ban threshold"
+                                );
+                                break;
+                            }
                             line.clear();
                             continue;
                         }
@@ -1862,6 +2246,13 @@ impl StratumGateway {
                                     .to_wire_line(),
                                 )
                                 .await;
+                            if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                                warn!(
+                                    %remote_addr,
+                                    "closing connection: IP crossed invalid-share ban threshold"
+                                );
+                                break;
+                            }
                             line.clear();
                             continue;
                         };
@@ -1879,6 +2270,13 @@ impl StratumGateway {
                                     .to_wire_line(),
                                 )
                                 .await;
+                            if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                                warn!(
+                                    %remote_addr,
+                                    "closing connection: IP crossed invalid-share ban threshold"
+                                );
+                                break;
+                            }
                             line.clear();
                             continue;
                         };
@@ -1893,6 +2291,13 @@ impl StratumGateway {
                             let _ = outbound_tx
                                 .send(StratumResponse::job_not_found(req_id).to_wire_line())
                                 .await;
+                            if penalize_invalid_share(ShareRejectReason::Stale) {
+                                warn!(
+                                    %remote_addr,
+                                    "closing connection: IP crossed invalid-share ban threshold"
+                                );
+                                break;
+                            }
                             line.clear();
                             continue;
                         }
@@ -1906,6 +2311,13 @@ impl StratumGateway {
                             let _ = outbound_tx
                                 .send(StratumResponse::invalid_params(req_id, &msg).to_wire_line())
                                 .await;
+                            if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                                warn!(
+                                    %remote_addr,
+                                    "closing connection: IP crossed invalid-share ban threshold"
+                                );
+                                break;
+                            }
                             line.clear();
                             continue;
                         }
@@ -1913,25 +2325,34 @@ impl StratumGateway {
 
                     // Parse nonce
                     let nonce = if nonce_str.len() <= 8 {
-                        let nonce_u32 =
-                            match u32::from_str_radix(nonce_str.trim_start_matches("0x"), 16) {
-                                Ok(n) => n,
-                                Err(_) => {
-                                    session.record_rejected_share();
-                                    metrics.record_share_rejected(ShareRejectReason::InvalidParams);
-                                    let _ = outbound_tx
-                                        .send(
-                                            StratumResponse::invalid_params(
-                                                req_id,
-                                                "invalid hex nonce",
-                                            )
-                                            .to_wire_line(),
+                        let nonce_u32 = match u32::from_str_radix(
+                            nonce_str.trim_start_matches("0x"),
+                            16,
+                        ) {
+                            Ok(n) => n,
+                            Err(_) => {
+                                session.record_rejected_share();
+                                metrics.record_share_rejected(ShareRejectReason::InvalidParams);
+                                let _ = outbound_tx
+                                    .send(
+                                        StratumResponse::invalid_params(
+                                            req_id,
+                                            "invalid hex nonce",
                                         )
-                                        .await;
-                                    line.clear();
-                                    continue;
+                                        .to_wire_line(),
+                                    )
+                                    .await;
+                                if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                                    warn!(
+                                        %remote_addr,
+                                        "closing connection: IP crossed invalid-share ban threshold"
+                                    );
+                                    break;
                                 }
-                            };
+                                line.clear();
+                                continue;
+                            }
+                        };
                         let en2_u32 = u32::from_str_radix(&extranonce2, 16).unwrap_or(0);
                         ((en2_u32 as u64) << 32) | (nonce_u32 as u64)
                     } else {
@@ -1949,6 +2370,13 @@ impl StratumGateway {
                                         .to_wire_line(),
                                     )
                                     .await;
+                                if penalize_invalid_share(ShareRejectReason::InvalidParams) {
+                                    warn!(
+                                        %remote_addr,
+                                        "closing connection: IP crossed invalid-share ban threshold"
+                                    );
+                                    break;
+                                }
                                 line.clear();
                                 continue;
                             }
@@ -1962,6 +2390,13 @@ impl StratumGateway {
                         let _ = outbound_tx
                             .send(StratumResponse::duplicate_share(req_id).to_wire_line())
                             .await;
+                        if penalize_invalid_share(ShareRejectReason::Duplicate) {
+                            warn!(
+                                %remote_addr,
+                                "closing connection: IP crossed invalid-share ban threshold"
+                            );
+                            break;
+                        }
                         line.clear();
                         continue;
                     }
@@ -1993,6 +2428,13 @@ impl StratumGateway {
                         let _ = outbound_tx
                             .send(StratumResponse::low_difficulty_share(req_id).to_wire_line())
                             .await;
+                        if penalize_invalid_share(ShareRejectReason::LowDifficulty) {
+                            warn!(
+                                %remote_addr,
+                                "closing connection: IP crossed invalid-share ban threshold"
+                            );
+                            break;
+                        }
                         line.clear();
                         continue;
                     }
@@ -2173,7 +2615,8 @@ impl StratumGateway {
             let mut subs = active_subscribers.write();
             subs.remove(&session.session_id);
         }
-        writer_handle.abort();
+        drop(outbound_tx);
+        let _ = tokio::time::timeout(Duration::from_millis(50), writer_handle).await;
 
         Ok(())
     }
@@ -2292,6 +2735,8 @@ mod tests {
         metrics.set_worker_difficulty_stats(0.5, 4.0, 2.25);
         metrics.record_tls_handshake_success();
         metrics.record_tls_handshake_failure();
+        metrics.ip_bans.inc();
+        metrics.banned_ips_active.set(1);
         metrics
             .shares_by_difficulty_bucket
             .get_or_create(&DifficultyBucketLabel { bucket: "1" })
@@ -2335,6 +2780,8 @@ mod tests {
         assert!(encoded.contains("stratum_worker_difficulty_avg 2.25"));
         assert!(encoded.contains("stratum_tls_handshakes_total{result=\"success\"} 1"));
         assert!(encoded.contains("stratum_tls_handshakes_total{result=\"failure\"} 1"));
+        assert!(encoded.contains("stratum_ip_bans_total 1"));
+        assert!(encoded.contains("stratum_banned_ips_active 1"));
         assert!(encoded.contains("stratum_shares_by_difficulty_bucket_total{bucket=\"1\"} 1"));
         assert!(encoded.contains("stratum_worker_hashrate{worker=\"rig1\"} 4200"));
         assert!(encoded.contains("stratum_rpc_getwork_latency_seconds_count 1"));
@@ -2438,5 +2885,112 @@ mod tests {
             job_ts_s
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_ip_ban_scorer_threshold_trigger_and_enforcement() {
+        let scorer = IpBanScorer::new(3, Duration::from_secs(60));
+        let ip: std::net::IpAddr = "192.0.2.100".parse().unwrap();
+
+        assert!(!scorer.is_banned(&ip));
+        assert_eq!(scorer.invalid_share_count(&ip), 0);
+        assert_eq!(scorer.active_banned_count(), 0);
+
+        // 1st and 2nd invalid shares accumulate without triggering a ban
+        assert!(!scorer.record_invalid_share(ip, ShareRejectReason::Stale));
+        assert_eq!(scorer.invalid_share_count(&ip), 1);
+        assert!(!scorer.is_banned(&ip));
+
+        assert!(!scorer.record_invalid_share(ip, ShareRejectReason::Duplicate));
+        assert_eq!(scorer.invalid_share_count(&ip), 2);
+        assert!(!scorer.is_banned(&ip));
+
+        // 3rd invalid share crosses threshold (3) and triggers temporary ban
+        assert!(scorer.record_invalid_share(ip, ShareRejectReason::LowDifficulty));
+        assert!(scorer.is_banned(&ip));
+        assert_eq!(scorer.invalid_share_count(&ip), 3);
+        assert_eq!(scorer.active_banned_count(), 1);
+
+        // Further invalid share while already banned does not re-trigger `newly_banned`
+        assert!(!scorer.record_invalid_share(ip, ShareRejectReason::InvalidParams));
+        assert!(scorer.is_banned(&ip));
+        assert_eq!(scorer.active_banned_count(), 1);
+    }
+
+    #[test]
+    fn test_ip_ban_scorer_expiry_resets_ban_and_penalty() {
+        let scorer = IpBanScorer::new(2, Duration::from_millis(40));
+        let ip: std::net::IpAddr = "192.0.2.101".parse().unwrap();
+
+        assert!(!scorer.record_invalid_share(ip, ShareRejectReason::InvalidParams));
+        assert!(scorer.record_invalid_share(ip, ShareRejectReason::InvalidParams));
+        assert!(scorer.is_banned(&ip));
+        assert_eq!(scorer.active_banned_count(), 1);
+
+        std::thread::sleep(Duration::from_millis(60));
+
+        // Querying `is_banned` after duration expires automatically clears the ban and resets count
+        assert!(!scorer.is_banned(&ip));
+        assert_eq!(scorer.invalid_share_count(&ip), 0);
+        assert_eq!(scorer.active_banned_count(), 0);
+
+        // Next invalid share starts fresh at 1 (not banned)
+        assert!(!scorer.record_invalid_share(ip, ShareRejectReason::Stale));
+        assert!(!scorer.is_banned(&ip));
+        assert_eq!(scorer.invalid_share_count(&ip), 1);
+    }
+
+    #[test]
+    fn test_ip_ban_scorer_bounded_capacity_and_idle_eviction() {
+        // Capacity of 3 IPs, 30ms idle eviction
+        let scorer = IpBanScorer::with_capacity_and_idle(
+            3,
+            Duration::from_secs(60),
+            3,
+            Duration::from_millis(30),
+        );
+        let ip1: std::net::IpAddr = "198.51.100.1".parse().unwrap();
+        let ip2: std::net::IpAddr = "198.51.100.2".parse().unwrap();
+        let ip3: std::net::IpAddr = "198.51.100.3".parse().unwrap();
+        let ip4: std::net::IpAddr = "198.51.100.4".parse().unwrap();
+
+        // Ban ip1 (3 invalid shares) so it is protected from non-banned eviction
+        scorer.record_invalid_share(ip1, ShareRejectReason::InvalidParams);
+        scorer.record_invalid_share(ip1, ShareRejectReason::InvalidParams);
+        assert!(scorer.record_invalid_share(ip1, ShareRejectReason::InvalidParams));
+        assert!(scorer.is_banned(&ip1));
+
+        // Add non-banned ip2 and ip3
+        scorer.record_invalid_share(ip2, ShareRejectReason::Stale);
+        std::thread::sleep(Duration::from_millis(5));
+        scorer.record_invalid_share(ip3, ShareRejectReason::Stale);
+        assert_eq!(scorer.tracked_ip_count(), 3);
+
+        // Inserting ip4 at capacity must evict the oldest non-banned entry (ip2) while preserving banned ip1
+        scorer.record_invalid_share(ip4, ShareRejectReason::Stale);
+        assert_eq!(scorer.tracked_ip_count(), 3);
+        assert!(scorer.is_banned(&ip1));
+        assert_eq!(scorer.invalid_share_count(&ip2), 0);
+        assert_eq!(scorer.invalid_share_count(&ip3), 1);
+        assert_eq!(scorer.invalid_share_count(&ip4), 1);
+
+        // Wait for idle timeout to elapse; cleanup must evict idle non-banned entries (ip3, ip4)
+        // while keeping active banned ip1
+        std::thread::sleep(Duration::from_millis(45));
+        let active_bans = scorer.cleanup();
+        assert_eq!(active_bans, 1);
+        assert_eq!(scorer.tracked_ip_count(), 1);
+        assert!(scorer.is_banned(&ip1));
+    }
+
+    #[test]
+    fn test_ip_ban_scorer_disabled_when_threshold_zero() {
+        let scorer = IpBanScorer::new(0, Duration::from_secs(60));
+        let ip: std::net::IpAddr = "192.0.2.250".parse().unwrap();
+        for _ in 0..10 {
+            assert!(!scorer.record_invalid_share(ip, ShareRejectReason::LowDifficulty));
+        }
+        assert!(!scorer.is_banned(&ip));
+        assert_eq!(scorer.tracked_ip_count(), 0);
     }
 }
