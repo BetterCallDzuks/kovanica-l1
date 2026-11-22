@@ -603,7 +603,9 @@ async fn ws_handler(
     Extension(activity): Extension<ActivityTracker>,
 ) -> Response {
     activity.touch();
-    ws.on_upgrade(move |socket| subscriptions::serve_connection(socket, state))
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| subscriptions::serve_connection(socket, state))
 }
 
 /// Fixed set of JSON-RPC method names the default server registers.

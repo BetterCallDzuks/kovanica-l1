@@ -8,10 +8,23 @@
 //! - Error cases: unauthorized submissions, malformed JSON, and unknown jobs.
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
 use kovanica_crypto::{generate_keypair, KovanicaHasher};
+
+// Global logging setup
+static INIT_LOG: Once = Once::new();
+
+fn init_test_logging() {
+    INIT_LOG.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            .try_init();
+    });
+}
+
 use kovanica_stratum::config::StratumConfig;
 use kovanica_stratum::gateway::StratumGateway;
 use kovanica_stratum::{KOVANICA_STRATUM_ALGORITHM, KOVANICA_STRATUM_CAPABILITY};
@@ -25,6 +38,7 @@ use tokio::time::timeout;
 
 /// Helper to start a test gateway on an ephemeral local port.
 async fn start_test_gateway(initial_difficulty: f64) -> (Arc<StratumGateway>, SocketAddr) {
+    init_test_logging();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("must bind ephemeral listener");
@@ -42,15 +56,33 @@ async fn start_test_gateway(initial_difficulty: f64) -> (Arc<StratumGateway>, So
         ..Default::default()
     };
 
-    let gateway = Arc::new(StratumGateway::new(config));
+    let gateway = Arc::new(StratumGateway::new(config).expect("gateway creation failed"));
     let gw_clone = Arc::clone(&gateway);
 
-    tokio::spawn(async move {
-        let _ = gw_clone.run_with_listener(listener).await;
+    let handle = tokio::spawn(async move {
+        let result = gw_clone.run_with_listener(listener).await;
+        eprintln!("Gateway run_with_listener completed with: {:?}", result);
     });
+    
+    // Wait a bit more for the gateway to fully start
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    
+    let handle_finished = handle.is_finished();
+    if handle_finished {
+        eprintln!("WARNING: Gateway task finished early!");
+    } else {
+        eprintln!("Gateway task is running");
+    }
 
     // Brief yield to ensure server loop is ready
     tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Check if gateway task is still running
+    if handle.is_finished() {
+        eprintln!("WARNING: Gateway task finished early!");
+    } else {
+        eprintln!("Gateway task is running");
+    }
 
     (gateway, local_addr)
 }
@@ -480,7 +512,7 @@ async fn test_gateway_and_builtin_client_hash_and_submit_same_template() {
         poll_interval: Duration::from_millis(20),
         ..Default::default()
     };
-    let gateway = Arc::new(StratumGateway::new(config));
+    let gateway = Arc::new(StratumGateway::new(config).expect("gateway creation failed"));
     let gw_clone = Arc::clone(&gateway);
     tokio::spawn(async move {
         let _ = gw_clone.run_with_listener(listener).await;
@@ -608,6 +640,180 @@ async fn test_gateway_and_builtin_client_hash_and_submit_same_template() {
         check_pow_hash_meets_target(&pow_hash, recorded.target_bits),
         "submitted header must satisfy the real network target"
     );
+
+    gateway.shutdown();
+}
+
+#[tokio::test]
+async fn test_observability_metrics_and_health_endpoints() {
+    let (gateway, stratum_addr) = start_test_gateway(0.0).await;
+
+    // Seed a job so we can submit a valid share and a stale share
+    let job = gateway
+        .job_manager()
+        .add_template(create_test_header(50, 0x207f_ffff));
+
+    // Start observability HTTP server on ephemeral port
+    let obs_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind observability listener");
+    let obs_addr = obs_listener.local_addr().expect("observability local addr");
+    let obs_gateway = gateway.clone();
+    tokio::spawn(async move {
+        let _ = obs_gateway.serve_observability(obs_listener).await;
+    });
+
+    let http = reqwest::Client::new();
+
+    // 1. Check /health before connecting
+    let health_resp = http
+        .get(format!("http://{obs_addr}/health"))
+        .send()
+        .await
+        .expect("GET /health");
+    assert_eq!(health_resp.status(), 200);
+    let health_json: Value = health_resp.json().await.expect("parse health JSON");
+    assert_eq!(health_json["status"], "healthy");
+    assert_eq!(health_json["active_connections"], 0);
+    assert_eq!(health_json["current_job_id"], job.job_id);
+
+    // 2. Connect a miner, subscribe, authorize, submit 1 valid share + 1 stale share
+    let mut client = TestClient::connect(stratum_addr).await;
+    client
+        .send_line(
+            &json!({"id": 1, "method": "mining.subscribe", "params": ["obs-miner/1.0"]})
+                .to_string(),
+        )
+        .await;
+    let _ = client.read_json().await;
+
+    let worker_addr = Address([0x33; 32]);
+    let username = format!("{worker_addr}.obsrig");
+    client
+        .send_line(
+            &json!({"id": 2, "method": "mining.authorize", "params": [username, "x"]}).to_string(),
+        )
+        .await;
+    let _ = client.read_json().await; // authorize ok
+    let _ = client.read_json().await; // set_difficulty
+    let _ = client.read_json().await; // notify
+
+    // Valid share (difficulty 0.0 accepts any hash)
+    client
+        .send_line(
+            &json!({"id": 3, "method": "mining.submit", "params": [username, job.job_id, "00000001", "00000001"]})
+                .to_string(),
+        )
+        .await;
+    let accept_resp = client.read_json().await;
+    assert_eq!(accept_resp["result"], true);
+
+    // Stale share (unknown job)
+    client
+        .send_line(
+            &json!({"id": 4, "method": "mining.submit", "params": [username, "nonexistent_job", "00000001", "00000002"]})
+                .to_string(),
+        )
+        .await;
+    let stale_resp = client.read_json().await;
+    assert_eq!(stale_resp["error"][0], 21);
+
+    // 3. Scrape /metrics while connected
+    let metrics_resp = http
+        .get(format!("http://{obs_addr}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics");
+    assert_eq!(metrics_resp.status(), 200);
+    let body = metrics_resp.text().await.expect("read metrics body");
+
+    assert!(
+        body.contains("stratum_active_connections 1"),
+        "body:\n{body}"
+    );
+    assert!(
+        body.contains("stratum_connections_per_ip{ip=\"127.0.0.1\"} 1"),
+        "body:\n{body}"
+    );
+    assert!(
+        body.contains("stratum_shares_submitted_total 2"),
+        "body:\n{body}"
+    );
+    assert!(
+        body.contains("stratum_shares_accepted_total 1"),
+        "body:\n{body}"
+    );
+    assert!(
+        body.contains("stratum_shares_rejected_total 1"),
+        "body:\n{body}"
+    );
+    assert!(
+        body.contains("stratum_shares_rejected_stale_total 1"),
+        "body:\n{body}"
+    );
+    assert!(
+        body.contains("stratum_shares_by_difficulty_bucket_total{bucket=\"<1\"} 2"),
+        "body:\n{body}"
+    );
+    assert!(
+        body.contains("stratum_worker_hashrate{worker=\"obsrig\"}"),
+        "body:\n{body}"
+    );
+    assert!(body.contains("stratum_connection_rate_limit_hits_total"));
+    assert!(body.contains("stratum_request_rate_limit_hits_total"));
+    assert!(body.contains("stratum_rpc_getwork_latency_seconds"));
+    assert!(body.contains("stratum_rpc_submitwork_latency_seconds"));
+    assert!(body.contains("stratum_job_broadcast_latency_seconds"));
+    assert!(body.contains("stratum_tls_handshake_success_total"));
+    assert!(body.contains("stratum_tls_handshake_failure_total"));
+    assert!(body.contains("stratum_uptime_seconds"));
+
+    // 4. Disconnect and verify active_connections returns to 0
+    drop(client);
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if gateway.metrics().active_connections.get() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("active_connections must decrement to 0 after disconnect");
+
+    gateway.shutdown();
+}
+
+
+#[tokio::test]
+async fn test_stratum_oversized_line_disconnects_cleanly() {
+    let (gateway, addr) = start_test_gateway(1.0).await;
+    let mut client = TestClient::connect(addr).await;
+
+    // Send a 6 KiB line exceeding MAX_STRATUM_LINE_BYTES (4096).
+    let oversized = "a".repeat(6 * 1024);
+    client.send_line(&oversized).await;
+
+    // Gateway must close the connection cleanly (EOF or error on read) and decrement active_connections.
+    let mut buf = String::new();
+    let read_res = timeout(Duration::from_secs(2), client.reader.read_line(&mut buf))
+        .await
+        .expect("gateway must close oversized-line client promptly");
+    assert!(
+        matches!(read_res, Ok(0) | Err(_)),
+        "expected EOF or disconnect, got {read_res:?} ({buf:?})"
+    );
+
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if gateway.metrics().active_connections.get() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("active_connections must return to 0 after oversized-line disconnect");
 
     gateway.shutdown();
 }

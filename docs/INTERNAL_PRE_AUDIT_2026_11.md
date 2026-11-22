@@ -1,12 +1,13 @@
 # Kovanica Internal Pre-Audit Security Assessment Report (P4-4)
 
 **Audit Team:** Kovanica Core Security & Protocol Engineering (Internal Pre-Audit Handoff)  
-**Audit Period:** 2026-11-05 – 2026-11-17  
-**Report Date:** 2026-11-17  
-**Codebase Commit (`origin/main`):** `91701aed142a514d455d36cfae8bf6605a968fd9` (code tip post-`#308`–`#313`)  
+**Audit Period:** 2026-11-05 – 2026-11-21  
+**Report Date:** 2026-11-21  
+**Codebase Commit (`origin/main`):** `e72d8e1ab224df7e6c7b11c5af3b7d4715cbb5c0` (code tip post-`#308`–`#322`)  
 **Scope Document:** [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) v2.0  
 **Checklist Document:** [`docs/AUDIT-CHECKLIST.md`](AUDIT-CHECKLIST.md)  
-**Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, network tag `2-24cdb5fadd98b207`)  
+**Auditor Dossier Packager:** `scripts/package-audit-dossier.sh` (`#315`)  
+**Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`/`#308`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee` / refreshed release bundle `sha256: 5857c83e1eb911bf30f890079e18370c5dc74986580303795fd2d173c2296377`, network tag `2-24cdb5fadd98b207`)  
 **Chain Registry:** `1` (`kovanica-mainnet`), `2` (`kovanica-testnet`), `3` (`kovanica-devnet`; `1337` retired in `#284`)  
 **Hardening Gates (`P4-6` `#288`):** `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0` (`GENESIS_ROUND`)  
 **Classification:** PUBLIC (External Auditor Handoff Package)
@@ -22,9 +23,9 @@
 | **High Findings (Open / Fixed)** | **0 Open** / 3 Fixed (`#233`/`#272` Hybrid Stake Refusal, `#284` Chain `1337` Retirement, `#285` Secret Untracking) |
 | **Medium Findings (Open / Fixed)** | **0 Open** / 2 Fixed (`#279` Faucet Nonce/Rate-Limit Serialization, `#283` Canonical Genesis Bundle) |
 | **Low / Informational** | **0 Open** / 2 Informational notes documented for external auditor |
-| **Crates in Scope** | 27 workspace crates |
+| **Crates in Scope** | 28 core protocol crates (49 workspace crates total: 43 active, 6 stubs) |
 
-**One-sentence summary:** Static and test-backed verification across all 7 [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) areas confirms that Hybrid PoW (`KovanicaHash` 2 MiB mix) + GHOSTDAG (`K=5`), `Wasmi` sandbox execution, `NoStake82M` tokenomics, PRO-21 addresses, and round-0 hardening gates (`#288`) uphold all protocol invariants with zero open Critical/High issues.
+**One-sentence summary:** Static and test-backed verification across all 7 [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) areas confirms that Hybrid PoW (`KovanicaHash` 2 MiB mix) + GHOSTDAG (`K=5`), `Wasmi` sandbox execution, `NoStake82M` tokenomics, PRO-21 addresses, round-0 hardening gates (`#288`), SIM-1 multi-threaded mempool/node soak (`#316`), and Stratum V1 `kovanicahash-v1` mining pool gateway (`#318`–`#322`) uphold all protocol invariants with zero open Critical/High issues.
 
 **Recommendation:** **READY FOR EXTERNAL AUDITOR DISPATCH & SIGN-OFF** (Mainnet $T_0$ remains gated on independent third-party audit sign-off per [`docs/AUDITOR-INVITATION.md`](AUDITOR-INVITATION.md)).
 
@@ -32,8 +33,8 @@
 
 ## Methodology
 
-- **Approach:** Line-by-line static code review of all consensus, execution, cryptography, tokenomics, mempool, P2P, and RPC crates against [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) v2.0 and [`docs/AUDIT-CHECKLIST.md`](AUDIT-CHECKLIST.md), paired with deterministic unit, property, adversarial fork, and multi-node simulation test suites.
-- **Verification Gates:** GitHub Actions CI (`cargo fmt`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace`, `cargo-deny`, `gitleaks` v8.24.3, `python3 scripts/lint_docs.py`).
+- **Approach:** Line-by-line static code review of all consensus, execution, cryptography, tokenomics, mempool, P2P, RPC, and Stratum mining crates against [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) v2.0 and [`docs/AUDIT-CHECKLIST.md`](AUDIT-CHECKLIST.md), paired with deterministic unit, property, adversarial fork, multi-node simulation, and SIM-1 multi-threaded soak (`crates/kovanica-node/tests/sim1_soak_simulation.rs`, `#316`) test suites.
+- **Verification Gates:** GitHub Actions CI (`cargo fmt`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace`, `scripts/run-fuzz-smoke.sh`, `cargo-deny`, `gitleaks` v8.24.3, `python3 scripts/lint_docs.py`), plus one-step external auditor reproduction bundle (`scripts/package-audit-dossier.sh`, `#315`).
 - **Standards Referenced:** ADR 0003 (Hybrid PoW + GHOSTDAG, No Stake), PRO-21 (Canonical 64-char `kvnc...dag` Address), PRO-53 (Fee Split & Burn), RFC 9106 (Argon2id Keystore v2).
 
 ---
@@ -108,11 +109,11 @@
 | **Admission size, signature, hash-binding & fee floors** | `crates/kovanica-mempool/src/lib.rs:380-520` | Enforces `MAX_TX_BYTES = 512 KiB`, `MAX_TX_GAS_LIMIT = 10_000_000`, `tx.hash == tx.signing_hash(chain_id)`, strict Ed25519 signature verification, and `fee_rate >= min_fee_rate` (`lib.rs:437-442`). | **VERIFIED** |
 | **Replace-By-Fee (RBF) 10% minimum bump & cumulative balance check** | `crates/kovanica-mempool/src/lib.rs:490-515` | Replacing an existing same-sender, same-nonce transaction requires at least a 10% fee bump (`bump.max(1)`, `lib.rs:493-498`), and cumulative pending spend (`amount + fee`) across all queued nonces for a sender cannot exceed committed account balance. | **VERIFIED** |
 
-- **Key Tests:** `mempool_rbf_and_eviction_tests` (`crates/kovanica-mempool/tests/`); `fuzz/tests/smoke_tests.rs` (transaction deserialization and malformed signature bounds).
+- **Key Tests:** `mempool_rbf_and_eviction_tests` (`crates/kovanica-mempool/tests/`); `fuzz/tests/smoke_tests.rs` (transaction deserialization and malformed signature bounds); `crates/kovanica-node/tests/sim1_soak_simulation.rs` (`SIM-1` multi-threaded transaction spam and mempool soak simulation, PR `#316`: 2,003 concurrent transactions submitted, 8,522.29 TPS, 0 panics, 13.14 MiB peak RSS vs 2,048 MiB VPS budget, deterministic out-of-gas rollback verified).
 
 ---
 
-### Area 7: P2P Network Anti-DoS & RPC Security Middleware (`kovanica-network`, `kovanica-rpc`)
+### Area 7: P2P Network Anti-DoS, RPC Security Middleware & Stratum V1 Mining Gateway (`kovanica-network`, `kovanica-rpc`, `kovanica-stratum`)
 
 | Invariant / Check | Code Reference | Verification Details & Backing Tests | Status |
 |---|---|---|---|
@@ -120,8 +121,9 @@
 | **Peer reputation tracker & Inbound socket IP ban gate (`#312`)** | `crates/kovanica-network/src/peer_scorer.rs`, `crates/kovanica-network/src/behaviour.rs:50-135` | Thread-safe `PeerScorer` assigns deterministic penalties: malformed frame (+50), invalid block/PoW (+100 instant ban), invalid tx signature (+25), rate limit flood (+20). Reaching `BAN_SCORE_THRESHOLD = 100` bans the IP for 15 minutes (`DEFAULT_BAN_DURATION`). `InboundGate` intercepts pending connections in libp2p and drops banned IPs immediately before allocating frame buffers, handshake cryptography, or protocol state. Automatic ban expiration and thread-safe ban maintenance. | **VERIFIED** |
 | **RPC Bearer token write auth (constant-time, no loopback bypass)** | `crates/kovanica-rpc/src/rpc_middleware.rs:250-276` | `AuthConfig::authorize` requires `Authorization: Bearer <token>` on all `WRITE_METHODS` (`kovanica_sendRawTransaction`, `kovanica_submitWork`, etc.) when `require_auth_for_writes` is enabled, comparing every configured token via `constant_time_eq` without early exit (`rpc_middleware.rs:266-270`) and with no loopback bypass. | **VERIFIED** |
 | **Per-IP token-bucket rate limiter & strict CORS allowlist** | `crates/kovanica-rpc/src/rpc_middleware.rs:124-145`, `288-360` | Per-IP `TokenBucket` with `MAX_TRACKED_CLIENTS = 100_000` and idle eviction (`rpc_middleware.rs:124-128`). Browser CORS is restricted to `CONSOLE_ALLOWED_ORIGINS` on `/rpc`, `/ws`, and `/health` (`rpc_middleware.rs:313-327`), leaving `/metrics` unexposed to cross-origin browsers. | **VERIFIED** |
+| **Stratum V1 mining pool gateway & PRO-21 payout authorization (`#318`–`#322`)** | `crates/kovanica-stratum/src/gateway.rs`, `crates/kovanica-stratum/src/session.rs`, `crates/kovanica-cli/src/stratum_client.rs` | `kovanica-stratum` bridges `kovanicahash-v1` Stratum V1 miners to `kovanica_getWork` / `kovanica_submitWork`. Enforces canonical 64-char PRO-21 `kvnc...dag` payout address syntax on `mining.authorize`, `MAX_STRATUM_LINE_BYTES = 4 KiB` slowloris/OOM framing bound, per-IP connection rate limiting, duplicate share rejection, reusable thread-local 2 MiB `KovanicaHasher` evaluation, and exact canonical preimage reconstruction between gateway and CLI miner (`docs/design/stratum-v1-miner-compatibility.md`). | **VERIFIED** |
 
-- **Key Tests:** `crates/kovanica-network/tests/peer_reputation_scoring.rs` (reputation accumulation, ban threshold, socket gating, expiration); `crates/kovanica-rpc/tests/middleware_tests.rs`.
+- **Key Tests:** `crates/kovanica-network/tests/peer_reputation_scoring.rs` (reputation accumulation, ban threshold, socket gating, expiration); `crates/kovanica-rpc/tests/middleware_tests.rs`; `crates/kovanica-stratum/tests/stratum_integration.rs` & `crates/kovanica-cli/tests/stratum_miner_integration.rs` (end-to-end Stratum V1 handshake, share validation, and mock-node `submitWork`); `crates/kovanica-node/tests/sim1_soak_simulation.rs` (`SIM-1` soak + peer reputation gate).
 
 ---
 
@@ -135,10 +137,11 @@
 | `kovanica-execution` & `kovanica-runtime` | `kovanica-runtime/src/lib.rs`, `kovanica-execution/src/lib.rs`, `contracts.rs` | C:0 H:0 M:0 L:0 | **100% (Verified)** |
 | `kovanica-staking` & `kovanica-params` | `kovanica-params/src/lib.rs`, `kovanica-staking/src/lib.rs`, `emission.rs` | C:0 H:0 M:0 L:0 | **100% (Verified)** |
 | `kovanica-mempool` | `kovanica-mempool/src/lib.rs` | C:0 H:0 M:0 L:0 | **100% (Verified)** |
-| `kovanica-network` | `validation.rs`, `network_id.rs`, `lib.rs` | C:0 H:0 M:0 L:0 | **100% (Verified)** |
+| `kovanica-network` | `validation.rs`, `network_id.rs`, `peer_scorer.rs`, `behaviour.rs`, `lib.rs` | C:0 H:0 M:0 L:0 | **100% (Verified)** |
 | `kovanica-keystore` | `kovanica-keystore/src/lib.rs`, `perms.rs` | C:0 H:0 M:0 L:0 | **100% (Verified)** |
 | `kovanica-rpc` & `kovanica-faucet` | `rpc_middleware.rs`, `chain_methods.rs`, `kovanica-faucet/src/main.rs` | C:0 H:0 M:0 L:0 | **100% (Verified)** |
-| `kovanica-node` | `main.rs`, `config.rs`, `genesis_bundle.rs`, `miner.rs` | C:0 H:0 M:0 L:0 | **100% (Verified)** |
+| `kovanica-stratum` & `kovanica-cli` | `gateway.rs`, `session.rs`, `protocol.rs`, `difficulty.rs`, `stratum_client.rs` | C:0 H:0 M:0 L:0 | **100% (Verified)** |
+| `kovanica-node` | `main.rs`, `config.rs`, `genesis_bundle.rs`, `miner.rs`, `sim1_soak_simulation.rs` | C:0 H:0 M:0 L:0 | **100% (Verified)** |
 
 ---
 

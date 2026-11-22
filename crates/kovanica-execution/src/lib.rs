@@ -67,13 +67,9 @@ const TX_RECEIPTS: TableDefinition<u64, Vec<u8>> = TableDefinition::new("tx_rece
 /// [`TX_RECEIPTS`] so `kovanica_getTransactionReceipt` can look up the real
 /// execution outcome without walking committed heights.
 ///
-/// **Unbounded growth**: one row is added per executed transaction and nothing
-/// ever removes them, so this table — like [`TX_RECEIPTS`] — grows with the
-/// chain forever. It is only a lookup index for RPC; pruning it (e.g. keeping
-/// the last N committed heights) requires a height/age field that the receipt
-/// does not currently carry, so no prune helper is provided here. Operators
-/// should plan index pruning alongside the per-height history table before
-/// long-running storage becomes a concern.
+/// **Retention**: one row is added per executed transaction alongside
+/// [`TX_RECEIPTS`]. It is only a lookup index for RPC; operators can prune
+/// old entries via [`prune_receipts_below`] without affecting committed state.
 const TX_RECEIPT_BY_HASH: TableDefinition<[u8; 32], Vec<u8>> =
     TableDefinition::new("tx_receipt_by_hash");
 
@@ -744,7 +740,10 @@ impl ExecutionContext {
         }
 
         // 5. Account sparse Merkle over balance and nonce, then mark executed.
-        let commit_full = kovanica_types::state_commitment_active_from(subdag.leader_round);
+        let commit_full = kovanica_types::state_commitment_active_from_for_chain(
+            self.signing_ctx.chain_id,
+            subdag.leader_round,
+        );
         let state_root = storage
             .state()
             .commit_state_smt(&txn, committed_height, commit_full)?;

@@ -1,6 +1,6 @@
 # External Audit / Seed / DNS — Checklist
 
-Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, Wasmi execution, KVNC tokenomics, PRO-21 address requirements, 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#284`), canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`), genesis-active hardening gates (`#288`), automated fuzz smoke runner (`#309`/`#310`), peer reputation and IP ban scoring subsystem (`#312`), and pinned `main` commit `91701aed142a514d455d36cfae8bf6605a968fd9`.
+Updated 2026-11-21 to reflect canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, Wasmi execution, KVNC tokenomics, PRO-21 address requirements, 3-chain registry (`1` mainnet, `2` testnet, `3` devnet; `1337` retired in `#284`), canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`/`#308`), genesis-active hardening gates (`#288`), automated fuzz smoke runner (`#309`/`#310`), peer reputation and IP ban scoring subsystem (`#312`), automated auditor dossier packager (`scripts/package-audit-dossier.sh`, `#315`), SIM-1 multi-threaded mempool/node soak simulation (`#316`), Stratum V1 `kovanicahash-v1` mining pool gateway (`kovanica-stratum`, `#318`–`#322`), and pinned `main` commit `e72d8e1ab224df7e6c7b11c5af3b7d4715cbb5c0`.
 
 ## 1. Seed / DNS audit (gating before public launch)
 - [x] Automated DNS probe script (`scripts/check-dns-seeds.sh`) implemented and verified
@@ -10,7 +10,7 @@ Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, Kovanic
 - [ ] Publish each seed's libp2p PeerId and confirm `/p2p/` in the multiaddr matches
 - [x] Confirm `KOVANICA_BOOTNODES` defaults stay empty in code; seeds configured via env/TOML
 
-## 2. External audit scope (mandatory before mainnet $T_0$; internal code verification locked at `91701ae`)
+## 2. External audit scope (mandatory before mainnet $T_0$; internal code verification locked at `e72d8e1`)
 - [ ] **Consensus (Hybrid PoW + GHOSTDAG, K=5, target 4s):**
   - [ ] Verify KovanicaHash PoW algorithm (BLAKE3 + 2 MiB memory mix scratchpad, `KOVANICA_HASH_MIX_ROUNDS = 1024`) determinism and memory-hardness (`crates/kovanica-types/src/pow.rs:59-175`)
   - [ ] Verify Difficulty Adjustment Algorithm (LWMA DAA, `TARGET_BLOCK_MS = 4000`) stability, time warp resistance, and target clamping (`crates/kovanica-consensus/src/daa.rs:204-518`, `crates/kovanica-params/src/lib.rs:37`)
@@ -33,11 +33,13 @@ Updated 2026-11-17 to reflect canonical Hybrid PoW + GHOSTDAG consensus, Kovanic
   - [ ] Verify Ed25519 signatures (strict dalek v2.1 `verify_strict`: canonical S check, small-order rejection in `crates/kovanica-types/src/crypto.rs:171-181`)
   - [ ] Verify PRO-21 addresses: `kvnc` + 57 base32 chars + `dag` (64 chars; 32B Ed25519 ‖ 29-bit BLAKE3 checksum in `crates/kovanica-types/src/address.rs`)
   - [ ] Confirm legacy hex format is strictly rejected on kovanica-mainnet (chain ID 1) and kovanica-testnet (chain ID 2), and retired chain ID `1337` (`local`) is rejected across all paths (`chain_id::is_registered` in `crates/kovanica-types/src/signing.rs:37-142`, `#284`)
-  - [ ] Verify canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, network tag `2-24cdb5fadd98b207`)
+  - [ ] Verify canonical testnet genesis bundle `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`/`#308`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee` / refreshed release bundle `sha256: 5857c83e1eb911bf30f890079e18370c5dc74986580303795fd2d173c2296377`, network tag `2-24cdb5fadd98b207`)
   - [ ] Verify keystore v2: Argon2id (64 MiB, 3 iter, 4 parallelism) + XChaCha20-Poly1305 (`crates/kovanica-keystore/src/lib.rs:29-35,112`)
-- [ ] **P2P Networking & Node Security:**
+- [ ] **P2P Networking, Mining Gateway & Node Security:**
   - [ ] Verify eclipse / Sybil resistance, peer discovery, gossip limits (port 8000 default)
   - [ ] Verify in-memory peer reputation & IP ban scoring subsystem (`crates/kovanica-network/src/peer_scorer.rs`), penalty matrix (+50 malformed, +100 invalid block/PoW instant ban, +25 bad sig, +20 flood spam), socket gating (`InboundGate`), and 15-minute ban enforcement (`#312`)
+  - [ ] Verify SIM-1 multi-threaded transaction spam and mempool soak simulation (`crates/kovanica-node/tests/sim1_soak_simulation.rs`, `ops/soak/run-sim1-soak.sh`, `#316`: 8,522.29 TPS, 13.14 MiB peak RSS vs 2,048 MiB budget, 0 panics, deterministic OOG rollback)
+  - [ ] Verify Stratum V1 mining pool gateway (`crates/kovanica-stratum/`, `#319`–`#322`) and CLI Stratum miner (`crates/kovanica-cli/src/stratum_client.rs`, `#318`): PRO-21 64-char `kvnc...dag` payout validation, `kovanicahash-v1` capability profile, canonical header preimage hashing, and 4 KiB line bound
   - [ ] Confirm no keys or seed material passed to or stored by the node daemon
   - [ ] Verify systemd sandboxing (`MemoryMax=3G`, `ProtectSystem=strict`, syscall filters)
 - [ ] **Licensing & Copyleft:**

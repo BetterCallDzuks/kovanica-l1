@@ -700,12 +700,13 @@ fn build_linker<'a>(engine: &Engine) -> Result<Linker<ExecState<'a>>, RuntimeErr
                                      vp: i32,
                                      vl: i32|
      -> Result<i32, wasmi::Error> {
-        let key = read_guest(&caller, kp, kl)?;
-        let value = read_guest(&caller, vp, vl)?;
-        let chunks = if value.is_empty() {
+        if kl < 0 || vl < 0 {
+            return Err(wasmi::Error::new("negative guest slice length"));
+        }
+        let chunks = if vl == 0 {
             0
         } else {
-            value.len().div_ceil(32)
+            (vl as usize).div_ceil(32)
         };
         let cost = kovanica_fee::HOST_STORAGE_SET_BASE_GAS
             .saturating_add(kovanica_fee::HOST_STORAGE_SET_PER_CALL_GAS)
@@ -713,6 +714,8 @@ fn build_linker<'a>(engine: &Engine) -> Result<Linker<ExecState<'a>>, RuntimeErr
                 kovanica_fee::HOST_STORAGE_SET_PER_32_BYTES_GAS.saturating_mul(chunks as u64),
             );
         charge_host_gas(&mut caller, cost)?;
+        let key = read_guest(&caller, kp, kl)?;
+        let value = read_guest(&caller, vp, vl)?;
         caller.data_mut().host.storage_set(&key, &value);
         Ok(0)
     });
@@ -727,15 +730,18 @@ fn build_linker<'a>(engine: &Engine) -> Result<Linker<ExecState<'a>>, RuntimeErr
                                     dp: i32,
                                     dl: i32|
      -> Result<(), wasmi::Error> {
-        let topic = read_guest(&caller, tp, tl)?;
-        let data = read_guest(&caller, dp, dl)?;
-        let total_bytes = topic.len().saturating_add(data.len());
+        if tl < 0 || dl < 0 {
+            return Err(wasmi::Error::new("negative guest slice length"));
+        }
+        let total_bytes = (tl as usize).saturating_add(dl as usize);
         let cost = kovanica_fee::HOST_EMIT_EVENT_BASE_GAS
             .saturating_add(kovanica_fee::HOST_EMIT_EVENT_PER_CALL_GAS)
             .saturating_add(
                 kovanica_fee::HOST_EMIT_EVENT_PER_BYTE_GAS.saturating_mul(total_bytes as u64),
             );
         charge_host_gas(&mut caller, cost)?;
+        let topic = read_guest(&caller, tp, tl)?;
+        let data = read_guest(&caller, dp, dl)?;
         caller.data_mut().host.emit_event(&topic, &data);
         Ok(())
     });

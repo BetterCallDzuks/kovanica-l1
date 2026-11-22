@@ -2146,13 +2146,13 @@ fn verify_snapshot_seal_quorum(
     // staking, contract and code rows in the payload are covered by nothing: a
     // peer could forge them while every signature still verifies. Fail closed
     // with the reason instead of comparing against a root that cannot match.
-    if !kovanica_types::state_commitment_active_from(header.leader_round) {
+    if !kovanica_types::state_commitment_active_from_for_chain(chain_id, header.leader_round) {
         return Err(StateStoreError::SnapshotVerify(format!(
             "sealed header at round {} predates the full-state commitment (active from round {}, \
              chain {}); below it the seal covers accounts only, so staking, contract and code rows \
              cannot be authenticated and the snapshot is refused",
             header.leader_round,
-            kovanica_types::STATE_COMMITMENT_ACTIVE_FROM_ROUND,
+            kovanica_types::state_commitment_active_from_round_for_chain(chain_id),
             chain_id
         )));
     }

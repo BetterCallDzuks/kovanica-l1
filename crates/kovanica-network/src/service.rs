@@ -143,6 +143,9 @@ pub struct NetworkService {
     reported_tip: Mutex<HashMap<PeerId, u64>>,
     /// Peer reputation and IP ban scoring subsystem.
     peer_scorer: Arc<crate::peer_scorer::PeerScorer>,
+    /// Remote IP address recorded for each currently connected peer (used for
+    /// per-IP eclipse limits and wiring gossip rejections into [`PeerScorer`]).
+    peer_ips: Mutex<HashMap<PeerId, std::net::IpAddr>>,
 }
 
 /// Peer identity integration for the libp2p swarm.
@@ -475,6 +478,7 @@ impl NetworkService {
                 state_snapshot_cache: Mutex::new(None),
                 reported_tip: Mutex::new(HashMap::new()),
                 peer_scorer,
+                peer_ips: Mutex::new(HashMap::new()),
             },
             event_rx,
         ))
@@ -854,12 +858,13 @@ impl NetworkService {
                 endpoint,
                 ..
             } => {
+                let remote_addr = endpoint.get_remote_address().clone();
                 lock(&self.bootstrap).establish_attempt(
                     connection_id,
                     peer_id,
-                    endpoint.get_remote_address().clone(),
+                    remote_addr.clone(),
                 );
-                self.on_peer_connected(peer_id)
+                self.on_peer_connected_with_addr(peer_id, Some(&remote_addr))
             }
             SwarmEvent::ConnectionClosed {
                 peer_id,
@@ -1045,6 +1050,7 @@ impl NetworkService {
             debug!(%propagation_source, "validated message no longer in gossip cache");
         }
         if let Verdict::Reject(reason) = verdict {
+            self.penalize_peer_ip_for_gossip_reject(propagation_source, &reason);
             self.record_invalid_block_failure(propagation_source, &reason);
             self.enforce_score_ban(propagation_source);
         }
@@ -1590,12 +1596,12 @@ impl NetworkService {
     /// the BlockManager; this only keeps forged or tampered blocks from being
     /// forwarded or handed to consensus.
     fn on_block_message(&self, peer: PeerId, payload: &[u8]) -> Verdict {
-        let block: StatementBlock = match bincode::deserialize(payload) {
+        let block: StatementBlock = match crate::bincode_deserialize_bounded(payload) {
             Ok(block) => block,
             Err(err) => {
                 // If it's a raw BlockHeader for Chain 2, adapt it into StatementBlock
                 if let Ok(header) =
-                    bincode::deserialize::<kovanica_types::block::BlockHeader>(payload)
+                    crate::bincode_deserialize_bounded::<kovanica_types::block::BlockHeader>(payload)
                 {
                     header.to_statement_block(Vec::new())
                 } else {
@@ -1632,7 +1638,7 @@ impl NetworkService {
     /// because of local state (nonce, balance, full pool, duplicate) are
     /// ignored without penalty.
     fn on_transaction_message(&self, payload: &[u8]) -> Verdict {
-        let tx: Transaction = match bincode::deserialize(payload) {
+        let tx: Transaction = match crate::bincode_deserialize_bounded(payload) {
             Ok(tx) => tx,
             Err(err) => {
                 warn!(%err, "dropping malformed transaction gossip");
@@ -1684,7 +1690,7 @@ impl NetworkService {
     /// vote *counts* (leader round, duplicates, ...) is still decided by the
     /// consensus engine.
     fn on_vote_message(&self, source: Option<PeerId>, payload: &[u8]) -> Verdict {
-        let vote: Vote = match bincode::deserialize(payload) {
+        let vote: Vote = match crate::bincode_deserialize_bounded(payload) {
             Ok(vote) => vote,
             Err(err) => {
                 warn!(%err, "dropping malformed vote gossip");
@@ -1722,7 +1728,7 @@ impl NetworkService {
     /// (PRO-40 (b)). The range, deduplication and quorum checks are done by
     /// consensus.
     fn on_timeout_message(&self, source: Option<PeerId>, payload: &[u8]) -> Verdict {
-        let message: crate::TimeoutMessage = match bincode::deserialize(payload) {
+        let message: crate::TimeoutMessage = match crate::bincode_deserialize_bounded(payload) {
             Ok(message) => message,
             Err(err) => {
                 warn!(%err, "dropping malformed timeout gossip");
@@ -1767,7 +1773,7 @@ impl NetworkService {
     /// forwarded and the peer is not penalised. Consensus never waits on
     /// this topic.
     fn on_seal_message(&self, source: Option<PeerId>, payload: &[u8]) -> Verdict {
-        let announcement: SealAnnouncement = match bincode::deserialize(payload) {
+        let announcement: SealAnnouncement = match crate::bincode_deserialize_bounded(payload) {
             Ok(announcement) => announcement,
             Err(err) => {
                 warn!(%err, "dropping malformed commit seal");
@@ -1853,8 +1859,64 @@ impl NetworkService {
         Verdict::Accept
     }
 
+    /// Normalize a remote peer IP for eclipse-protection bucketing:
+    /// IPv4 addresses are matched directly; IPv6 addresses are grouped by `/64`.
+    fn normalize_ip_bucket(ip: std::net::IpAddr) -> std::net::IpAddr {
+        match ip {
+            std::net::IpAddr::V4(v4) => std::net::IpAddr::V4(v4),
+            std::net::IpAddr::V6(v6) => {
+                let masked = u128::from(v6) & (!0u128 << 64);
+                std::net::IpAddr::V6(std::net::Ipv6Addr::from(masked))
+            }
+        }
+    }
+
+    /// Look up the remote IP for `peer`, preferring the connection-time IP and
+    /// falling back to any learned Kademlia/identify address.
+    fn peer_remote_ip(&self, peer: &PeerId) -> Option<std::net::IpAddr> {
+        if let Some(&ip) = lock(&self.peer_ips).get(peer) {
+            return Some(ip);
+        }
+        lock(&self.peer_addresses)
+            .get(peer)
+            .and_then(|addrs| addrs.iter().find_map(crate::peer_scorer::extract_ip))
+    }
+
+    /// Feed a gossip validation rejection into [`PeerScorer`] by remote IP so a
+    /// peer cannot reset its ban counter by rotating ephemeral `PeerId`s.
+    fn penalize_peer_ip_for_gossip_reject(&self, peer: PeerId, reason: &str) {
+        if let Some(ip) = self.peer_remote_ip(&peer) {
+            let penalty = if reason.contains("block") {
+                crate::peer_scorer::PenaltyReason::MalformedHandshakeOrFrameHeader
+            } else {
+                crate::peer_scorer::PenaltyReason::InvalidTxSignatureOrOversizedFrame
+            };
+            if self.peer_scorer.record_penalty(ip, penalty) {
+                warn!(
+                    %peer,
+                    %ip,
+                    %reason,
+                    "peer IP banned via PeerScorer after gossip rejection"
+                );
+                self.ban_peer(peer);
+            }
+        }
+    }
+
     /// Record a new peer, enforcing [`NetworkConfig::max_peers`].
     fn on_peer_connected(&self, peer: PeerId) -> Result<(), NetworkError> {
+        self.on_peer_connected_with_addr(peer, None)
+    }
+
+    /// Record a new peer, enforcing [`NetworkConfig::max_peers`] and a per-IP
+    /// (and `/64` IPv6) eclipse-protection cap for non-loopback remote addresses.
+    fn on_peer_connected_with_addr(
+        &self,
+        peer: PeerId,
+        remote_addr: Option<&Multiaddr>,
+    ) -> Result<(), NetworkError> {
+        const MAX_PEERS_PER_IP: usize = 3;
+
         let mut connected = lock(&self.connected);
         if connected.contains(&peer) {
             return Ok(());
@@ -1869,9 +1931,37 @@ impl NetworkService {
             let _ = self.swarm().disconnect_peer_id(peer);
             return Ok(());
         }
+
+        let remote_ip = remote_addr.and_then(crate::peer_scorer::extract_ip);
+        if let Some(ip) = remote_ip {
+            if !ip.is_loopback() {
+                let bucket = Self::normalize_ip_bucket(ip);
+                let peer_ips = lock(&self.peer_ips);
+                let same_bucket = peer_ips
+                    .values()
+                    .filter(|&&existing| Self::normalize_ip_bucket(existing) == bucket)
+                    .count();
+                if same_bucket >= MAX_PEERS_PER_IP {
+                    drop(peer_ips);
+                    drop(connected);
+                    warn!(
+                        %peer,
+                        %ip,
+                        max_per_ip = MAX_PEERS_PER_IP,
+                        "rejecting peer: per-IP eclipse limit reached"
+                    );
+                    let _ = self.swarm().disconnect_peer_id(peer);
+                    return Ok(());
+                }
+            }
+        }
+
         connected.insert(peer);
         self.peer_count.store(connected.len(), Ordering::Relaxed);
         drop(connected);
+        if let Some(ip) = remote_ip {
+            lock(&self.peer_ips).insert(peer, ip);
+        }
         info!(%peer, "peer connected");
         self.emit(NetworkEvent::PeerConnected(peer));
         Ok(())
@@ -1889,7 +1979,9 @@ impl NetworkService {
         };
         if removed {
             lock(&self.ping_failures).remove(&peer);
+            lock(&self.invalid_block_failures).remove(&peer);
             lock(&self.peer_addresses).remove(&peer);
+            lock(&self.peer_ips).remove(&peer);
             lock(&self.reported_tip).remove(&peer);
             info!(%peer, "peer disconnected");
             self.emit(NetworkEvent::PeerDisconnected(peer));
@@ -1901,6 +1993,7 @@ impl NetworkService {
     fn ban_peer(&self, peer: PeerId) {
         lock(&self.ping_failures).remove(&peer);
         lock(&self.invalid_block_failures).remove(&peer);
+        lock(&self.peer_ips).remove(&peer);
         lock(&self.reported_tip).remove(&peer);
         let known: Vec<Multiaddr> = lock(&self.peer_addresses).remove(&peer).unwrap_or_default();
 
@@ -3515,5 +3608,78 @@ mod tests {
         // forces a fresh export.
         let _ = service.build_state_sync_response(&StateSyncRequest::at_height(12345));
         assert_eq!(source.exports.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn per_ip_connection_limit_prevents_single_ip_eclipse() {
+        let (_dir, service) = test_service();
+        let addr_a: Multiaddr = "/ip4/203.0.113.10/tcp/8000".parse().unwrap();
+        let addr_b: Multiaddr = "/ip4/203.0.113.11/tcp/8000".parse().unwrap();
+        let loopback: Multiaddr = "/ip4/127.0.0.1/tcp/8000".parse().unwrap();
+
+        // First 3 peers from the same public IP are admitted.
+        for _ in 0..3 {
+            service
+                .on_peer_connected_with_addr(PeerId::random(), Some(&addr_a))
+                .unwrap();
+        }
+        assert_eq!(service.peer_count(), 3);
+
+        // 4th peer from the same IP is rejected (eclipse protection).
+        service
+            .on_peer_connected_with_addr(PeerId::random(), Some(&addr_a))
+            .unwrap();
+        assert_eq!(service.peer_count(), 3);
+
+        // A distinct IP is admitted.
+        service
+            .on_peer_connected_with_addr(PeerId::random(), Some(&addr_b))
+            .unwrap();
+        assert_eq!(service.peer_count(), 4);
+
+        // IPv6 /64 bucketing caps at 3 per /64 prefix.
+        for host in 1..=4u16 {
+            let v6: Multiaddr = format!("/ip6/2001:db8:1:2::{host}/tcp/8000")
+                .parse()
+                .unwrap();
+            service
+                .on_peer_connected_with_addr(PeerId::random(), Some(&v6))
+                .unwrap();
+        }
+        assert_eq!(service.peer_count(), 7);
+
+        // Loopback peers are exempt so local multi-node devnets/tests work.
+        for _ in 0..4 {
+            service
+                .on_peer_connected_with_addr(PeerId::random(), Some(&loopback))
+                .unwrap();
+        }
+        assert_eq!(service.peer_count(), 11);
+    }
+
+    #[test]
+    fn gossip_rejection_penalizes_peer_ip_in_peer_scorer() {
+        let (_dir, service) = test_service();
+        let ip: std::net::IpAddr = "198.51.100.42".parse().unwrap();
+        let addr: Multiaddr = "/ip4/198.51.100.42/tcp/8000".parse().unwrap();
+
+        // Even if the attacker rotates PeerIds across rejections, the shared IP
+        // accumulates PeerScorer penalty points and gets banned at threshold (100).
+        let peer1 = PeerId::random();
+        service
+            .on_peer_connected_with_addr(peer1, Some(&addr))
+            .unwrap();
+        service.penalize_peer_ip_for_gossip_reject(peer1, "malformed block");
+        assert!(!service.peer_scorer().is_banned(&ip));
+
+        let peer2 = PeerId::random();
+        service
+            .on_peer_connected_with_addr(peer2, Some(&addr))
+            .unwrap();
+        service.penalize_peer_ip_for_gossip_reject(peer2, "malformed block");
+        assert!(
+            service.peer_scorer().is_banned(&ip),
+            "two +50 block rejections from the same IP must ban the IP even across rotated PeerIds"
+        );
     }
 }

@@ -1,7 +1,7 @@
 //! RPC method definitions and handlers for Kovanica contract entry points.
 
 use crate::{execute_contract_call, RpcError, RpcState};
-use kovanica_common::{Address, Amount, Hash, Height, Timestamp};
+use kovanica_common::{Address, Amount, Hash, Timestamp};
 use kovanica_vault::VestingSchedule;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -45,59 +45,23 @@ pub struct HtlcRefundResult {
 }
 
 pub async fn handle_htlc_create(params: Value, _state: RpcState) -> Result<Value, RpcError> {
-    let p: HtlcCreateParams = serde_json::from_value(params)
+    let _p: HtlcCreateParams = serde_json::from_value(params)
         .map_err(|e| RpcError::InvalidParams(format!("htlc_create: {}", e)))?;
-
-    // Contract RPCs are not wired to the node yet (NotImplemented); these
-    // placeholders are harmless and never reach execution.
-    let contract: Address = [0u8; 32];
-    let caller: Address = [0u8; 32];
-    let height: Height = 0;
-    let timestamp: Timestamp = 0;
-
-    let args = bincode::serialize(&(p.claimer, p.amount, p.hash_lock, p.expiry))
-        .map_err(|e| RpcError::InternalError(format!("encode args: {}", e)))?;
-
-    let result_bytes =
-        execute_contract_call("htlc_create", contract, caller, height, timestamp, &args).await?;
-
-    let swap_id: Hash = bincode::deserialize(&result_bytes)
-        .map_err(|e| RpcError::InternalError(format!("decode result: {}", e)))?;
-
-    Ok(json!({ "swap_id": swap_id }))
+    execute_contract_call("htlc_create", [0u8; 32], [0u8; 32], 0, 0, &[]).await?;
+    Ok(json!({}))
 }
 
 pub async fn handle_htlc_claim(params: Value, _state: RpcState) -> Result<Value, RpcError> {
-    let p: HtlcClaimParams = serde_json::from_value(params)
+    let _p: HtlcClaimParams = serde_json::from_value(params)
         .map_err(|e| RpcError::InvalidParams(format!("htlc_claim: {}", e)))?;
-
-    let contract: Address = [0u8; 32];
-    let caller: Address = [0u8; 32];
-    let height: Height = 0;
-    let timestamp: Timestamp = 0;
-
-    let args = bincode::serialize(&(p.id, p.preimage))
-        .map_err(|e| RpcError::InternalError(format!("encode args: {}", e)))?;
-
-    execute_contract_call("htlc_claim", contract, caller, height, timestamp, &args).await?;
-
+    execute_contract_call("htlc_claim", [0u8; 32], [0u8; 32], 0, 0, &[]).await?;
     Ok(json!({ "ok": true }))
 }
 
 pub async fn handle_htlc_refund(params: Value, _state: RpcState) -> Result<Value, RpcError> {
-    let p: HtlcRefundParams = serde_json::from_value(params)
+    let _p: HtlcRefundParams = serde_json::from_value(params)
         .map_err(|e| RpcError::InvalidParams(format!("htlc_refund: {}", e)))?;
-
-    let contract: Address = [0u8; 32];
-    let caller: Address = [0u8; 32];
-    let height: Height = 0;
-    let timestamp: Timestamp = 0;
-
-    let args = bincode::serialize(&p.id)
-        .map_err(|e| RpcError::InternalError(format!("encode args: {}", e)))?;
-
-    execute_contract_call("htlc_refund", contract, caller, height, timestamp, &args).await?;
-
+    execute_contract_call("htlc_refund", [0u8; 32], [0u8; 32], 0, 0, &[]).await?;
     Ok(json!({ "ok": true }))
 }
 
@@ -138,61 +102,23 @@ pub struct VaultCancelResult {
 }
 
 pub async fn handle_vault_create(params: Value, _state: RpcState) -> Result<Value, RpcError> {
-    let p: VaultCreateParams = serde_json::from_value(params)
+    let _p: VaultCreateParams = serde_json::from_value(params)
         .map_err(|e| RpcError::InvalidParams(format!("vault_create: {}", e)))?;
-
-    let contract: Address = [0u8; 32];
-    let caller: Address = [0u8; 32];
-    let height: Height = 0;
-    let timestamp: Timestamp = 0;
-
-    let args = bincode::serialize(&(p.beneficiary, p.amount, p.schedule))
-        .map_err(|e| RpcError::InternalError(format!("encode args: {}", e)))?;
-
-    let result_bytes =
-        execute_contract_call("vault_create", contract, caller, height, timestamp, &args).await?;
-
-    let vault_id: Hash = bincode::deserialize(&result_bytes)
-        .map_err(|e| RpcError::InternalError(format!("decode result: {}", e)))?;
-
-    Ok(json!({ "vault_id": vault_id }))
+    execute_contract_call("vault_create", [0u8; 32], [0u8; 32], 0, 0, &[]).await?;
+    Ok(json!({}))
 }
 
 pub async fn handle_vault_claim(params: Value, _state: RpcState) -> Result<Value, RpcError> {
-    let p: VaultClaimParams = serde_json::from_value(params)
+    let _p: VaultClaimParams = serde_json::from_value(params)
         .map_err(|e| RpcError::InvalidParams(format!("vault_claim: {}", e)))?;
-
-    let contract: Address = [0u8; 32];
-    let caller: Address = [0u8; 32];
-    let height: Height = 0;
-    let timestamp: Timestamp = 0;
-
-    let args = bincode::serialize(&p.id)
-        .map_err(|e| RpcError::InternalError(format!("encode args: {}", e)))?;
-
-    let result_bytes =
-        execute_contract_call("vault_claim", contract, caller, height, timestamp, &args).await?;
-
-    let amount_claimed: Amount = bincode::deserialize(&result_bytes)
-        .map_err(|e| RpcError::InternalError(format!("decode result: {}", e)))?;
-
-    Ok(json!({ "amount_claimed": amount_claimed }))
+    execute_contract_call("vault_claim", [0u8; 32], [0u8; 32], 0, 0, &[]).await?;
+    Ok(json!({}))
 }
 
 pub async fn handle_vault_cancel(params: Value, _state: RpcState) -> Result<Value, RpcError> {
-    let p: VaultCancelParams = serde_json::from_value(params)
+    let _p: VaultCancelParams = serde_json::from_value(params)
         .map_err(|e| RpcError::InvalidParams(format!("vault_cancel: {}", e)))?;
-
-    let contract: Address = [0u8; 32];
-    let caller: Address = [0u8; 32];
-    let height: Height = 0;
-    let timestamp: Timestamp = 0;
-
-    let args = bincode::serialize(&p.id)
-        .map_err(|e| RpcError::InternalError(format!("encode args: {}", e)))?;
-
-    execute_contract_call("vault_cancel", contract, caller, height, timestamp, &args).await?;
-
+    execute_contract_call("vault_cancel", [0u8; 32], [0u8; 32], 0, 0, &[]).await?;
     Ok(json!({ "ok": true }))
 }
 
@@ -247,108 +173,30 @@ pub struct MultisigExecuteResult {
 }
 
 pub async fn handle_multisig_create(params: Value, _state: RpcState) -> Result<Value, RpcError> {
-    let p: MultisigCreateParams = serde_json::from_value(params)
+    let _p: MultisigCreateParams = serde_json::from_value(params)
         .map_err(|e| RpcError::InvalidParams(format!("multisig_create: {}", e)))?;
-
-    let contract: Address = [0u8; 32];
-    let caller: Address = [0u8; 32];
-    let height: Height = 0;
-    let timestamp: Timestamp = 0;
-
-    let args = bincode::serialize(&(p.owners, p.threshold))
-        .map_err(|e| RpcError::InternalError(format!("encode args: {}", e)))?;
-
-    let result_bytes = execute_contract_call(
-        "multisig_create",
-        contract,
-        caller,
-        height,
-        timestamp,
-        &args,
-    )
-    .await?;
-
-    let multisig_id: Hash = bincode::deserialize(&result_bytes)
-        .map_err(|e| RpcError::InternalError(format!("decode result: {}", e)))?;
-
-    Ok(json!({ "multisig_id": multisig_id }))
+    execute_contract_call("multisig_create", [0u8; 32], [0u8; 32], 0, 0, &[]).await?;
+    Ok(json!({}))
 }
 
 pub async fn handle_multisig_propose(params: Value, _state: RpcState) -> Result<Value, RpcError> {
-    let p: MultisigProposeParams = serde_json::from_value(params)
+    let _p: MultisigProposeParams = serde_json::from_value(params)
         .map_err(|e| RpcError::InvalidParams(format!("multisig_propose: {}", e)))?;
-
-    let contract: Address = [0u8; 32];
-    let caller: Address = [0u8; 32];
-    let height: Height = 0;
-    let timestamp: Timestamp = 0;
-
-    let args = bincode::serialize(&(p.multisig_id, p.to, p.amount, p.data))
-        .map_err(|e| RpcError::InternalError(format!("encode args: {}", e)))?;
-
-    let result_bytes = execute_contract_call(
-        "multisig_propose",
-        contract,
-        caller,
-        height,
-        timestamp,
-        &args,
-    )
-    .await?;
-
-    let tx_id: u64 = bincode::deserialize(&result_bytes)
-        .map_err(|e| RpcError::InternalError(format!("decode result: {}", e)))?;
-
-    Ok(json!({ "tx_id": tx_id }))
+    execute_contract_call("multisig_propose", [0u8; 32], [0u8; 32], 0, 0, &[]).await?;
+    Ok(json!({}))
 }
 
 pub async fn handle_multisig_confirm(params: Value, _state: RpcState) -> Result<Value, RpcError> {
-    let p: MultisigConfirmParams = serde_json::from_value(params)
+    let _p: MultisigConfirmParams = serde_json::from_value(params)
         .map_err(|e| RpcError::InvalidParams(format!("multisig_confirm: {}", e)))?;
-
-    let contract: Address = [0u8; 32];
-    let caller: Address = [0u8; 32];
-    let height: Height = 0;
-    let timestamp: Timestamp = 0;
-
-    let args = bincode::serialize(&(p.id, p.tx_id))
-        .map_err(|e| RpcError::InternalError(format!("encode args: {}", e)))?;
-
-    execute_contract_call(
-        "multisig_confirm",
-        contract,
-        caller,
-        height,
-        timestamp,
-        &args,
-    )
-    .await?;
-
+    execute_contract_call("multisig_confirm", [0u8; 32], [0u8; 32], 0, 0, &[]).await?;
     Ok(json!({ "ok": true }))
 }
 
 pub async fn handle_multisig_execute(params: Value, _state: RpcState) -> Result<Value, RpcError> {
-    let p: MultisigExecuteParams = serde_json::from_value(params)
+    let _p: MultisigExecuteParams = serde_json::from_value(params)
         .map_err(|e| RpcError::InvalidParams(format!("multisig_execute: {}", e)))?;
-
-    let contract: Address = [0u8; 32];
-    let caller: Address = [0u8; 32];
-    let height: Height = 0;
-    let timestamp: Timestamp = 0;
-
-    let args = bincode::serialize(&(p.id, p.tx_id))
-        .map_err(|e| RpcError::InternalError(format!("encode args: {}", e)))?;
-
-    execute_contract_call(
-        "multisig_execute",
-        contract,
-        caller,
-        height,
-        timestamp,
-        &args,
-    )
-    .await?;
-
+    execute_contract_call("multisig_execute", [0u8; 32], [0u8; 32], 0, 0, &[]).await?;
     Ok(json!({ "ok": true }))
 }
 

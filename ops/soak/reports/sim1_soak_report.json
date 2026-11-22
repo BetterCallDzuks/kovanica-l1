@@ -1,19 +1,19 @@
 {
   "task": "SIM-1",
-  "elapsed_seconds": 0.2557,
+  "elapsed_seconds": 0.2350,
   "submitted": 2003,
   "success": 2003,
   "failed": 0,
-  "throughput_tps": 7834.11,
+  "throughput_tps": 8522.29,
   "latency_ms": {
-    "min": 7.1363,
-    "avg": 116.6703,
-    "max": 246.8277,
-    "p50": 117.5374,
-    "p95": 228.7430,
-    "p99": 243.1764
+    "min": 6.8974,
+    "avg": 105.7372,
+    "max": 224.9731,
+    "p50": 105.1249,
+    "p95": 207.7981,
+    "p99": 221.4177
   },
-  "peak_rss_mib": 13.27,
+  "peak_rss_mib": 13.14,
   "vps_memory_threshold_pass": true,
   "zero_panic_verified": true,
   "out_of_gas_rollback_pass": true,

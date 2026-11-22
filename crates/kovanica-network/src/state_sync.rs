@@ -89,7 +89,7 @@ impl StateSyncRequest {
 
     /// Deserialize a request received from the wire.
     pub fn decode(payload: &[u8]) -> Result<Self, NetworkError> {
-        Ok(bincode::deserialize(payload)?)
+        Ok(crate::bincode_deserialize_bounded(payload)?)
     }
 }
 
@@ -144,7 +144,7 @@ impl StateSyncResponse {
 
     /// Deserialize a response received from the wire.
     pub fn decode(payload: &[u8]) -> Result<Self, NetworkError> {
-        Ok(bincode::deserialize(payload)?)
+        Ok(crate::bincode_deserialize_bounded(payload)?)
     }
 }
 
@@ -195,7 +195,7 @@ impl Codec for StateSyncCodec {
         T: AsyncReadExt + Unpin + Send,
     {
         let buf = crate::block_sync::read_bounded(io, MAX_STATE_SYNC_REQUEST_SIZE).await?;
-        bincode::deserialize(&buf)
+        crate::bincode_deserialize_bounded(&buf)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
@@ -208,7 +208,7 @@ impl Codec for StateSyncCodec {
         T: AsyncReadExt + Unpin + Send,
     {
         let buf = crate::block_sync::read_bounded(io, MAX_STATE_SYNC_RESPONSE_SIZE).await?;
-        bincode::deserialize(&buf)
+        crate::bincode_deserialize_bounded(&buf)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 

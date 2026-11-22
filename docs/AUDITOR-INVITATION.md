@@ -3,8 +3,8 @@
 Status: **Interna verifikacija i specifikacija završena** (`docs/AUDIT-SCOPE.md`, `docs/AUDIT-CHECKLIST.md`); eksterni audit **nije izvršen** — obavezan prije mainnet $T_0$ lansiranja.
 
 Identitet projekta: **kovanica** (nezavisni Rust Layer-1, od-scratch; NE kovanica-protocol, NE stariji Kovanica repo).
-Repozitorij: `https://github.com/KovanicaDAG/kovanica-l1` (`main` branch, commit `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b`, post-`#288`).
-Datum poziva: 2026-11-17.
+Repozitorij: `https://github.com/KovanicaDAG/kovanica-l1` (`main` branch, commit `e72d8e1ab224df7e6c7b11c5af3b7d4715cbb5c0`, post-`#308`–`#322`).
+Datum poziva: 2026-11-21.
 
 ---
 
@@ -13,17 +13,18 @@ Datum poziva: 2026-11-17.
 - **Konsenzus:** Hibridni PoW + GHOSTDAG (`TARGET_BLOCK_MS = 4000`, `GHOSTDAG_K = 5`). **BEZ uloga (stake) u konsenzusnom putu.**
 - **PoW algoritam:** **KovanicaHash** (BLAKE3 + 2 MiB memorijski mix scratchpad; memorijski zahtjevan, otporan na ASIC ubrzanja, deterministička verifikacija).
 - **Izvršavanje:** Wasmi deterministički WebAssembly engine s mjerenjem goriva (fuel/gas metering) i memorijskim limitom od 256 stranica (16 MiB, `DEFAULT_CONTRACT_MEMORY_PAGES = 256`).
-- **Tokenomika:** Nativni coin **KVNC** (9 decimala, tvrdi limit **90 200 000 KVNC**, početna nagrada bloka 2,5 KVNC s decay-om $\times \frac{3}{4}$ svakih 8 100 000 visina).
+- **Tokenomika:** Nativni coin **KVNC** (9 decimala, tvrdi limit **90 200 000 KVNC**, početna nagrada bloka 2,5 KVNC s decay-om $\times \frac{3}{4}$ svakih 8 200 000 nagrađenih blokova pod `NoStake82M`).
 - **Adrese:** PRO-21 kanonski format: `kvnc` + 57 base32 znakova (bech32 abeceda) + `dag` = 64 znaka. Hex adrese strogo zabranjene na mainnetu (`chain_id = 1`) i testnetu (`chain_id = 2`); dopuštene samo na devnetu (`chain_id = 3`).
 - **Registar lanaca (3 lanca):** `1` (`kovanica-mainnet`), `2` (`kovanica-testnet`), `3` (`kovanica-devnet`). Stari ID `1337` (`local`) povučen je u `#284` (lokalno testiranje spojeno u devnet `3`).
-- **Kanonski testnet genesis paket:** `kovanica-testnet-genesis.tar.gz` (`#283`, mrežni tag `2-24cdb5fadd98b207`).
+- **Kanonski testnet genesis paket:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`/`#308`, mrežni tag `2-24cdb5fadd98b207`).
+- **Paket za eksternu reviziju:** `scripts/package-audit-dossier.sh` (`#315`) generira `kovanica-audit-dossier-<sha>.tar.gz` s jednokoračnim verifikacijskim skriptom `scripts/auditor-reproduce.sh`.
 
 ---
 
 ## 2. Što eksterni auditor mora provjeriti (prioriteti)
 
 ### P0 — Konsenzus, PoW i otpornost na DoS (blokira Mainnet $T_0$)
-1. **KovanicaHash PoW algoritam**: `crates/kovanica-crypto/src/pow.rs` — determinizam na svim arhitekturama (x86_64, aarch64), otpornost na kolizije, 2 MiB memory scratchpad profil.
+1. **KovanicaHash PoW algoritam**: `crates/kovanica-types/src/pow.rs` (`kovanica-crypto::pow` re-export) — determinizam na svim arhitekturama (x86_64, aarch64), otpornost na kolizije, 2 MiB memory scratchpad profil.
 2. **GHOSTDAG K=5 committer**: `crates/kovanica-consensus/` i `crates/kovanica-dag/` — deterministički linearni poredak blokova, blue set kalkulacija, mergeset evaluacija.
 3. **DAA (Difficulty Adjustment Algorithm)**: stabilnost prilagodbe težine za ciljano vrijeme bloka od 4 s, otpornost na manipulaciju vremenskim oznakama (timestamp warping).
 4. **Edge Anti-DoS ulazna validacija**: `validate_pow_target` — provjera ciljne težine (target) prije propagacije kroz gossip i prije zapisa u bazu (DAG store).

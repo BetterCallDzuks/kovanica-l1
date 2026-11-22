@@ -26,7 +26,7 @@ pub use difficulty::{
     check_network_solution, check_share_hash_meets_difficulty, check_share_hash_meets_target,
     target_from_difficulty, DIFFICULTY_1_TARGET_BITS,
 };
-pub use gateway::StratumGateway;
+pub use gateway::{GatewayMetrics, StratumGateway};
 pub use job::{Job, JobManager};
 pub use protocol::{StratumNotification, StratumRequest, StratumResponse};
 pub use rpc::{NodeRpcClient, WorkTemplate};

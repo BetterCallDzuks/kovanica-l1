@@ -6,21 +6,76 @@
 //! - Spawns multithreaded CPU workers utilizing pre-allocated 2 MiB `KovanicaHasher` contexts.
 //! - Submits shares satisfying pool share difficulty via `mining.submit`.
 
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Context as AnyhowContext;
+use anyhow::Result;
 use kovanica_crypto::KovanicaHasher;
 use kovanica_types::block::compact_to_target;
 use kovanica_types::Hash;
+use rustls::pki_types::ServerName;
+use rustls::RootCertStore;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio_rustls::client::TlsStream;
+use tokio_rustls::{rustls::ClientConfig, TlsConnector};
 use tracing::{error, info, warn};
 
 use crate::miner::{format_hashrate, MiningStats};
+
+/// Wrapper for both TLS and non-TLS streams.
+enum MaybeTlsStream {
+    Plain(TcpStream),
+    Tls(Box<TlsStream<TcpStream>>),
+}
+
+impl AsyncRead for MaybeTlsStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for MaybeTlsStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_flush(cx),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+impl Unpin for MaybeTlsStream {}
 
 /// PoW algorithm required by the Kovanica Stratum V1 job profile.
 const KOVANICA_STRATUM_ALGORITHM: &str = "kovanicahash";
@@ -61,6 +116,10 @@ pub struct StratumMiner {
     stats: Arc<MiningStats>,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<tokio::sync::Notify>,
+    /// Enable TLS for Stratum connection.
+    tls: bool,
+    /// Optional server name for TLS verification (defaults to host from endpoint).
+    tls_server_name: Option<String>,
 }
 
 impl StratumMiner {
@@ -91,7 +150,16 @@ impl StratumMiner {
             stats: Arc::new(MiningStats::new()),
             shutdown: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            tls: false,
+            tls_server_name: None,
         }
+    }
+
+    /// Enable TLS for the Stratum connection.
+    pub fn with_tls(mut self, tls: bool, server_name: Option<String>) -> Self {
+        self.tls = tls;
+        self.tls_server_name = server_name;
+        self
     }
 
     /// Access mining stats.
@@ -119,6 +187,24 @@ impl StratumMiner {
             .unwrap_or(endpoint.trim())
     }
 
+    /// Parse host and port from endpoint string (supports IPv4, hostname, and `[IPv6]:port`).
+    fn parse_host_port(endpoint: &str) -> Result<(String, u16)> {
+        let (raw_host, port_str) = endpoint
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("invalid endpoint format, expected host:port"))?;
+        let host = raw_host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(raw_host);
+        if host.is_empty() {
+            anyhow::bail!("invalid endpoint format: empty host");
+        }
+        let port = port_str
+            .parse::<u16>()
+            .with_context(|| format!("invalid port: {port_str}"))?;
+        Ok((host.to_string(), port))
+    }
+
     /// Connect, subscribe, authorize, and run the Stratum client mining loop.
     pub async fn run(&self) -> Result<()> {
         let start_time = Instant::now();
@@ -130,14 +216,54 @@ impl StratumMiner {
             worker = self.worker,
             threads = self.threads,
             chain_id = self.chain_id,
+            tls = self.tls,
             "connecting to Stratum V1 mining pool"
         );
 
-        let stream = TcpStream::connect(target_endpoint)
-            .await
-            .with_context(|| format!("failed to connect to Stratum pool at {target_endpoint}"))?;
+        // Parse host and port from endpoint
+        let (host, _port) = Self::parse_host_port(target_endpoint)?;
 
-        let (read_half, mut write_half) = stream.into_split();
+        // Connect with optional TLS
+        let stream = if self.tls {
+            // Build TLS connector with standard root certificates
+            let mut root_store = RootCertStore::empty();
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+            let client_config = ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+
+            let connector = TlsConnector::from(Arc::new(client_config));
+
+            // Determine server name for SNI
+            let server_name = if let Some(name) = &self.tls_server_name {
+                name.clone()
+            } else {
+                host.clone()
+            };
+
+            let tcp_stream = TcpStream::connect(target_endpoint).await.with_context(|| {
+                format!("failed to connect to Stratum pool at {target_endpoint}")
+            })?;
+
+            let dns_name = ServerName::try_from(server_name.as_str())
+                .map_err(|e| anyhow::anyhow!("invalid SNI server name: {}", e))?
+                .to_owned();
+
+            let tls_stream = connector
+                .connect(dns_name, tcp_stream)
+                .await
+                .with_context(|| format!("TLS handshake failed with {target_endpoint}"))?;
+
+            MaybeTlsStream::Tls(Box::new(tls_stream))
+        } else {
+            let tcp_stream = TcpStream::connect(target_endpoint).await.with_context(|| {
+                format!("failed to connect to Stratum pool at {target_endpoint}")
+            })?;
+            MaybeTlsStream::Plain(tcp_stream)
+        };
+
+        let (read_half, mut write_half) = tokio::io::split(stream);
         let mut reader = BufReader::new(read_half);
 
         // 1. Subscribe

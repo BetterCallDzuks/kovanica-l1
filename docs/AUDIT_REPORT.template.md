@@ -3,9 +3,9 @@
 **Audit Firm:** [FIRM NAME]  
 **Audit Period:** [START DATE] – [END DATE]  
 **Report Date:** [REPORT DATE]  
-**Codebase Commit:** [COMMIT HASH — latest `main`: `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b`]  
+**Codebase Commit:** [COMMIT HASH — latest `main`: `e72d8e1ab224df7e6c7b11c5af3b7d4715cbb5c0`]  
 **Scope Document:** `docs/AUDIT-SCOPE.md` v2.0  
-**Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, network tag `2-24cdb5fadd98b207`)  
+**Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`/`#308`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee` / refreshed release bundle `sha256: 5857c83e1eb911bf30f890079e18370c5dc74986580303795fd2d173c2296377`, network tag `2-24cdb5fadd98b207`)  
 **Chain Registry:** `1` (`kovanica-mainnet`), `2` (`kovanica-testnet`), `3` (`kovanica-devnet`; `1337` retired in `#284`)  
 **Hardening Gates (`P4-6` `#288`):** `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0` (`GENESIS_ROUND`)  
 **Classification:** [PUBLIC / PRIVATE / CONFIDENTIAL]
@@ -22,8 +22,8 @@
 | **Medium Findings** | [COUNT] |
 | **Low Findings** | [COUNT] |
 | **Informational** | [COUNT] |
-| **Lines of Code Audited** | ~90,500 (crates) / ~95,500 (repo) |
-| **Crates in Scope** | 27 |
+| **Lines of Code Audited** | ~93,500 (crates) / ~98,500 (repo) |
+| **Crates in Scope** | 28 core protocol crates (49 workspace crates total) |
 
 **One-sentence summary:** [Concise assessment of the codebase security posture]
 
@@ -159,7 +159,8 @@
 | `kovanica-staking` (emission `NoStake82M`, treasury vesting; legacy Mysticeti staking non-consensus) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
 | `kovanica-keystore` (Argon2id, XChaCha20-Poly1305, v1 migration) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
 | `kovanica-rpc` (JSON-RPC, WS, rate limit, auth) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
-| `kovanica-node` (genesis, recovery, committee build) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
+| `kovanica-stratum` (Stratum V1 TCP mining pool gateway, PRO-21 payout auth, `kovanicahash-v1`) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
+| `kovanica-node` (genesis, recovery, committee build, SIM-1 soak) | [X/Y] | C:[#] H:[#] M:[#] L:[#] | [%] |
 
 ---
 

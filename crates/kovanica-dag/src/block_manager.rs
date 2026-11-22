@@ -169,16 +169,24 @@ impl BlockManager {
         }
     }
 
-    /// Add a transaction to the pending pool.
+    /// Add a transaction to the pending pool (bounded to `MAX_TXS_PER_BLOCK * 4`).
     pub fn add_transaction(&self, tx: Transaction) {
         let mut pending = self.pending_txs.write();
-        pending.push_back(tx);
+        if pending.len() < MAX_TXS_PER_BLOCK * 4 {
+            pending.push_back(tx);
+        }
     }
 
-    /// Add multiple transactions to the pending pool.
+    /// Add multiple transactions to the pending pool (bounded to `MAX_TXS_PER_BLOCK * 4`).
     pub fn add_transactions(&self, txs: Vec<Transaction>) {
         let mut pending = self.pending_txs.write();
-        pending.extend(txs);
+        let cap = MAX_TXS_PER_BLOCK * 4;
+        for tx in txs {
+            if pending.len() >= cap {
+                break;
+            }
+            pending.push_back(tx);
+        }
     }
 
     /// Get the next transactions for block proposal (up to MAX_TXS_PER_BLOCK).
@@ -370,12 +378,13 @@ impl BlockManager {
             && self.vrf_author_keys.read().contains_key(&author)
         {
             if let Some(output) = kovanica_crypto::decode_statements(&statements) {
-                self.verified_vrf_outputs
-                    .write()
-                    .entry(round)
+                let mut vrf = self.verified_vrf_outputs.write();
+                vrf.entry(round)
                     .or_default()
                     .entry(author)
                     .or_insert(output.hash);
+                let min_keep = round.saturating_sub(256);
+                vrf.retain(|&r, _| r >= min_keep);
             }
         }
         let digest = StatementBlock::compute_digest_statements(

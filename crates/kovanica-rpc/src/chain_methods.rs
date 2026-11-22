@@ -170,9 +170,25 @@ fn parse_storage_key(value: &Value, what: &str) -> Result<[u8; 32], RpcError> {
     parse_bytes32(value, what)
 }
 
+/// Deserialize an untrusted bincode payload with a byte allocation budget
+/// bounded to `bytes.len()`, preventing forged length-prefix OOM attacks.
+fn bincode_deserialize_bounded<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<T, bincode::Error> {
+    use bincode::Options as _;
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .with_limit(bytes.len() as u64)
+        .deserialize(bytes)
+}
+
 /// Map an internal storage/state error onto the JSON-RPC internal-error code.
+/// Logs the full error server-side and returns a generic message to avoid
+/// leaking internal storage paths or table details to RPC callers.
 fn internal<E: std::fmt::Display>(e: E) -> RpcError {
-    RpcError::InternalError(e.to_string())
+    tracing::error!(error = %e, "internal RPC storage error");
+    RpcError::InternalError("internal storage error".into())
 }
 
 /// Serialise a transaction kind into a tagged JSON object.
@@ -811,7 +827,7 @@ pub async fn handle_send_raw_transaction(
     let raw = raw.strip_prefix("0x").unwrap_or(raw);
     let bytes = hex::decode(raw)
         .map_err(|e| RpcError::InvalidParams(format!("raw transaction: invalid hex: {e}")))?;
-    let tx: Transaction = bincode::deserialize(&bytes)
+    let tx: Transaction = bincode_deserialize_bounded(&bytes)
         .map_err(|e| RpcError::InvalidParams(format!("raw transaction: invalid encoding: {e}")))?;
 
     let hash = tx.hash;
@@ -2753,7 +2769,7 @@ pub async fn handle_submit_work(params: Value, state: RpcState) -> Result<Value,
             let hex_clean = hex_str.trim_start_matches("0x");
             let bytes = hex::decode(hex_clean)
                 .map_err(|e| RpcError::InvalidParams(format!("invalid hex string: {e}")))?;
-            bincode::deserialize(&bytes)
+            bincode_deserialize_bounded(&bytes)
                 .map_err(|e| RpcError::InvalidParams(format!("deserialize header failed: {e}")))?
         }
         Value::Array(ref arr) if !arr.is_empty() => {
@@ -2761,7 +2777,7 @@ pub async fn handle_submit_work(params: Value, state: RpcState) -> Result<Value,
                 let hex_clean = first_str.trim_start_matches("0x");
                 let bytes = hex::decode(hex_clean)
                     .map_err(|e| RpcError::InvalidParams(format!("invalid hex string: {e}")))?;
-                bincode::deserialize(&bytes).map_err(|e| {
+                bincode_deserialize_bounded(&bytes).map_err(|e| {
                     RpcError::InvalidParams(format!("deserialize header failed: {e}"))
                 })?
             } else {
@@ -3034,16 +3050,24 @@ pub async fn handle_get_dag_tips(_params: Value, state: RpcState) -> Result<Valu
     }))
 }
 
-/// Request testnet tokens (airdrop).
+/// Request devnet tokens (airdrop).
 ///
-/// Strictly forbidden on mainnet (chain_id 1).
-/// Allowed on testnet (2) and devnet (3).
+/// Strictly forbidden on mainnet (chain_id 1) and public testnet (chain_id 2),
+/// because direct database balance mutation outside consensus would diverge a
+/// node's local state root from its peers (public testnet uses `kovanica-faucet`
+/// which broadcasts signed transactions).
+/// Allowed on devnet (chain_id 3) only.
 pub async fn handle_request_airdrop(params: Value, state: RpcState) -> Result<Value, RpcError> {
     let chain_id = served_chain_id(&state);
     if chain_id == kovanica_types::signing::chain_id::MAINNET {
         return Err(RpcError::InvalidRequest(
             "kovanica_requestAirdrop is strictly forbidden on mainnet (chain 1)".into(),
         ));
+    }
+    if chain_id != kovanica_types::signing::chain_id::DEVNET {
+        return Err(RpcError::InvalidRequest(format!(
+            "kovanica_requestAirdrop is only allowed on devnet (chain 3); forbidden on chain {chain_id} (use kovanica-faucet for signed testnet payouts)"
+        )));
     }
 
     let args = params_vec(&params);
@@ -3214,6 +3238,23 @@ mod tests {
         match err {
             RpcError::InvalidRequest(msg) => {
                 assert!(msg.contains("strictly forbidden on mainnet"));
+            }
+            other => panic!("unexpected error type: {other:?}"),
+        }
+
+        // 1b. Public testnet (chain 2) state: must also reject direct DB request_airdrop
+        let mut public_testnet_state = test_state(storage.clone());
+        public_testnet_state.mempool = Arc::new(Mempool::new(
+            MempoolConfig::default(),
+            storage.clone(),
+            kovanica_types::SigningContext::new(TESTNET),
+        ));
+        let err_testnet = handle_request_airdrop(params.clone(), public_testnet_state)
+            .await
+            .expect_err("public testnet (chain 2) must reject direct DB request_airdrop");
+        match err_testnet {
+            RpcError::InvalidRequest(msg) => {
+                assert!(msg.contains("only allowed on devnet"));
             }
             other => panic!("unexpected error type: {other:?}"),
         }

@@ -14,11 +14,21 @@ use crate::decode::{
 pub struct RpcClient {
     url: String,
     http: reqwest::blocking::Client,
+    rpc_token: Option<String>,
 }
 
 impl RpcClient {
     /// `url` is the node base (`http://127.0.0.1:8545`) or an `/rpc` URL.
+    /// Reads `KOVANICA_RPC_WRITE_TOKEN` from the environment if set.
     pub fn new(url: impl Into<String>) -> Result<Self> {
+        let token = std::env::var("KOVANICA_RPC_WRITE_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty());
+        Self::with_token(url, token)
+    }
+
+    /// Create a client with an explicit optional bearer token for write RPCs.
+    pub fn with_token(url: impl Into<String>, rpc_token: Option<String>) -> Result<Self> {
         let mut url = url.into();
         if !url.ends_with("/rpc") {
             url = format!("{}/rpc", url.trim_end_matches('/'));
@@ -27,7 +37,11 @@ impl RpcClient {
             .timeout(Duration::from_secs(15))
             .build()
             .context("building HTTP client")?;
-        Ok(Self { url, http })
+        Ok(Self {
+            url,
+            http,
+            rpc_token: rpc_token.filter(|t| !t.is_empty()),
+        })
     }
 
     /// Endpoint this client posts to.
@@ -43,10 +57,11 @@ impl RpcClient {
             "params": params,
             "id": 1,
         });
-        let response = self
-            .http
-            .post(&self.url)
-            .json(&body)
+        let mut req = self.http.post(&self.url).json(&body);
+        if let Some(ref token) = self.rpc_token {
+            req = req.bearer_auth(token);
+        }
+        let response = req
             .send()
             .with_context(|| format!("POST {}", self.url))?;
         let status = response.status();

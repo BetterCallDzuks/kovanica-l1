@@ -3,7 +3,7 @@
 **Companion to `docs/AGENT-RULES.md` and `docs/PLAN-2026-11.md`.**
 This is the full-scope plan across all public product repos. Frozen values stay frozen. Consensus changes need an activation plan and Toni’s OK before deploy.
 
-Snapshot: 2026-11-17 (L1 `main` at `00b138a`, post-#308–#316; cross-repo `main` tips: `kovanica-sdk#17` `83a6495` (v0.3.0), `kovanica-playground#22` `391dd88`, `kovanica-web#24` `772ccbb`, `kovanica-apps#36` `633f130`).
+Snapshot: 2026-11-21 (L1 `main` at `e72d8e1`, post-#308–#322; cross-repo `main` tips: `kovanica-sdk#17` `83a6495` (v0.3.0), `kovanica-playground#22` `391dd88`, `kovanica-web#24` `772ccbb`, `kovanica-apps#36` `633f130`).
 Live L1: `seed1` (`kovanica-testnet`, chain ID 2, tag `2-24cdb5fadd98b207`) live at `9758ffe0` with `#259` non-compounding LWMA DAA active; release tag `v0.3.0-node` stays on `e3fce499` with `kovanica-testnet-genesis.tar.gz` attached (`#283`/`#287`). Mainnet (`kovanica-mainnet`, chain ID 1) genesis ceremony executed in `#290` with frozen network tag `1-f35df34c92001436` and bundle `kovanica-mainnet-genesis.tar.gz` (`sha256: 75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e`).
 
 ## Repos in scope
@@ -70,7 +70,7 @@ Out of this plan: `kovanica-vault` (separate private tool).
 | P4-1 | Ceremony docs for PoW + no-stake | l1 | **Done (#261)** |
 | P4-2 | Mainnet runbook for PoW + no-stake | l1 | **Done (#261)** |
 | P4-3 | Offline genesis ceremony (addresses OPEN) | Toni | **Done (#290, Toni OK)** — executed 2026-11-17: frozen network tag `1-f35df34c92001436`; bundle `/tmp/kovanica-mainnet-genesis.tar.gz` (`sha256: 75403dff7380c3066b479b80c8b7ae37b7df165fa2283a5cbf6fa4e2be554c2e`); public genesis files under `mainnet/` (5 seeds); keystores in `/tmp/mainnet-ceremony-private` (never committed) |
-| P4-4 | External audit of KovanicaHash + Wasmi | l1 | **Internal pre-audit complete (`docs/INTERNAL_PRE_AUDIT_2026_11.md`, #291); ready for external auditor sign-off** (checklist `docs/AUDIT-CHECKLIST.md` & report locked at `833e7e9` / `6bcca86`, #278/#286/#289/#291; awaiting external auditor sign-off) |
+| P4-4 | External audit of KovanicaHash + Wasmi | l1 | **IN PROGRESS** — syncing `docs/INTERNAL_PRE_AUDIT_2026_11.md` and companion audit dossier docs to latest `main` (`e72d8e1`, post-#308–#322); internal pre-audit complete (#291, #313, #315), ready for external auditor sign-off |
 | P4-5 | Attach chain-2 genesis bundle (`kovanica-testnet-genesis.tar.gz`) to a node release | l1 | **Done (#287, Toni OK)** — `kovanica-testnet-genesis.tar.gz` (`sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`) uploaded to `v0.3.0-node` |
 | P4-6 | Height-gated hardening (`*_ACTIVE_FROM_ROUND`) | l1 | **Done (#288, Toni OK)** — gas, contract, size-limit, and slashing gates set to `0` (`GENESIS_ROUND`) |
 

@@ -29,5 +29,6 @@ default = []
 hw-signer = ["dep:kovanica-hw-signer"]
 
 [dev-dependencies]
+bincode = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = "3.8"
