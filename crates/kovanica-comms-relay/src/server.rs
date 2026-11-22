@@ -307,9 +307,7 @@ async fn post_ack(State(state): State<AppState>, Json(req): Json<AckRequest>) ->
     let (Some(pubkey_hex), Some(sig_hex)) = (&req.pubkey, &req.signature) else {
         return unauthorized("missing ack pubkey or signature");
     };
-    let pubkey_bytes: [u8; 32] = match hex::decode(pubkey_hex)
-        .ok()
-        .and_then(|v| v.try_into().ok())
+    let pubkey_bytes: [u8; 32] = match hex::decode(pubkey_hex).ok().and_then(|v| v.try_into().ok())
     {
         Some(b) => b,
         None => return unauthorized("invalid ack pubkey"),

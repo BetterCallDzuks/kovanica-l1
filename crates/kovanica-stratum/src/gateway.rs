@@ -285,9 +285,7 @@ use crate::difficulty::{check_network_solution, check_share_hash_meets_difficult
 use crate::job::{Job, JobManager};
 use crate::protocol::{StratumNotification, StratumRequest, StratumResponse};
 use crate::rpc::NodeRpcClient;
-use crate::session::{
-    parse_and_validate_username, SessionRegistry, WorkerSession,
-};
+use crate::session::{parse_and_validate_username, SessionRegistry, WorkerSession};
 use crate::{KOVANICA_STRATUM_ALGORITHM, KOVANICA_STRATUM_CAPABILITY};
 
 /// Bounded channel message to send to a connected client TCP stream.
@@ -1664,7 +1662,8 @@ impl StratumGateway {
                             metrics.shares_rejected.inc();
                             metrics.shares_rejected_stale.inc();
                             let _ = outbound_tx
-                                .send(StratumResponse::job_not_found(req_id).to_wire_line()).await;
+                                .send(StratumResponse::job_not_found(req_id).to_wire_line())
+                                .await;
                             line.clear();
                             continue;
                         }
@@ -1693,13 +1692,15 @@ impl StratumGateway {
                                     session.record_rejected_share();
                                     metrics.shares_rejected.inc();
                                     metrics.shares_rejected_invalid_params.inc();
-                                    let _ = outbound_tx.send(
-                                        StratumResponse::invalid_params(
-                                            req_id,
-                                            "invalid hex nonce",
+                                    let _ = outbound_tx
+                                        .send(
+                                            StratumResponse::invalid_params(
+                                                req_id,
+                                                "invalid hex nonce",
+                                            )
+                                            .to_wire_line(),
                                         )
-                                        .to_wire_line(),
-                                    ).await;
+                                        .await;
                                     line.clear();
                                     continue;
                                 }
@@ -1713,10 +1714,15 @@ impl StratumGateway {
                                 session.record_rejected_share();
                                 metrics.shares_rejected.inc();
                                 metrics.shares_rejected_invalid_params.inc();
-                                let _ = outbound_tx.send(
-                                    StratumResponse::invalid_params(req_id, "invalid hex nonce")
+                                let _ = outbound_tx
+                                    .send(
+                                        StratumResponse::invalid_params(
+                                            req_id,
+                                            "invalid hex nonce",
+                                        )
                                         .to_wire_line(),
-                                ).await;
+                                    )
+                                    .await;
                                 line.clear();
                                 continue;
                             }
@@ -1729,7 +1735,8 @@ impl StratumGateway {
                         metrics.shares_rejected.inc();
                         metrics.shares_rejected_duplicate.inc();
                         let _ = outbound_tx
-                            .send(StratumResponse::duplicate_share(req_id).to_wire_line()).await;
+                            .send(StratumResponse::duplicate_share(req_id).to_wire_line())
+                            .await;
                         line.clear();
                         continue;
                     }
@@ -1738,11 +1745,10 @@ impl StratumGateway {
                     let payout = session.payout_address();
                     let mut candidate_header = job.reconstruct_header(nonce, payout);
                     let preimage = candidate_header.preimage();
-                    let pow_hash = tokio::task::spawn_blocking(move || {
-                        compute_pow_hash_reusable(&preimage)
-                    })
-                    .await
-                    .unwrap_or_else(|_| candidate_header.compute_pow_hash());
+                    let pow_hash =
+                        tokio::task::spawn_blocking(move || compute_pow_hash_reusable(&preimage))
+                            .await
+                            .unwrap_or_else(|_| candidate_header.compute_pow_hash());
 
                     // Check share difficulty target
                     let current_diff = session.get_difficulty();
@@ -1761,7 +1767,8 @@ impl StratumGateway {
                             "low difficulty share rejected"
                         );
                         let _ = outbound_tx
-                            .send(StratumResponse::low_difficulty_share(req_id).to_wire_line()).await;
+                            .send(StratumResponse::low_difficulty_share(req_id).to_wire_line())
+                            .await;
                         line.clear();
                         continue;
                     }
@@ -1775,7 +1782,8 @@ impl StratumGateway {
                     session.record_accepted_share();
                     metrics.shares_accepted.inc();
                     let _ = outbound_tx
-                        .send(StratumResponse::ok(req_id, Value::Bool(true)).to_wire_line()).await;
+                        .send(StratumResponse::ok(req_id, Value::Bool(true)).to_wire_line())
+                        .await;
 
                     // Update worker hashrate metric
                     let hashrate = session.estimated_hashrate();
@@ -1869,7 +1877,8 @@ impl StratumGateway {
                 // -------------------------------------------------------------
                 "mining.extranonce.subscribe" => {
                     let _ = outbound_tx
-                        .send(StratumResponse::ok(req_id, Value::Bool(true)).to_wire_line()).await;
+                        .send(StratumResponse::ok(req_id, Value::Bool(true)).to_wire_line())
+                        .await;
                 }
 
                 // -------------------------------------------------------------
@@ -1889,27 +1898,31 @@ impl StratumGateway {
                         }
                     }
                     let _ = outbound_tx
-                        .send(StratumResponse::ok(req_id, Value::Bool(true)).to_wire_line()).await;
+                        .send(StratumResponse::ok(req_id, Value::Bool(true)).to_wire_line())
+                        .await;
                 }
 
                 // -------------------------------------------------------------
                 // mining.ping
                 // -------------------------------------------------------------
                 "mining.ping" => {
-                    let _ =
-                        outbound_tx.send(StratumResponse::ok(req_id, json!("pong")).to_wire_line()).await;
+                    let _ = outbound_tx
+                        .send(StratumResponse::ok(req_id, json!("pong")).to_wire_line())
+                        .await;
                 }
 
                 other => {
                     debug!(method = other, "unrecognized Stratum method");
-                    let _ = outbound_tx.send(
-                        StratumResponse::error(
-                            req_id,
-                            20,
-                            &format!("Method '{other}' not supported"),
+                    let _ = outbound_tx
+                        .send(
+                            StratumResponse::error(
+                                req_id,
+                                20,
+                                &format!("Method '{other}' not supported"),
+                            )
+                            .to_wire_line(),
                         )
-                        .to_wire_line(),
-                    ).await;
+                        .await;
                 }
             }
 
@@ -2143,17 +2156,19 @@ mod tests {
         assert!(validate_ntime("00000000", job_ts_ms).is_err());
         assert!(validate_ntime(&format!("{:08x}", job_ts_ms - 1), job_ts_ms).is_err());
         // Beyond max forward drift
-        assert!(
-            validate_ntime(&format!("{:08x}", job_ts_ms + MAX_NTIME_DRIFT_MS + 1), job_ts_ms)
-                .is_err()
-        );
+        assert!(validate_ntime(
+            &format!("{:08x}", job_ts_ms + MAX_NTIME_DRIFT_MS + 1),
+            job_ts_ms
+        )
+        .is_err());
 
         // Seconds timestamp bounds
         let job_ts_s: u64 = 1_731_800_000;
         assert!(validate_ntime(&format!("{:08x}", job_ts_s - 1), job_ts_s).is_err());
-        assert!(
-            validate_ntime(&format!("{:08x}", job_ts_s + MAX_NTIME_DRIFT_SECS + 1), job_ts_s)
-                .is_err()
-        );
+        assert!(validate_ntime(
+            &format!("{:08x}", job_ts_s + MAX_NTIME_DRIFT_SECS + 1),
+            job_ts_s
+        )
+        .is_err());
     }
 }

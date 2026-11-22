@@ -1600,8 +1600,9 @@ impl NetworkService {
             Ok(block) => block,
             Err(err) => {
                 // If it's a raw BlockHeader for Chain 2, adapt it into StatementBlock
-                if let Ok(header) =
-                    crate::bincode_deserialize_bounded::<kovanica_types::block::BlockHeader>(payload)
+                if let Ok(header) = crate::bincode_deserialize_bounded::<
+                    kovanica_types::block::BlockHeader,
+                >(payload)
                 {
                     header.to_statement_block(Vec::new())
                 } else {

@@ -253,7 +253,10 @@ impl StratumMiner {
                     format!("failed to read TLS CA certificate: {}", ca_path.display())
                 })?;
                 let pems = pem::parse_many(&ca_data).with_context(|| {
-                    format!("failed to parse PEM certificates from {}", ca_path.display())
+                    format!(
+                        "failed to parse PEM certificates from {}",
+                        ca_path.display()
+                    )
                 })?;
                 let mut added = 0usize;
                 for block in pems {

@@ -149,7 +149,9 @@ pub fn encode_broadcast_tx(tx: &Transaction, hash: &Hash) -> Result<String, Wall
     let payload_cap = match &tx.kind {
         TransactionKind::Transfer { .. } => 32 + 8,
         TransactionKind::Deploy { code } => 8 + code.len(),
-        TransactionKind::Call { method, args, .. } => 32 + 8 + 8 + method.len() + 8 + args.len() + 8,
+        TransactionKind::Call { method, args, .. } => {
+            32 + 8 + 8 + method.len() + 8 + args.len() + 8
+        }
         TransactionKind::RegisterLightNode { .. } => 32 + 8,
         TransactionKind::ExitLightNode => 0,
         other => {

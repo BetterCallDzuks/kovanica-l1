@@ -23,6 +23,8 @@ allow = [
     "BSD-3-Clause",
     "BSL-1.0",
     "CC0-1.0",
+    # CDLA-Permissive-2.0: Permissive data license used by webpki-roots (Mozilla root CA certs for TLS in kovanica-cli).
+    "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
     "MIT-0",

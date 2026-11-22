@@ -63,10 +63,10 @@ async fn start_test_gateway(initial_difficulty: f64) -> (Arc<StratumGateway>, So
         let result = gw_clone.run_with_listener(listener).await;
         eprintln!("Gateway run_with_listener completed with: {:?}", result);
     });
-    
+
     // Wait a bit more for the gateway to fully start
     tokio::time::sleep(Duration::from_millis(500)).await;
-    
+
     let handle_finished = handle.is_finished();
     if handle_finished {
         eprintln!("WARNING: Gateway task finished early!");
@@ -785,7 +785,6 @@ async fn test_observability_metrics_and_health_endpoints() {
     gateway.shutdown();
 }
 
-
 #[tokio::test]
 async fn test_stratum_oversized_line_disconnects_cleanly() {
     let (gateway, addr) = start_test_gateway(1.0).await;
@@ -826,7 +825,9 @@ async fn test_stratum_submit_validates_extranonce2_and_ntime() {
 
     // Subscribe & authorize
     client
-        .send_line(&json!({"id": 1, "method": "mining.subscribe", "params": ["test/1.0"]}).to_string())
+        .send_line(
+            &json!({"id": 1, "method": "mining.subscribe", "params": ["test/1.0"]}).to_string(),
+        )
         .await;
     let _ = client.read_json().await;
 
@@ -986,11 +987,9 @@ async fn test_tls_stratum_e2e_handshake_notify_and_submit() {
     init_test_logging();
 
     // 1. Generate ephemeral self-signed certificate for localhost / 127.0.0.1
-    let certified = rcgen::generate_simple_self_signed(vec![
-        "localhost".to_string(),
-        "127.0.0.1".to_string(),
-    ])
-    .expect("generate ephemeral self-signed cert");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .expect("generate ephemeral self-signed cert");
     let cert_pem = certified.cert.pem();
     let key_pem = certified.key_pair.serialize_pem();
     let cert_der = certified.cert.der().clone();
@@ -1086,7 +1085,10 @@ async fn test_tls_stratum_e2e_handshake_notify_and_submit() {
     assert_eq!(sub_resp["id"], 1);
     assert!(sub_resp["error"].is_null());
     assert_eq!(sub_resp["result"][2], 4);
-    assert_eq!(sub_resp["result"][3]["profile"], KOVANICA_STRATUM_CAPABILITY);
+    assert_eq!(
+        sub_resp["result"][3]["profile"],
+        KOVANICA_STRATUM_CAPABILITY
+    );
 
     // 5. mining.authorize over TLS
     let (_sk, pk) = generate_keypair();

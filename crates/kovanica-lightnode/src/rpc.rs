@@ -61,9 +61,7 @@ impl RpcClient {
         if let Some(ref token) = self.rpc_token {
             req = req.bearer_auth(token);
         }
-        let response = req
-            .send()
-            .with_context(|| format!("POST {}", self.url))?;
+        let response = req.send().with_context(|| format!("POST {}", self.url))?;
         let status = response.status();
         let value: Value = response
             .json()

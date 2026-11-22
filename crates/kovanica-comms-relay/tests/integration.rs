@@ -362,7 +362,11 @@ async fn http_post_get_ack_get_round_trip() {
 
     // Signed ack removes it.
     let deleted = client
-        .ack_signed(&recipient_key, &recipient_id, std::slice::from_ref(&envelope.id))
+        .ack_signed(
+            &recipient_key,
+            &recipient_id,
+            std::slice::from_ref(&envelope.id),
+        )
         .await
         .unwrap();
     assert_eq!(deleted, 1);
@@ -507,7 +511,11 @@ async fn http_ack_requires_valid_recipient_signature() {
 
     // 2. Signed by wrong key (sender trying to delete recipient's inbox) → 401 unauthorized.
     let err = client
-        .ack_signed(&sender_key, &recipient_id, std::slice::from_ref(&envelope.id))
+        .ack_signed(
+            &sender_key,
+            &recipient_id,
+            std::slice::from_ref(&envelope.id),
+        )
         .await
         .expect_err("wrong-key ack must fail");
     match err {
@@ -540,7 +548,10 @@ async fn http_ack_requires_valid_recipient_signature() {
     // 4. Valid signature over a different id list → 401 unauthorized.
     let other_id = "aa".repeat(32);
     let other_sig = recipient_key
-        .sign(&ack_signing_bytes(&recipient_id, std::slice::from_ref(&other_id)))
+        .sign(&ack_signing_bytes(
+            &recipient_id,
+            std::slice::from_ref(&other_id),
+        ))
         .to_bytes();
     let resp = reqwest::Client::new()
         .post(format!("{base}/v1/ack"))
@@ -567,7 +578,11 @@ async fn http_ack_requires_valid_recipient_signature() {
 
     // 5. Properly signed ack by recipient succeeds and deletes the envelope.
     let deleted = client
-        .ack_signed(&recipient_key, &recipient_id, std::slice::from_ref(&envelope.id))
+        .ack_signed(
+            &recipient_key,
+            &recipient_id,
+            std::slice::from_ref(&envelope.id),
+        )
         .await
         .expect("signed ack must succeed");
     assert_eq!(deleted, 1);
