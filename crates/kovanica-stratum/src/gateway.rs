@@ -55,6 +55,84 @@ pub const MAX_RATE_LIMITER_IPS: usize = 100_000;
 /// to prevent label cardinality explosion.
 pub const MAX_PROMETHEUS_LABEL_CARDINALITY: usize = 1_024;
 
+/// Maximum allowed forward drift (in seconds) of a submitted `ntime` relative to the job's
+/// template timestamp when timestamps are expressed in Unix seconds.
+pub const MAX_NTIME_DRIFT_SECS: u64 = 7_200;
+
+/// Maximum allowed forward drift (in milliseconds) of a submitted `ntime` relative to the job's
+/// template timestamp when timestamps are expressed in Unix milliseconds (Kovanica native).
+pub const MAX_NTIME_DRIFT_MS: u64 = MAX_NTIME_DRIFT_SECS * 1_000;
+
+/// Threshold separating Unix-second timestamps from Unix-millisecond timestamps.
+const UNIX_MILLIS_THRESHOLD: u64 = 1_000_000_000_000;
+
+/// Validate a submitted `extranonce2` hex string against the session's configured byte length.
+///
+/// Returns the normalized lowercase hex string on success, or a human-readable error message.
+pub fn validate_extranonce2(
+    extranonce2: &str,
+    extranonce2_size: usize,
+) -> std::result::Result<String, String> {
+    if extranonce2_size == 0 {
+        return Err("invalid session extranonce2_size".to_string());
+    }
+    let expected_hex_len = extranonce2_size * 2;
+    if extranonce2.len() != expected_hex_len {
+        return Err(format!(
+            "invalid extranonce2 length: got {} hex chars, expected {} ({} bytes)",
+            extranonce2.len(),
+            expected_hex_len,
+            extranonce2_size
+        ));
+    }
+    if !extranonce2.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("invalid extranonce2: must contain only hexadecimal characters".to_string());
+    }
+    Ok(extranonce2.to_ascii_lowercase())
+}
+
+/// Validate a submitted `ntime` hex string format and parse it as a `u64` timestamp.
+fn parse_ntime_hex(ntime_str: &str) -> std::result::Result<u64, String> {
+    if ntime_str.len() < 8 || ntime_str.len() > 16 {
+        return Err(format!(
+            "invalid ntime length: got {} hex chars, expected 8..=16",
+            ntime_str.len()
+        ));
+    }
+    if !ntime_str.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("invalid ntime: must contain only hexadecimal characters".to_string());
+    }
+    u64::from_str_radix(ntime_str, 16)
+        .map_err(|_| "invalid ntime: failed to parse hexadecimal timestamp".to_string())
+}
+
+/// Validate a submitted `ntime` hex string both for format and reasonable bounds relative to the
+/// job's template timestamp (`job_timestamp`).
+///
+/// Accepts timestamps in `[job_timestamp, job_timestamp + max_drift]` where `max_drift` is
+/// [`MAX_NTIME_DRIFT_MS`] for millisecond timestamps and [`MAX_NTIME_DRIFT_SECS`] for second
+/// timestamps.
+pub fn validate_ntime(ntime_str: &str, job_timestamp: u64) -> std::result::Result<u64, String> {
+    let ntime = parse_ntime_hex(ntime_str)?;
+    let max_drift = if job_timestamp >= UNIX_MILLIS_THRESHOLD {
+        MAX_NTIME_DRIFT_MS
+    } else {
+        MAX_NTIME_DRIFT_SECS
+    };
+    if ntime < job_timestamp {
+        return Err(format!(
+            "invalid ntime: {ntime} precedes job timestamp {job_timestamp}"
+        ));
+    }
+    let max_allowed = job_timestamp.saturating_add(max_drift);
+    if ntime > max_allowed {
+        return Err(format!(
+            "invalid ntime: {ntime} exceeds maximum allowed drift from job timestamp {job_timestamp}"
+        ));
+    }
+    Ok(ntime)
+}
+
 thread_local! {
     /// Thread-local reusable 2 MiB KovanicaHasher context to avoid per-share
     /// 2 MiB heap allocations in `mining.submit`.
@@ -1447,17 +1525,136 @@ impl StratumGateway {
                         continue;
                     }
 
-                    let _worker_name = params[0].as_str().unwrap_or_default();
-                    let job_id = params[1].as_str().unwrap_or_default();
-                    let extranonce2 = params[2].as_str().unwrap_or_default();
+                    let Some(_worker_name) = params[0].as_str() else {
+                        session.record_rejected_share();
+                        metrics.shares_rejected.inc();
+                        metrics.shares_rejected_invalid_params.inc();
+                        let _ = outbound_tx
+                            .send(
+                                StratumResponse::invalid_params(
+                                    req_id,
+                                    "worker name must be a string",
+                                )
+                                .to_wire_line(),
+                            )
+                            .await;
+                        line.clear();
+                        continue;
+                    };
+                    let Some(job_id) = params[1].as_str() else {
+                        session.record_rejected_share();
+                        metrics.shares_rejected.inc();
+                        metrics.shares_rejected_invalid_params.inc();
+                        let _ = outbound_tx
+                            .send(
+                                StratumResponse::invalid_params(req_id, "job_id must be a string")
+                                    .to_wire_line(),
+                            )
+                            .await;
+                        line.clear();
+                        continue;
+                    };
+                    let Some(extranonce2_raw) = params[2].as_str() else {
+                        session.record_rejected_share();
+                        metrics.shares_rejected.inc();
+                        metrics.shares_rejected_invalid_params.inc();
+                        let _ = outbound_tx
+                            .send(
+                                StratumResponse::invalid_params(
+                                    req_id,
+                                    "extranonce2 must be a string",
+                                )
+                                .to_wire_line(),
+                            )
+                            .await;
+                        line.clear();
+                        continue;
+                    };
+
+                    // Validate extranonce2 format and length against session.extranonce2_size
+                    let extranonce2 =
+                        match validate_extranonce2(extranonce2_raw, session.extranonce2_size) {
+                            Ok(normalized) => normalized,
+                            Err(msg) => {
+                                session.record_rejected_share();
+                                metrics.shares_rejected.inc();
+                                metrics.shares_rejected_invalid_params.inc();
+                                let _ = outbound_tx
+                                    .send(
+                                        StratumResponse::invalid_params(req_id, &msg)
+                                            .to_wire_line(),
+                                    )
+                                    .await;
+                                line.clear();
+                                continue;
+                            }
+                        };
 
                     // Param layout can be 4 or 5 args:
                     // 4 args: [worker, job_id, extranonce2, nonce]
                     // 5 args: [worker, job_id, extranonce2, ntime, nonce]
-                    let nonce_str = if params.len() >= 5 {
-                        params[4].as_str().unwrap_or_default()
+                    let (ntime_opt, nonce_str) = if params.len() >= 5 {
+                        let Some(ntime_raw) = params[3].as_str() else {
+                            session.record_rejected_share();
+                            metrics.shares_rejected.inc();
+                            metrics.shares_rejected_invalid_params.inc();
+                            let _ = outbound_tx
+                                .send(
+                                    StratumResponse::invalid_params(
+                                        req_id,
+                                        "ntime must be a string",
+                                    )
+                                    .to_wire_line(),
+                                )
+                                .await;
+                            line.clear();
+                            continue;
+                        };
+                        if let Err(msg) = parse_ntime_hex(ntime_raw) {
+                            session.record_rejected_share();
+                            metrics.shares_rejected.inc();
+                            metrics.shares_rejected_invalid_params.inc();
+                            let _ = outbound_tx
+                                .send(StratumResponse::invalid_params(req_id, &msg).to_wire_line())
+                                .await;
+                            line.clear();
+                            continue;
+                        }
+                        let Some(nonce_raw) = params[4].as_str() else {
+                            session.record_rejected_share();
+                            metrics.shares_rejected.inc();
+                            metrics.shares_rejected_invalid_params.inc();
+                            let _ = outbound_tx
+                                .send(
+                                    StratumResponse::invalid_params(
+                                        req_id,
+                                        "nonce must be a string",
+                                    )
+                                    .to_wire_line(),
+                                )
+                                .await;
+                            line.clear();
+                            continue;
+                        };
+                        (Some(ntime_raw), nonce_raw)
                     } else {
-                        params[3].as_str().unwrap_or_default()
+                        let Some(nonce_raw) = params[3].as_str() else {
+                            session.record_rejected_share();
+                            metrics.shares_rejected.inc();
+                            metrics.shares_rejected_invalid_params.inc();
+                            let _ = outbound_tx
+                                .send(
+                                    StratumResponse::invalid_params(
+                                        req_id,
+                                        "nonce must be a string",
+                                    )
+                                    .to_wire_line(),
+                                )
+                                .await;
+                            line.clear();
+                            continue;
+                        };
+                        (None, nonce_raw)
                     };
 
                     let job = match job_manager.get_job(job_id) {
@@ -1472,6 +1669,20 @@ impl StratumGateway {
                             continue;
                         }
                     };
+
+                    // Validate ntime bounds relative to the job's template timestamp
+                    if let Some(ntime_raw) = ntime_opt {
+                        if let Err(msg) = validate_ntime(ntime_raw, job.header.timestamp) {
+                            session.record_rejected_share();
+                            metrics.shares_rejected.inc();
+                            metrics.shares_rejected_invalid_params.inc();
+                            let _ = outbound_tx
+                                .send(StratumResponse::invalid_params(req_id, &msg).to_wire_line())
+                                .await;
+                            line.clear();
+                            continue;
+                        }
+                    }
 
                     // Parse nonce
                     let nonce = if nonce_str.len() <= 8 {
@@ -1493,8 +1704,7 @@ impl StratumGateway {
                                     continue;
                                 }
                             };
-                        let en2_u32 = u32::from_str_radix(extranonce2.trim_start_matches("0x"), 16)
-                            .unwrap_or(0);
+                        let en2_u32 = u32::from_str_radix(&extranonce2, 16).unwrap_or(0);
                         ((en2_u32 as u64) << 32) | (nonce_u32 as u64)
                     } else {
                         match u64::from_str_radix(nonce_str.trim_start_matches("0x"), 16) {
@@ -1514,7 +1724,7 @@ impl StratumGateway {
                     };
 
                     // Check duplicate share
-                    if session.check_and_record_share(job_id, extranonce2, nonce) {
+                    if session.check_and_record_share(job_id, &extranonce2, nonce) {
                         session.record_rejected_share();
                         metrics.shares_rejected.inc();
                         metrics.shares_rejected_duplicate.inc();
@@ -1852,6 +2062,98 @@ mod tests {
         assert!(
             !encoded.contains("_total_total"),
             "counter names must not have duplicated _total suffix"
+        );
+    }
+
+    #[test]
+    fn test_validate_extranonce2_valid_cases() {
+        assert_eq!(validate_extranonce2("00000001", 4).unwrap(), "00000001");
+        assert_eq!(validate_extranonce2("DEADBEEF", 4).unwrap(), "deadbeef");
+        assert_eq!(validate_extranonce2("a1b2", 2).unwrap(), "a1b2");
+        assert_eq!(
+            validate_extranonce2("0123456789abcdef", 8).unwrap(),
+            "0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn test_validate_extranonce2_invalid_cases() {
+        // Empty / wrong length / oversized
+        assert!(validate_extranonce2("", 4).is_err());
+        assert!(validate_extranonce2("000001", 4).is_err());
+        assert!(validate_extranonce2("0000000001", 4).is_err());
+        assert!(validate_extranonce2(&"a".repeat(256), 4).is_err());
+        // Non-hex / prefixed
+        assert!(validate_extranonce2("0000000g", 4).is_err());
+        assert!(validate_extranonce2("0x000001", 4).is_err());
+        assert!(validate_extranonce2("0000 001", 4).is_err());
+        // Zero configured size
+        assert!(validate_extranonce2("", 0).is_err());
+    }
+
+    #[test]
+    fn test_validate_ntime_valid_cases_millis_and_secs() {
+        // Millisecond timestamp (Kovanica native)
+        let job_ts_ms: u64 = 1_731_800_000_000;
+        assert_eq!(
+            validate_ntime(&format!("{job_ts_ms:08x}"), job_ts_ms).unwrap(),
+            job_ts_ms
+        );
+        // Uppercase hex accepted
+        assert_eq!(
+            validate_ntime(&format!("{job_ts_ms:08X}"), job_ts_ms).unwrap(),
+            job_ts_ms
+        );
+        // Forward drift within bound
+        let rolled_ms = job_ts_ms + 60_000;
+        assert_eq!(
+            validate_ntime(&format!("{rolled_ms:08x}"), job_ts_ms).unwrap(),
+            rolled_ms
+        );
+        // Exact upper bound
+        let max_ms = job_ts_ms + MAX_NTIME_DRIFT_MS;
+        assert_eq!(
+            validate_ntime(&format!("{max_ms:08x}"), job_ts_ms).unwrap(),
+            max_ms
+        );
+
+        // Second timestamp (standard Stratum V1)
+        let job_ts_s: u64 = 1_731_800_000;
+        assert_eq!(
+            validate_ntime(&format!("{job_ts_s:08x}"), job_ts_s).unwrap(),
+            job_ts_s
+        );
+        let max_s = job_ts_s + MAX_NTIME_DRIFT_SECS;
+        assert_eq!(
+            validate_ntime(&format!("{max_s:08x}"), job_ts_s).unwrap(),
+            max_s
+        );
+    }
+
+    #[test]
+    fn test_validate_ntime_invalid_cases() {
+        let job_ts_ms: u64 = 1_731_800_000_000;
+        // Malformed / wrong length / non-hex / 0x prefix
+        assert!(validate_ntime("", job_ts_ms).is_err());
+        assert!(validate_ntime("1234", job_ts_ms).is_err());
+        assert!(validate_ntime("00000000000000001", job_ts_ms).is_err());
+        assert!(validate_ntime("zzzzzzzz", job_ts_ms).is_err());
+        assert!(validate_ntime("0x673a5f20", job_ts_ms).is_err());
+        // Zero / before job timestamp
+        assert!(validate_ntime("00000000", job_ts_ms).is_err());
+        assert!(validate_ntime(&format!("{:08x}", job_ts_ms - 1), job_ts_ms).is_err());
+        // Beyond max forward drift
+        assert!(
+            validate_ntime(&format!("{:08x}", job_ts_ms + MAX_NTIME_DRIFT_MS + 1), job_ts_ms)
+                .is_err()
+        );
+
+        // Seconds timestamp bounds
+        let job_ts_s: u64 = 1_731_800_000;
+        assert!(validate_ntime(&format!("{:08x}", job_ts_s - 1), job_ts_s).is_err());
+        assert!(
+            validate_ntime(&format!("{:08x}", job_ts_s + MAX_NTIME_DRIFT_SECS + 1), job_ts_s)
+                .is_err()
         );
     }
 }

@@ -41,7 +41,8 @@ async fn main() -> Result<()> {
         "initializing Kovanica Stratum V1 gateway"
     );
 
-    let config = StratumConfig::from(args);
+    #[allow(unused_mut)]
+    let mut config = StratumConfig::from(args);
     config.validate()?;
 
     // Generate self-signed cert if requested (requires "self-signed" feature)

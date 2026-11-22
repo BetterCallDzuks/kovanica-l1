@@ -1904,6 +1904,7 @@ impl NetworkService {
     }
 
     /// Record a new peer, enforcing [`NetworkConfig::max_peers`].
+    #[cfg(test)]
     fn on_peer_connected(&self, peer: PeerId) -> Result<(), NetworkError> {
         self.on_peer_connected_with_addr(peer, None)
     }

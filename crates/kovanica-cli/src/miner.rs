@@ -5,6 +5,7 @@
 //! preallocated 2 MiB `KovanicaHasher` contexts, computes KovanicaHash PoW solutions,
 //! and submits solved headers via `kovanica_submitWork`.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, RwLock};
 use std::time::{Duration, Instant};
@@ -40,7 +41,8 @@ pub struct MinerRunArgs {
     #[arg(long, default_value = "1000")]
     pub poll_interval_ms: u64,
 
-    /// Optional Stratum V1 TCP endpoint to mine through (e.g. `127.0.0.1:3333` or `stratum+tcp://pool.kovanica.online:3333`).
+    /// Optional Stratum V1 TCP endpoint to mine through (e.g. `127.0.0.1:3333`,
+    /// `stratum+tcp://pool.kovanica.online:3333`, or `stratum+tls://pool.kovanica.online:3333`).
     /// When specified, connects via the Stratum V1 line protocol instead of polling HTTP JSON-RPC.
     #[arg(long)]
     pub stratum: Option<String>,
@@ -52,6 +54,66 @@ pub struct MinerRunArgs {
     /// Password for Stratum authentication.
     #[arg(long, default_value = "x")]
     pub password: String,
+
+    /// Enable TLS for the Stratum pool connection (also enabled automatically for `stratum+tls://` endpoints).
+    #[arg(long, default_value_t = false, requires = "stratum")]
+    pub tls: bool,
+
+    /// Optional SNI / hostname override for Stratum TLS certificate verification.
+    #[arg(long, requires = "stratum")]
+    pub tls_server_name: Option<String>,
+
+    /// Optional PEM CA/server certificate file to trust for Stratum TLS connections.
+    #[arg(long, requires = "stratum")]
+    pub tls_ca_cert: Option<PathBuf>,
+}
+
+impl MinerRunArgs {
+    /// Return `true` if TLS is enabled either explicitly via `--tls` or via the `--stratum` URL scheme.
+    pub fn effective_tls(&self) -> bool {
+        self.tls
+            || self
+                .stratum
+                .as_deref()
+                .is_some_and(crate::stratum_client::StratumMiner::endpoint_uses_tls_scheme)
+    }
+
+    /// Validate Stratum TLS CLI flags before initiating a network connection.
+    pub fn validate_tls(&self) -> Result<()> {
+        let effective_tls = self.effective_tls();
+        if self.stratum.is_none()
+            && (self.tls || self.tls_server_name.is_some() || self.tls_ca_cert.is_some())
+        {
+            anyhow::bail!(
+                "--tls, --tls-server-name, and --tls-ca-cert require --stratum <ENDPOINT>"
+            );
+        }
+        if !effective_tls && (self.tls_server_name.is_some() || self.tls_ca_cert.is_some()) {
+            anyhow::bail!(
+                "--tls-server-name and --tls-ca-cert require --tls (or a stratum+tls:// endpoint)"
+            );
+        }
+        if let Some(ref server_name) = self.tls_server_name {
+            let trimmed = server_name.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!("--tls-server-name must not be empty");
+            }
+            rustls::pki_types::ServerName::try_from(trimmed)
+                .map_err(|e| anyhow::anyhow!("invalid --tls-server-name '{trimmed}': {e}"))?;
+        }
+        if let Some(ref ca_cert) = self.tls_ca_cert {
+            if !ca_cert.exists() {
+                anyhow::bail!("TLS CA certificate file not found: {}", ca_cert.display());
+            }
+            if !ca_cert.is_file() {
+                anyhow::bail!(
+                    "TLS CA certificate path is not a regular file: {}",
+                    ca_cert.display()
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Arguments for `kovanica miner bench`.
@@ -624,7 +686,10 @@ pub async fn run_miner(
             .unwrap_or(1)
     });
 
+    args.validate_tls()?;
+
     if let Some(stratum_endpoint) = &args.stratum {
+        let effective_tls = args.effective_tls();
         let stratum_miner = crate::stratum_client::StratumMiner::new(
             stratum_endpoint.clone(),
             args.address,
@@ -632,7 +697,9 @@ pub async fn run_miner(
             args.password,
             chain_id,
             threads,
-        );
+        )
+        .with_tls(effective_tls, args.tls_server_name)
+        .with_tls_ca_cert(args.tls_ca_cert);
         return stratum_miner.run().await;
     }
 
@@ -1216,5 +1283,96 @@ mod tests {
         assert_eq!(result.thread_hashes.len(), 2);
         let sum: u64 = result.thread_hashes.iter().sum();
         assert_eq!(sum, result.total_hashes);
+    }
+
+    #[test]
+    fn miner_run_args_tls_cli_parsing_and_validation() {
+        use clap::Parser;
+        #[derive(Parser, Debug)]
+        struct RunWrapper {
+            #[command(flatten)]
+            run: MinerRunArgs,
+        }
+
+        let addr = Address([0x44; 32]).encode();
+
+        // --tls without --stratum is rejected by clap
+        assert!(RunWrapper::try_parse_from(["test", "--address", &addr, "--tls"]).is_err());
+
+        // --tls-ca-cert without --stratum is rejected by clap
+        assert!(RunWrapper::try_parse_from([
+            "test",
+            "--address",
+            &addr,
+            "--tls-ca-cert",
+            "ca.pem"
+        ])
+        .is_err());
+
+        // --tls-server-name without --tls (and tcp endpoint) fails validate_tls
+        let parsed = RunWrapper::try_parse_from([
+            "test",
+            "--address",
+            &addr,
+            "--stratum",
+            "127.0.0.1:3333",
+            "--tls-server-name",
+            "pool.kovanica.online",
+        ])
+        .expect("clap parses args");
+        assert!(!parsed.run.effective_tls());
+        assert!(parsed.run.validate_tls().is_err());
+
+        // --stratum with stratum+tls:// automatically enables TLS
+        let parsed_scheme = RunWrapper::try_parse_from([
+            "test",
+            "--address",
+            &addr,
+            "--stratum",
+            "stratum+tls://pool.kovanica.online:3333",
+            "--tls-server-name",
+            "pool.kovanica.online",
+        ])
+        .expect("clap parses stratum+tls");
+        assert!(parsed_scheme.run.effective_tls());
+        assert!(parsed_scheme.run.validate_tls().is_ok());
+
+        // Missing CA cert file fails validate_tls
+        let missing_ca = RunWrapper::try_parse_from([
+            "test",
+            "--address",
+            &addr,
+            "--stratum",
+            "127.0.0.1:3333",
+            "--tls",
+            "--tls-ca-cert",
+            "/nonexistent/path/ca.pem",
+        ])
+        .expect("clap parses missing ca");
+        assert!(missing_ca.run.validate_tls().is_err());
+
+        // Valid --tls + --tls-server-name + existing --tls-ca-cert succeeds
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ca_path = dir.path().join("ca.pem");
+        std::fs::write(&ca_path, b"dummy pem").expect("write ca");
+
+        let valid = RunWrapper::try_parse_from([
+            "test",
+            "--address",
+            &addr,
+            "--stratum",
+            "127.0.0.1:3333",
+            "--tls",
+            "--tls-server-name",
+            "localhost",
+            "--tls-ca-cert",
+            ca_path.to_str().unwrap(),
+        ])
+        .expect("clap parses valid TLS args");
+        assert!(valid.run.tls);
+        assert!(valid.run.effective_tls());
+        assert_eq!(valid.run.tls_server_name.as_deref(), Some("localhost"));
+        assert_eq!(valid.run.tls_ca_cert.as_deref(), Some(ca_path.as_path()));
+        assert!(valid.run.validate_tls().is_ok());
     }
 }

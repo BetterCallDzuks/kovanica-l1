@@ -6,6 +6,7 @@
 //! - Spawns multithreaded CPU workers utilizing pre-allocated 2 MiB `KovanicaHasher` contexts.
 //! - Submits shares satisfying pool share difficulty via `mining.submit`.
 
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -17,7 +18,7 @@ use anyhow::Result;
 use kovanica_crypto::KovanicaHasher;
 use kovanica_types::block::compact_to_target;
 use kovanica_types::Hash;
-use rustls::pki_types::ServerName;
+use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::RootCertStore;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
@@ -120,6 +121,8 @@ pub struct StratumMiner {
     tls: bool,
     /// Optional server name for TLS verification (defaults to host from endpoint).
     tls_server_name: Option<String>,
+    /// Optional PEM CA/server certificate file to trust for TLS verification.
+    tls_ca_cert: Option<PathBuf>,
 }
 
 impl StratumMiner {
@@ -152,6 +155,7 @@ impl StratumMiner {
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             tls: false,
             tls_server_name: None,
+            tls_ca_cert: None,
         }
     }
 
@@ -160,6 +164,18 @@ impl StratumMiner {
         self.tls = tls;
         self.tls_server_name = server_name;
         self
+    }
+
+    /// Provide an optional PEM CA/server certificate file to trust for TLS connections.
+    pub fn with_tls_ca_cert(mut self, ca_cert: Option<PathBuf>) -> Self {
+        self.tls_ca_cert = ca_cert;
+        self
+    }
+
+    /// Return `true` if the endpoint URL scheme explicitly requests TLS (`stratum+tls://` or `stratum+ssl://`).
+    pub fn endpoint_uses_tls_scheme(endpoint: &str) -> bool {
+        let trimmed = endpoint.trim();
+        trimmed.starts_with("stratum+tls://") || trimmed.starts_with("stratum+ssl://")
     }
 
     /// Access mining stats.
@@ -180,11 +196,13 @@ impl StratumMiner {
 
     /// Clean endpoint string by stripping URL schemes.
     fn clean_endpoint(endpoint: &str) -> &str {
-        endpoint
-            .trim()
-            .strip_prefix("stratum+tcp://")
-            .or_else(|| endpoint.trim().strip_prefix("tcp://"))
-            .unwrap_or(endpoint.trim())
+        let trimmed = endpoint.trim();
+        trimmed
+            .strip_prefix("stratum+tls://")
+            .or_else(|| trimmed.strip_prefix("stratum+ssl://"))
+            .or_else(|| trimmed.strip_prefix("stratum+tcp://"))
+            .or_else(|| trimmed.strip_prefix("tcp://"))
+            .unwrap_or(trimmed)
     }
 
     /// Parse host and port from endpoint string (supports IPv4, hostname, and `[IPv6]:port`).
@@ -223,15 +241,43 @@ impl StratumMiner {
         // Parse host and port from endpoint
         let (host, _port) = Self::parse_host_port(target_endpoint)?;
 
-        // Connect with optional TLS
-        let stream = if self.tls {
-            // Build TLS connector with standard root certificates
+        // Connect with optional TLS (enabled via `--tls` or `stratum+tls://` / `stratum+ssl://`)
+        let use_tls = self.tls || Self::endpoint_uses_tls_scheme(&self.endpoint);
+        let stream = if use_tls {
+            // Build TLS connector with standard root certificates plus optional custom CA cert
             let mut root_store = RootCertStore::empty();
             root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
-            let client_config = ClientConfig::builder()
+            if let Some(ca_path) = &self.tls_ca_cert {
+                let ca_data = std::fs::read(ca_path).with_context(|| {
+                    format!("failed to read TLS CA certificate: {}", ca_path.display())
+                })?;
+                let pems = pem::parse_many(&ca_data).with_context(|| {
+                    format!("failed to parse PEM certificates from {}", ca_path.display())
+                })?;
+                let mut added = 0usize;
+                for block in pems {
+                    if block.tag == "CERTIFICATE" {
+                        root_store
+                            .add(CertificateDer::from(block.contents))
+                            .with_context(|| {
+                                format!("invalid X.509 certificate in {}", ca_path.display())
+                            })?;
+                        added += 1;
+                    }
+                }
+                if added == 0 {
+                    anyhow::bail!(
+                        "no CERTIFICATE blocks found in TLS CA file {}",
+                        ca_path.display()
+                    );
+                }
+            }
+
+            let mut client_config = ClientConfig::builder()
                 .with_root_certificates(root_store)
                 .with_no_client_auth();
+            client_config.alpn_protocols = vec![b"stratum".to_vec()];
 
             let connector = TlsConnector::from(Arc::new(client_config));
 
@@ -841,5 +887,32 @@ mod tests {
             "error": null
         });
         assert!(StratumMiner::verify_subscribe_capability(&resp).is_ok());
+    }
+
+    #[test]
+    fn endpoint_tls_scheme_detection_and_cleaning() {
+        assert!(StratumMiner::endpoint_uses_tls_scheme(
+            "stratum+tls://pool.kovanica.online:3333"
+        ));
+        assert!(StratumMiner::endpoint_uses_tls_scheme(
+            "stratum+ssl://pool.kovanica.online:3333"
+        ));
+        assert!(!StratumMiner::endpoint_uses_tls_scheme(
+            "stratum+tcp://pool.kovanica.online:3333"
+        ));
+        assert!(!StratumMiner::endpoint_uses_tls_scheme("127.0.0.1:3333"));
+
+        assert_eq!(
+            StratumMiner::clean_endpoint("stratum+tls://pool.kovanica.online:3333"),
+            "pool.kovanica.online:3333"
+        );
+        assert_eq!(
+            StratumMiner::clean_endpoint("stratum+ssl://pool.kovanica.online:3333"),
+            "pool.kovanica.online:3333"
+        );
+        assert_eq!(
+            StratumMiner::clean_endpoint("stratum+tcp://127.0.0.1:3333"),
+            "127.0.0.1:3333"
+        );
     }
 }

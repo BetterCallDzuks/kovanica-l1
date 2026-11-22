@@ -227,7 +227,10 @@ impl StratumConfig {
         }
         if self.tls {
             if self.tls_self_signed {
-                // Self-signed is fine, will generate
+                #[cfg(not(feature = "self-signed"))]
+                bail!(
+                    "--tls-self-signed requires building kovanica-stratum with --features self-signed"
+                );
             } else if self.tls_cert.is_none() || self.tls_key.is_none() {
                 bail!("TLS enabled but cert and/or key not provided (use --tls-self-signed for testing)");
             } else {
@@ -328,5 +331,76 @@ mod tests {
             ..Default::default()
         };
         assert!(invalid_cfg.validate().is_err());
+    }
+
+    #[test]
+    fn tls_config_validation_requires_paired_existing_cert_and_key() {
+        // TLS enabled without cert or key fails
+        let missing_both = StratumConfig {
+            tls: true,
+            ..Default::default()
+        };
+        assert!(missing_both.validate().is_err());
+
+        // TLS enabled with only cert fails
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        std::fs::write(&cert_path, b"dummy cert").expect("write cert");
+        std::fs::write(&key_path, b"dummy key").expect("write key");
+
+        let only_cert = StratumConfig {
+            tls: true,
+            tls_cert: Some(cert_path.clone()),
+            tls_key: None,
+            ..Default::default()
+        };
+        assert!(only_cert.validate().is_err());
+
+        let only_key = StratumConfig {
+            tls: true,
+            tls_cert: None,
+            tls_key: Some(key_path.clone()),
+            ..Default::default()
+        };
+        assert!(only_key.validate().is_err());
+
+        // Non-existent files fail
+        let nonexistent = StratumConfig {
+            tls: true,
+            tls_cert: Some(dir.path().join("missing_cert.pem")),
+            tls_key: Some(key_path.clone()),
+            ..Default::default()
+        };
+        assert!(nonexistent.validate().is_err());
+
+        // Both existing files succeed
+        let valid = StratumConfig {
+            tls: true,
+            tls_cert: Some(cert_path),
+            tls_key: Some(key_path),
+            ..Default::default()
+        };
+        assert!(valid.validate().is_ok());
+    }
+
+    #[test]
+    fn stratum_args_tls_flags_require_tls() {
+        assert!(StratumArgs::try_parse_from(["kovanica-stratum", "--tls-cert", "c.pem"]).is_err());
+        assert!(StratumArgs::try_parse_from(["kovanica-stratum", "--tls-key", "k.pem"]).is_err());
+        assert!(StratumArgs::try_parse_from(["kovanica-stratum", "--tls-self-signed"]).is_err());
+
+        let parsed = StratumArgs::try_parse_from([
+            "kovanica-stratum",
+            "--tls",
+            "--tls-cert",
+            "c.pem",
+            "--tls-key",
+            "k.pem",
+        ])
+        .expect("valid TLS CLI args must parse");
+        assert!(parsed.tls);
+        assert_eq!(parsed.tls_cert, Some(PathBuf::from("c.pem")));
+        assert_eq!(parsed.tls_key, Some(PathBuf::from("k.pem")));
     }
 }

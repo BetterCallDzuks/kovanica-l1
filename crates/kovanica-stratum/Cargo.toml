@@ -37,6 +37,7 @@ axum = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+rcgen = "0.13"
 tempfile = "3.8"
 tracing-subscriber = { workspace = true, features = ["json"] }
 

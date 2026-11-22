@@ -555,6 +555,7 @@ async fn test_gateway_and_builtin_client_hash_and_submit_same_template() {
     let params = notify["params"].as_array().expect("notify params");
     let job_id = params[0].as_str().expect("job id");
     let coinb1 = params[2].as_str().expect("coinb1 preimage prefix");
+    let ntime = params[7].as_str().expect("ntime");
     let prefix = hex::decode(coinb1).expect("coinb1 must be hex");
     assert!(
         prefix.len() > 32,
@@ -570,7 +571,7 @@ async fn test_gateway_and_builtin_client_hash_and_submit_same_template() {
             &json!({
                 "id": 3,
                 "method": "mining.submit",
-                "params": [username, job_id, extranonce2, "00000000", format!("{full_nonce:016x}")]
+                "params": [username, job_id, extranonce2, ntime, format!("{full_nonce:016x}")]
             })
             .to_string(),
         )
@@ -583,7 +584,7 @@ async fn test_gateway_and_builtin_client_hash_and_submit_same_template() {
         username,
         job_id,
         extranonce2,
-        "00000000",
+        ntime,
         format!("{full_nonce:016x}")
     ]);
     client
@@ -601,7 +602,7 @@ async fn test_gateway_and_builtin_client_hash_and_submit_same_template() {
         username,
         "job_stale",
         extranonce2,
-        "00000000",
+        ntime,
         format!("{full_nonce:016x}")
     ]);
     client
@@ -814,6 +815,373 @@ async fn test_stratum_oversized_line_disconnects_cleanly() {
     })
     .await
     .expect("active_connections must return to 0 after oversized-line disconnect");
+
+    gateway.shutdown();
+}
+
+#[tokio::test]
+async fn test_stratum_submit_validates_extranonce2_and_ntime() {
+    let (gateway, addr) = start_test_gateway(0.0).await;
+    let mut client = TestClient::connect(addr).await;
+
+    // Subscribe & authorize
+    client
+        .send_line(&json!({"id": 1, "method": "mining.subscribe", "params": ["test/1.0"]}).to_string())
+        .await;
+    let _ = client.read_json().await;
+
+    let (_sk, pk) = generate_keypair();
+    let username = format!("{}.valrig", Address(pk.0).encode());
+    client
+        .send_line(
+            &json!({"id": 2, "method": "mining.authorize", "params": [username.clone(), "x"]})
+                .to_string(),
+        )
+        .await;
+    let _ = client.read_json().await; // authorize ok
+    let _ = client.read_json().await; // set_difficulty
+
+    let test_header = create_test_header(77, 0x207fffff);
+    let job_ts = test_header.timestamp;
+    let job = gateway.job_manager().add_template(test_header);
+    gateway.broadcast_notify(&job);
+    let notify = client.read_json().await;
+    let ntime_hex = notify["params"][7]
+        .as_str()
+        .expect("notify must include ntime")
+        .to_string();
+
+    // 1. Short extranonce2 -> code 25
+    client
+        .send_line(
+            &json!({
+                "id": 10,
+                "method": "mining.submit",
+                "params": [username, job.job_id, "0001", ntime_hex, "00000001"]
+            })
+            .to_string(),
+        )
+        .await;
+    let resp = client.read_json().await;
+    assert_eq!(resp["id"], 10);
+    assert_eq!(resp["error"][0], 25);
+
+    // 2. Oversized extranonce2 -> code 25
+    client
+        .send_line(
+            &json!({
+                "id": 11,
+                "method": "mining.submit",
+                "params": [username, job.job_id, "0000000001", ntime_hex, "00000001"]
+            })
+            .to_string(),
+        )
+        .await;
+    let resp = client.read_json().await;
+    assert_eq!(resp["id"], 11);
+    assert_eq!(resp["error"][0], 25);
+
+    // 3. Non-hex extranonce2 -> code 25
+    client
+        .send_line(
+            &json!({
+                "id": 12,
+                "method": "mining.submit",
+                "params": [username, job.job_id, "zzzzzzzz", ntime_hex, "00000001"]
+            })
+            .to_string(),
+        )
+        .await;
+    let resp = client.read_json().await;
+    assert_eq!(resp["id"], 12);
+    assert_eq!(resp["error"][0], 25);
+
+    // 4. Malformed ntime -> code 25
+    client
+        .send_line(
+            &json!({
+                "id": 13,
+                "method": "mining.submit",
+                "params": [username, job.job_id, "00000001", "not_hex!", "00000001"]
+            })
+            .to_string(),
+        )
+        .await;
+    let resp = client.read_json().await;
+    assert_eq!(resp["id"], 13);
+    assert_eq!(resp["error"][0], 25);
+
+    // 5. Out-of-range past ntime -> code 25
+    client
+        .send_line(
+            &json!({
+                "id": 14,
+                "method": "mining.submit",
+                "params": [username, job.job_id, "00000001", format!("{:08x}", job_ts - 1), "00000001"]
+            })
+            .to_string(),
+        )
+        .await;
+    let resp = client.read_json().await;
+    assert_eq!(resp["id"], 14);
+    assert_eq!(resp["error"][0], 25);
+
+    // 6. Out-of-range future ntime -> code 25
+    client
+        .send_line(
+            &json!({
+                "id": 15,
+                "method": "mining.submit",
+                "params": [
+                    username,
+                    job.job_id,
+                    "00000001",
+                    format!("{:08x}", job_ts + kovanica_stratum::MAX_NTIME_DRIFT_MS + 1),
+                    "00000001"
+                ]
+            })
+            .to_string(),
+        )
+        .await;
+    let resp = client.read_json().await;
+    assert_eq!(resp["id"], 15);
+    assert_eq!(resp["error"][0], 25);
+
+    // 7. Valid extranonce2 + valid ntime -> accepted
+    client
+        .send_line(
+            &json!({
+                "id": 16,
+                "method": "mining.submit",
+                "params": [username, job.job_id, "0000000A", ntime_hex, "00000001"]
+            })
+            .to_string(),
+        )
+        .await;
+    let resp = client.read_json().await;
+    assert_eq!(resp["id"], 16);
+    assert_eq!(resp["result"], true);
+    assert!(resp["error"].is_null());
+
+    // 8. Same share with lowercase extranonce2 must be caught as duplicate (code 22)
+    client
+        .send_line(
+            &json!({
+                "id": 17,
+                "method": "mining.submit",
+                "params": [username, job.job_id, "0000000a", ntime_hex, "00000001"]
+            })
+            .to_string(),
+        )
+        .await;
+    let resp = client.read_json().await;
+    assert_eq!(resp["id"], 17);
+    assert_eq!(resp["error"][0], 22);
+
+    gateway.shutdown();
+}
+
+#[tokio::test]
+async fn test_tls_stratum_e2e_handshake_notify_and_submit() {
+    init_test_logging();
+
+    // 1. Generate ephemeral self-signed certificate for localhost / 127.0.0.1
+    let certified = rcgen::generate_simple_self_signed(vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+    ])
+    .expect("generate ephemeral self-signed cert");
+    let cert_pem = certified.cert.pem();
+    let key_pem = certified.key_pair.serialize_pem();
+    let cert_der = certified.cert.der().clone();
+
+    let tmp_dir = tempfile::tempdir().expect("tempdir for TLS cert/key");
+    let cert_path = tmp_dir.path().join("stratum_cert.pem");
+    let key_path = tmp_dir.path().join("stratum_key.pem");
+    std::fs::write(&cert_path, cert_pem.as_bytes()).expect("write cert PEM");
+    std::fs::write(&key_path, key_pem.as_bytes()).expect("write key PEM");
+
+    // 2. Start StratumGateway with TLS enabled
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral TLS listener");
+    let local_addr = listener.local_addr().expect("local addr");
+
+    let config = StratumConfig {
+        listen_addr: local_addr,
+        difficulty: 0.0,
+        chain_id: HYBRID_TESTNET,
+        rpc_url: "http://127.0.0.1:1/rpc".to_string(),
+        poll_interval: Duration::from_secs(3600),
+        tls: true,
+        tls_cert: Some(cert_path),
+        tls_key: Some(key_path),
+        ..Default::default()
+    };
+    config.validate().expect("TLS config must validate");
+
+    let gateway = Arc::new(StratumGateway::new(config).expect("TLS gateway creation failed"));
+    let gw_clone = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = gw_clone.run_with_listener(listener).await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 3. Connect TLS client trusting the ephemeral certificate
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store
+        .add(cert_der)
+        .expect("add ephemeral cert to root store");
+    let mut client_cfg = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    client_cfg.alpn_protocols = vec![b"stratum".to_vec()];
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client_cfg));
+
+    let tcp_stream = TcpStream::connect(local_addr)
+        .await
+        .expect("connect TCP to TLS gateway");
+    let server_name =
+        rustls::pki_types::ServerName::try_from("localhost").expect("valid SNI server name");
+    let tls_stream = timeout(
+        Duration::from_secs(5),
+        connector.connect(server_name, tcp_stream),
+    )
+    .await
+    .expect("TLS handshake timed out")
+    .expect("TLS handshake failed");
+
+    let (read_half, mut write_half) = tokio::io::split(tls_stream);
+    let mut reader = BufReader::new(read_half);
+
+    async fn send_tls_json(
+        writer: &mut tokio::io::WriteHalf<tokio_rustls::client::TlsStream<TcpStream>>,
+        val: Value,
+    ) {
+        writer
+            .write_all(format!("{val}\n").as_bytes())
+            .await
+            .expect("write over TLS");
+        writer.flush().await.expect("flush over TLS");
+    }
+
+    async fn read_tls_json(
+        reader: &mut BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<TcpStream>>>,
+    ) -> Value {
+        let mut line = String::new();
+        timeout(Duration::from_secs(3), reader.read_line(&mut line))
+            .await
+            .expect("timed out reading TLS line")
+            .expect("TLS read error");
+        serde_json::from_str(&line).expect("valid JSON over TLS")
+    }
+
+    // 4. mining.subscribe over TLS
+    send_tls_json(
+        &mut write_half,
+        json!({"id": 1, "method": "mining.subscribe", "params": ["TlsTestMiner/1.0"]}),
+    )
+    .await;
+    let sub_resp = read_tls_json(&mut reader).await;
+    assert_eq!(sub_resp["id"], 1);
+    assert!(sub_resp["error"].is_null());
+    assert_eq!(sub_resp["result"][2], 4);
+    assert_eq!(sub_resp["result"][3]["profile"], KOVANICA_STRATUM_CAPABILITY);
+
+    // 5. mining.authorize over TLS
+    let (_sk, pk) = generate_keypair();
+    let username = format!("{}.tls_rig", Address(pk.0).encode());
+    send_tls_json(
+        &mut write_half,
+        json!({"id": 2, "method": "mining.authorize", "params": [username.clone(), "x"]}),
+    )
+    .await;
+    let auth_resp = read_tls_json(&mut reader).await;
+    assert_eq!(auth_resp["id"], 2);
+    assert_eq!(auth_resp["result"], true);
+
+    let diff_notif = read_tls_json(&mut reader).await;
+    assert_eq!(diff_notif["method"], "mining.set_difficulty");
+
+    // 6. Inject job and receive mining.notify over TLS
+    let header = create_test_header(314, 0x207fffff);
+    let job_ts = header.timestamp;
+    let job = gateway.job_manager().add_template(header);
+    gateway.broadcast_notify(&job);
+
+    let notify = read_tls_json(&mut reader).await;
+    assert_eq!(notify["method"], "mining.notify");
+    assert_eq!(notify["params"][0], job.job_id);
+    let ntime_hex = notify["params"][7]
+        .as_str()
+        .expect("notify ntime")
+        .to_string();
+
+    // 7. Invalid extranonce2 over TLS -> error code 25
+    send_tls_json(
+        &mut write_half,
+        json!({
+            "id": 3,
+            "method": "mining.submit",
+            "params": [username.clone(), job.job_id, "bad_en2", ntime_hex.clone(), "00000001"]
+        }),
+    )
+    .await;
+    let bad_en2_resp = read_tls_json(&mut reader).await;
+    assert_eq!(bad_en2_resp["id"], 3);
+    assert_eq!(bad_en2_resp["error"][0], 25);
+
+    // 8. Out-of-range ntime over TLS -> error code 25
+    send_tls_json(
+        &mut write_half,
+        json!({
+            "id": 4,
+            "method": "mining.submit",
+            "params": [
+                username.clone(),
+                job.job_id,
+                "00000001",
+                format!("{:08x}", job_ts + kovanica_stratum::MAX_NTIME_DRIFT_MS + 10),
+                "00000001"
+            ]
+        }),
+    )
+    .await;
+    let bad_ntime_resp = read_tls_json(&mut reader).await;
+    assert_eq!(bad_ntime_resp["id"], 4);
+    assert_eq!(bad_ntime_resp["error"][0], 25);
+
+    // 9. Valid mining.submit over TLS -> accepted
+    send_tls_json(
+        &mut write_half,
+        json!({
+            "id": 5,
+            "method": "mining.submit",
+            "params": [username.clone(), job.job_id, "00000001", ntime_hex.clone(), "00000042"]
+        }),
+    )
+    .await;
+    let ok_resp = read_tls_json(&mut reader).await;
+    assert_eq!(ok_resp["id"], 5);
+    assert_eq!(ok_resp["result"], true);
+    assert!(ok_resp["error"].is_null());
+
+    // 10. Duplicate submit over TLS -> error code 22
+    send_tls_json(
+        &mut write_half,
+        json!({
+            "id": 6,
+            "method": "mining.submit",
+            "params": [username, job.job_id, "00000001", ntime_hex, "00000042"]
+        }),
+    )
+    .await;
+    let dup_resp = read_tls_json(&mut reader).await;
+    assert_eq!(dup_resp["id"], 6);
+    assert_eq!(dup_resp["error"][0], 22);
+
+    assert_eq!(gateway.metrics().tls_handshake_success.get(), 1);
+    assert_eq!(gateway.metrics().tls_handshake_failure.get(), 0);
 
     gateway.shutdown();
 }
