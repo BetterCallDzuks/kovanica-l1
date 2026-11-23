@@ -363,7 +363,7 @@ Pool response:
 
 #### 3. Share Difficulty Adjustment (`mining.set_difficulty`)
 
-The pool sends the configured static share difficulty. Variable difficulty based on measured worker hashrate is not implemented yet:
+The pool sends the configured static share difficulty by default, or dynamically adjusts per-worker share difficulty when bounded VarDiff is enabled (`--vardiff-enabled`):
 
 ```json
 {"id": null, "method": "mining.set_difficulty", "params": [0.05]}
@@ -455,6 +455,32 @@ kovanica-stratum \
 | `--chain-id <ID>` | `2` | Target network chain ID (1 = Mainnet, 2 = Testnet). |
 | `--payout-address <ADDR>` | Canonical burn address | Pool payout address (`kvnc...dag`) used when fetching work; must be 64-character canonical PRO-21. |
 | `--poll-interval-ms <MS>` | `500` | Upstream work template polling interval in milliseconds. |
+| `--drain-timeout-secs <SECS>` | `15` | Graceful drain timeout in seconds before closing remaining worker connections on shutdown. |
+
+### Graceful Drain, Health & OpenMetrics Telemetry
+
+#### Graceful Drain Mode (`--drain-timeout-secs`)
+
+When `kovanica-stratum` receives a shutdown signal (`SIGTERM` or `SIGINT`), it transitions into graceful drain mode rather than dropping miners abruptly:
+
+1. **Reconnect Broadcast:** The gateway broadcasts a Stratum `client.reconnect` notification (`{"id":null,"method":"client.reconnect","params":[host,port,wait_time_secs]}`) to all active subscribed worker sessions so rigs can smoothly reconnect to another gateway or restart target.
+2. **Health Status:** The HTTP `/health` endpoint (served on the metrics/health listener, default `127.0.0.1:9090`) reports `"status": "draining"` while drain is in progress so load balancers and monitors (`ops/monitoring/check-cluster.py --stratum-health-url ...`) stop routing new traffic to the draining instance.
+3. **Drain Timeout:** The gateway waits up to `--drain-timeout-secs` (default `15` seconds) for active sessions to disconnect cleanly before closing any remaining worker connections.
+
+#### OpenMetrics (`/metrics`) & Alerting
+
+`kovanica-stratum` exposes OpenMetrics telemetry at `GET /metrics` (default `http://127.0.0.1:9090/metrics`). Key operator metrics include:
+
+| Metric | Type | Description |
+|---|---|---|
+| `stratum_active_workers` | Gauge | Currently active/authorized Stratum worker sessions. |
+| `stratum_shares_accepted_total` | Counter | Total valid shares accepted by the gateway. |
+| `stratum_shares_rejected_total` | Counter | Total rejected shares (stale, duplicate, low-difficulty, or invalid). |
+| `stratum_vardiff_adjustments_total` | Counter | Total per-worker VarDiff share difficulty retarget adjustments. |
+| `stratum_graceful_drain_active` | Gauge | `1` while the gateway is in graceful drain mode; `0` during normal operation. |
+| `stratum_graceful_drains_total` | Counter | Total graceful drain sequences initiated since process start. |
+
+Production Prometheus alert rules for the Stratum gateway are maintained in [`ops/monitoring/kovanica-stratum-alerts.yml`](../ops/monitoring/kovanica-stratum-alerts.yml), covering gateway availability (`StratumGatewayDown`), share rejection spikes (`StratumHighShareRejectionRatio`), zero active workers (`StratumZeroActiveWorkers`), stuck drains (`StratumGracefulDrainStuck`), VarDiff churn (`StratumHighVarDiffChurn`), TLS handshake failures (`StratumTlsHandshakeFailureSpike`), stale templates (`StratumStaleTemplateNoNewJobs`), IP ban storms (`StratumIpBanStorm`), and idle session evictions (`StratumHighIdleSessionEvictionRate`).
 
 ### Mining via CLI with Stratum Client
 
