@@ -62,6 +62,10 @@ static RPC_GET_LOGS_BLOCKS_SCANNED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_GET_LOGS_RESULTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_GET_LOGS_TRUNCATED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
+/// Process-wide `kovanica_sendRawTransaction` telemetry counters (exported on `/metrics`).
+static RPC_TX_SUBMITTED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_TX_REJECTED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
 /// Total blocks scanned across `kovanica_getLogs` calls.
 pub fn rpc_get_logs_blocks_scanned_total() -> u64 {
     RPC_GET_LOGS_BLOCKS_SCANNED_TOTAL.load(Ordering::Relaxed)
@@ -76,6 +80,17 @@ pub fn rpc_get_logs_results_total() -> u64 {
 /// or scan-time limits.
 pub fn rpc_get_logs_truncated_total() -> u64 {
     RPC_GET_LOGS_TRUNCATED_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Total raw transactions accepted by `kovanica_sendRawTransaction`.
+pub fn rpc_tx_submitted_total() -> u64 {
+    RPC_TX_SUBMITTED_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Total raw transactions rejected during decode, validation, or submission in
+/// `kovanica_sendRawTransaction`.
+pub fn rpc_tx_rejected_total() -> u64 {
+    RPC_TX_REJECTED_TOTAL.load(Ordering::Relaxed)
 }
 
 // ============================================================================
@@ -844,6 +859,19 @@ pub async fn handle_send_raw_transaction(
     params: Value,
     state: RpcState,
 ) -> Result<Value, RpcError> {
+    match submit_raw_transaction(params, state) {
+        Ok(hash) => {
+            RPC_TX_SUBMITTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+            Ok(hash)
+        }
+        Err(err) => {
+            RPC_TX_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+            Err(err)
+        }
+    }
+}
+
+fn submit_raw_transaction(params: Value, state: RpcState) -> Result<Value, RpcError> {
     let args = params_vec(&params);
     let raw = required(&args, 0, "raw transaction")?
         .as_str()

@@ -1,7 +1,8 @@
-//! Read-only transaction inspection subcommands (`kovanica tx receipt`).
+//! Read-only transaction inspection subcommands (`kovanica tx receipt`, `kovanica tx decode`).
 //!
-//! These commands never sign or submit transactions; they invoke the node's
-//! read-only JSON-RPC endpoints (such as `kovanica_getTransactionReceipt`).
+//! These commands never sign or submit transactions; `receipt` invokes the node's
+//! read-only JSON-RPC endpoint (`kovanica_getTransactionReceipt`), while `decode`
+//! inspects a raw Bincode-encoded transaction completely offline.
 
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,7 @@ use serde_json::{json, Value};
 use crate::contract_inspect::parse_bytes32_hex;
 use crate::output;
 use crate::rpc::{parse_quantity, RpcClient};
+use crate::tx_decode::{self, TxDecodeArgs};
 
 /// Default timeout in seconds when `--wait` is passed to `kovanica tx receipt`.
 pub const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 60;
@@ -25,6 +27,8 @@ pub const DEFAULT_POLL_INTERVAL_MS: u64 = 1_000;
 pub enum TxInspectCommand {
     /// Fetch a transaction receipt via `kovanica_getTransactionReceipt`
     Receipt(TxReceiptArgs),
+    /// Decode and verify a raw Bincode-encoded transaction offline (no RPC calls)
+    Decode(TxDecodeArgs),
 }
 
 /// Arguments for `kovanica tx receipt`.
@@ -176,9 +180,15 @@ pub fn format_receipt_rows(summary: &ReceiptSummary) -> Vec<(&'static str, Strin
 }
 
 /// Execute `kovanica tx <subcommand>`.
-pub async fn run(client: &RpcClient, command: TxInspectCommand, json_output: bool) -> Result<()> {
+pub async fn run(
+    client: &RpcClient,
+    command: TxInspectCommand,
+    chain_id: Option<u64>,
+    json_output: bool,
+) -> Result<()> {
     match command {
         TxInspectCommand::Receipt(args) => run_receipt(client, args, json_output).await,
+        TxInspectCommand::Decode(args) => tx_decode::run_decode(args, chain_id, json_output),
     }
 }
 
