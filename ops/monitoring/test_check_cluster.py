@@ -233,10 +233,152 @@ class TestEvaluateStratumHealth(unittest.TestCase):
         self.assertGreaterEqual(len(res_bad_types["alerts"]), 2)
 
 
+class TestEvaluateIndexerHealth(unittest.TestCase):
+    def test_healthy_synced_indexer_payload(self) -> None:
+        payload = {
+            "status": "ok",
+            "indexed_height": 1000,
+            "node_head_height": 1002,
+            "lag_blocks": 2,
+            "sync_state": "synced",
+            "event_count": 420,
+        }
+        res = check_cluster.evaluate_indexer_health(payload)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["sync_state"], "synced")
+        self.assertEqual(res["lag_blocks"], 2)
+        self.assertEqual(res["indexed_height"], 1000)
+        self.assertEqual(res["node_head_height"], 1002)
+        self.assertEqual(res["alerts"], [])
+        self.assertEqual(res["warnings"], [])
+
+    def test_lagging_indexer_warns_without_alerting(self) -> None:
+        payload = {
+            "status": "ok",
+            "indexed_height": 980,
+            "node_head_height": 1000,
+            "lag_blocks": 20,
+            "sync_state": "lagging",
+        }
+        res = check_cluster.evaluate_indexer_health(payload)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["alerts"], [])
+        self.assertTrue(any("lag_blocks 20 > 10" in w for w in res["warnings"]))
+        self.assertTrue(any("sync_state is 'lagging'" in w for w in res["warnings"]))
+
+    def test_stalled_indexer_alerts(self) -> None:
+        payload = {
+            "status": "ok",
+            "indexed_height": 900,
+            "node_head_height": 1000,
+            "lag_blocks": 100,
+            "sync_state": "stalled",
+        }
+        res = check_cluster.evaluate_indexer_health(payload)
+        self.assertFalse(res["ok"])
+        self.assertTrue(any("Indexer stalled" in a for a in res["alerts"]))
+        self.assertTrue(any("sync_state is 'stalled'" in a for a in res["alerts"]))
+
+    def test_malformed_indexer_payloads(self) -> None:
+        for bad in (None, [], "ok", 123):
+            res = check_cluster.evaluate_indexer_health(bad)
+            self.assertFalse(res["ok"])
+            self.assertTrue(res["alerts"])
+
+        res_bad_fields = check_cluster.evaluate_indexer_health({
+            "status": "degraded",
+            "indexed_height": -1,
+            "node_head_height": "100",
+            "lag_blocks": True,
+            "sync_state": "unknown_state",
+        })
+        self.assertFalse(res_bad_fields["ok"])
+        self.assertGreaterEqual(len(res_bad_fields["alerts"]), 5)
+
+
+class TestEvaluateFaucetHealth(unittest.TestCase):
+    def test_healthy_plain_text_faucet_with_canonical_headers(self) -> None:
+        headers = {
+            "X-Kovanica-Network-Tag": "2-24cdb5fadd98b207",
+            "X-Kovanica-Chain-Id": "2",
+        }
+        res = check_cluster.evaluate_faucet_health("OK", headers=headers)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["network_tag"], "2-24cdb5fadd98b207")
+        self.assertEqual(res["alerts"], [])
+        self.assertEqual(res["warnings"], [])
+
+    def test_healthy_json_faucet_with_balance_above_floor(self) -> None:
+        payload = {
+            "status": "ok",
+            "balance_atoms": 500_000_000_000,
+            "network_tag": "2-24cdb5fadd98b207",
+        }
+        res = check_cluster.evaluate_faucet_health(
+            payload,
+            headers={"x-kovanica-network-tag": "2-24cdb5fadd98b207"},
+            min_balance_atoms=100_000_000_000,
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["balance_atoms"], 500_000_000_000)
+        self.assertEqual(res["alerts"], [])
+
+    def test_faucet_low_balance_alerts(self) -> None:
+        payload = {
+            "status": "ok",
+            "balance_atoms": 50_000_000_000,
+        }
+        headers = {"X-Kovanica-Network-Tag": "2-24cdb5fadd98b207"}
+        res = check_cluster.evaluate_faucet_health(
+            payload,
+            headers=headers,
+            min_balance_atoms=100_000_000_000,
+        )
+        self.assertFalse(res["ok"])
+        self.assertTrue(any("below minimum floor" in a for a in res["alerts"]))
+
+    def test_faucet_wrong_canonical_tag_alerts(self) -> None:
+        headers = {"X-Kovanica-Network-Tag": "1-f35df34c92001436"}
+        res = check_cluster.evaluate_faucet_health("OK", headers=headers)
+        self.assertFalse(res["ok"])
+        self.assertTrue(any("canonical network tag mismatch" in a for a in res["alerts"]))
+
+    def test_faucet_missing_header_tag_alerts(self) -> None:
+        res = check_cluster.evaluate_faucet_health("OK", headers={})
+        self.assertFalse(res["ok"])
+        self.assertTrue(any("Missing or empty X-Kovanica-Network-Tag" in a for a in res["alerts"]))
+
+    def test_faucet_wrong_chain_id_header_alerts(self) -> None:
+        headers = {
+            "X-Kovanica-Network-Tag": "2-24cdb5fadd98b207",
+            "X-Kovanica-Chain-Id": "1",
+        }
+        res = check_cluster.evaluate_faucet_health("OK", headers=headers)
+        self.assertFalse(res["ok"])
+        self.assertTrue(any("X-Kovanica-Chain-Id mismatch" in a for a in res["alerts"]))
+
+    def test_faucet_malformed_payload_and_bad_status(self) -> None:
+        for bad in (None, [], 42):
+            res = check_cluster.evaluate_faucet_health(bad)
+            self.assertFalse(res["ok"])
+            self.assertTrue(res["alerts"])
+
+        res_bad_status = check_cluster.evaluate_faucet_health(
+            {"status": "unavailable", "balance_atoms": -5},
+            headers={"X-Kovanica-Network-Tag": "2-24cdb5fadd98b207"},
+        )
+        self.assertFalse(res_bad_status["ok"])
+        self.assertGreaterEqual(len(res_bad_status["alerts"]), 2)
+
+
 class TestCliArgs(unittest.TestCase):
     def test_defaults_preserve_backwards_compatibility(self) -> None:
         args = check_cluster.parse_args([])
         self.assertIsNone(args.stratum_health_url)
+        self.assertIsNone(args.indexer_health_url)
+        self.assertIsNone(args.faucet_health_url)
         self.assertEqual(args.expected_chain_id, 2)
         self.assertFalse(args.skip_header_check)
         self.assertFalse(args.skip_batch_check)
@@ -247,6 +389,16 @@ class TestCliArgs(unittest.TestCase):
         )
         self.assertEqual(args.stratum_health_url, "http://127.0.0.1:9100/health")
         self.assertEqual(args.expected_chain_id, 1)
+
+    def test_indexer_and_faucet_health_url_flags(self) -> None:
+        args = check_cluster.parse_args([
+            "--indexer-health-url",
+            "http://127.0.0.1:8080/health",
+            "--faucet-health-url",
+            "http://127.0.0.1:8081/health",
+        ])
+        self.assertEqual(args.indexer_health_url, "http://127.0.0.1:8080/health")
+        self.assertEqual(args.faucet_health_url, "http://127.0.0.1:8081/health")
 
 
 if __name__ == "__main__":

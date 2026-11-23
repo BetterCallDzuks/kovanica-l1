@@ -34,6 +34,7 @@ CANONICAL_NETWORK_TAGS: dict[int, str] = {
 
 NETWORK_TAG_HEADER = "x-kovanica-network-tag"
 RPC_VERSION_HEADER = "x-kovanica-rpc-version"
+CHAIN_ID_HEADER = "x-kovanica-chain-id"
 _NETWORK_TAG_RE = re.compile(r"^(\d+)-([0-9a-f]{16})$")
 _HEX_QUANTITY_RE = re.compile(r"^0[xX][0-9a-fA-F]+$")
 
@@ -50,6 +51,9 @@ BATCH_ID_TO_METHOD: dict[int, str] = {
 }
 
 STRATUM_MAX_REJECTION_RATIO = 0.10
+INDEXER_LAG_WARN_BLOCKS = 10
+INDEXER_LAG_STALLED_BLOCKS = 50
+FAUCET_DEFAULT_MIN_BALANCE_ATOMS = 100_000_000_000
 
 
 def _is_non_negative_int(value: Any) -> bool:
@@ -339,6 +343,223 @@ def evaluate_stratum_health(health_payload: Any) -> dict[str, Any]:
     }
 
 
+def evaluate_indexer_health(health_payload: Any) -> dict[str, Any]:
+    """
+    Evaluate a kovanica-indexer /health payload for:
+    - status ("ok" / "healthy")
+    - sync_state ("synced", "lagging" -> warning, "stalled" -> alert)
+    - lag_blocks (> 10 warning, > 50 alert)
+    - indexed_height and node_head_height (non-negative integers)
+    """
+    alerts: list[str] = []
+    warnings: list[str] = []
+
+    if not isinstance(health_payload, dict):
+        return {
+            "ok": False,
+            "status": None,
+            "sync_state": None,
+            "lag_blocks": None,
+            "indexed_height": None,
+            "node_head_height": None,
+            "alerts": ["Malformed indexer health payload: expected JSON object"],
+            "warnings": warnings,
+        }
+
+    raw_status = health_payload.get("status")
+    status = raw_status.strip().lower() if isinstance(raw_status, str) and raw_status.strip() else None
+    if status is None:
+        alerts.append("Malformed indexer health payload: missing or invalid 'status'")
+    elif status not in ("ok", "healthy"):
+        alerts.append(f"Unexpected indexer status: {raw_status!r}")
+
+    raw_indexed = health_payload.get("indexed_height")
+    indexed_height: int | None = None
+    if not _is_non_negative_int(raw_indexed):
+        alerts.append(
+            f"Malformed indexer health payload: invalid 'indexed_height' value {raw_indexed!r}"
+        )
+    else:
+        indexed_height = raw_indexed
+
+    raw_head = health_payload.get("node_head_height")
+    node_head_height: int | None = None
+    if not _is_non_negative_int(raw_head):
+        alerts.append(
+            f"Malformed indexer health payload: invalid 'node_head_height' value {raw_head!r}"
+        )
+    else:
+        node_head_height = raw_head
+
+    raw_lag = health_payload.get("lag_blocks")
+    lag_blocks: int | None = None
+    if not _is_non_negative_int(raw_lag):
+        alerts.append(
+            f"Malformed indexer health payload: invalid 'lag_blocks' value {raw_lag!r}"
+        )
+    else:
+        lag_blocks = raw_lag
+        if lag_blocks > INDEXER_LAG_STALLED_BLOCKS:
+            alerts.append(
+                f"Indexer stalled: lag_blocks {lag_blocks} > {INDEXER_LAG_STALLED_BLOCKS}"
+            )
+        elif lag_blocks > INDEXER_LAG_WARN_BLOCKS:
+            warnings.append(
+                f"Indexer lagging: lag_blocks {lag_blocks} > {INDEXER_LAG_WARN_BLOCKS}"
+            )
+
+    raw_sync_state = health_payload.get("sync_state")
+    sync_state = (
+        raw_sync_state.strip().lower()
+        if isinstance(raw_sync_state, str) and raw_sync_state.strip()
+        else None
+    )
+    if sync_state is None:
+        alerts.append("Malformed indexer health payload: missing or invalid 'sync_state'")
+    elif sync_state == "stalled":
+        alerts.append("Indexer sync_state is 'stalled'")
+    elif sync_state == "lagging":
+        warnings.append("Indexer sync_state is 'lagging'")
+    elif sync_state != "synced":
+        alerts.append(f"Unexpected indexer sync_state: {raw_sync_state!r}")
+
+    return {
+        "ok": len(alerts) == 0,
+        "status": status,
+        "sync_state": sync_state,
+        "lag_blocks": lag_blocks,
+        "indexed_height": indexed_height,
+        "node_head_height": node_head_height,
+        "alerts": alerts,
+        "warnings": warnings,
+    }
+
+
+def evaluate_faucet_health(
+    health_payload: Any,
+    headers: dict[str, Any] | Any = None,
+    min_balance_atoms: int | None = None,
+) -> dict[str, Any]:
+    """
+    Evaluate a kovanica-faucet /health response (JSON object or plain-text "OK")
+    and optional HTTP response headers for:
+    - healthy status ("ok" / "healthy")
+    - Chain 2 canonical network tag ("2-24cdb5fadd98b207")
+    - optional faucet balance floor (default: 100_000_000_000 atoms)
+    """
+    alerts: list[str] = []
+    warnings: list[str] = []
+    expected_tag = CANONICAL_NETWORK_TAGS[2]
+
+    effective_min_balance = (
+        FAUCET_DEFAULT_MIN_BALANCE_ATOMS if min_balance_atoms is None else min_balance_atoms
+    )
+    if not _is_non_negative_int(effective_min_balance):
+        alerts.append(
+            f"Invalid min_balance_atoms threshold: {effective_min_balance!r} "
+            "(expected non-negative integer)"
+        )
+        effective_min_balance = FAUCET_DEFAULT_MIN_BALANCE_ATOMS
+
+    status: str | None = None
+    balance_atoms: int | None = None
+    payload_network_tag: str | None = None
+
+    if isinstance(health_payload, str):
+        stripped = health_payload.strip().lower()
+        if not stripped:
+            alerts.append("Malformed faucet health payload: empty status string")
+        else:
+            status = stripped
+            if status not in ("ok", "healthy"):
+                alerts.append(f"Unexpected faucet status: {health_payload!r}")
+    elif isinstance(health_payload, dict):
+        raw_status = health_payload.get("status")
+        status = (
+            raw_status.strip().lower()
+            if isinstance(raw_status, str) and raw_status.strip()
+            else None
+        )
+        if status is None:
+            alerts.append("Malformed faucet health payload: missing or invalid 'status'")
+        elif status not in ("ok", "healthy"):
+            alerts.append(f"Unexpected faucet status: {raw_status!r}")
+
+        if "balance_atoms" in health_payload or "faucet_balance_atoms" in health_payload:
+            raw_balance = (
+                health_payload.get("balance_atoms")
+                if "balance_atoms" in health_payload
+                else health_payload.get("faucet_balance_atoms")
+            )
+            if raw_balance is not None:
+                if not _is_non_negative_int(raw_balance):
+                    alerts.append(
+                        f"Malformed faucet health payload: invalid balance value {raw_balance!r}"
+                    )
+                else:
+                    balance_atoms = raw_balance
+                    if balance_atoms < effective_min_balance:
+                        alerts.append(
+                            f"Faucet balance below minimum floor: {balance_atoms} < "
+                            f"{effective_min_balance} atoms"
+                        )
+
+        raw_payload_tag = health_payload.get("network_tag")
+        if isinstance(raw_payload_tag, str) and raw_payload_tag.strip():
+            payload_network_tag = raw_payload_tag.strip()
+        elif raw_payload_tag is not None:
+            alerts.append(
+                f"Malformed faucet health payload: invalid 'network_tag' value {raw_payload_tag!r}"
+            )
+    else:
+        alerts.append("Malformed faucet health payload: expected JSON object or status string")
+
+    header_network_tag: str | None = None
+    if headers is not None:
+        if not hasattr(headers, "items"):
+            alerts.append("Invalid headers object: expected mapping")
+        else:
+            lowered: dict[str, Any] = {}
+            for key, value in headers.items():
+                if isinstance(key, str):
+                    lowered[key.lower()] = value
+
+            raw_tag = lowered.get(NETWORK_TAG_HEADER)
+            header_network_tag = raw_tag.strip() if isinstance(raw_tag, str) and raw_tag.strip() else None
+            if not header_network_tag:
+                alerts.append("Missing or empty X-Kovanica-Network-Tag header")
+
+            raw_chain_id = lowered.get(CHAIN_ID_HEADER)
+            if raw_chain_id is not None:
+                chain_id_str = raw_chain_id.strip() if isinstance(raw_chain_id, str) else str(raw_chain_id)
+                if chain_id_str != "2":
+                    alerts.append(
+                        f"Faucet X-Kovanica-Chain-Id mismatch: got {chain_id_str!r}, expected '2'"
+                    )
+
+    network_tag = header_network_tag if header_network_tag is not None else payload_network_tag
+    if network_tag is not None:
+        if network_tag != expected_tag:
+            alerts.append(
+                f"Faucet canonical network tag mismatch: got {network_tag!r}, expected {expected_tag!r}"
+            )
+    elif headers is None:
+        warnings.append(
+            f"Faucet network tag not provided; could not verify canonical tag {expected_tag!r}"
+        )
+
+    return {
+        "ok": len(alerts) == 0,
+        "status": status,
+        "network_tag": network_tag,
+        "expected_network_tag": expected_tag,
+        "balance_atoms": balance_atoms,
+        "min_balance_atoms": effective_min_balance,
+        "alerts": alerts,
+        "warnings": warnings,
+    }
+
+
 def check_health(base_url: str, timeout: float = 5) -> dict[str, Any]:
     health_url = f"{base_url}/health"
     req = urllib.request.Request(health_url, headers={"User-Agent": "Kovanica-Monitor/1.0"})
@@ -426,14 +647,72 @@ def check_stratum_health(health_url: str, timeout: float = 5) -> dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+def check_indexer_health(health_url: str, timeout: float = 5) -> dict[str, Any]:
+    req = urllib.request.Request(health_url, headers={"User-Agent": "Kovanica-Monitor/1.0"})
+    start = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            latency_ms = int((time.time() - start) * 1000)
+            payload = json.loads(resp.read().decode("utf-8"))
+            evaluation = evaluate_indexer_health(payload)
+            return {
+                "status": "ok" if evaluation["ok"] else "error",
+                "latency_ms": latency_ms,
+                "evaluation": evaluation,
+            }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def check_faucet_health(
+    health_url: str,
+    timeout: float = 5,
+    min_balance_atoms: int | None = None,
+) -> dict[str, Any]:
+    req = urllib.request.Request(health_url, headers={"User-Agent": "Kovanica-Monitor/1.0"})
+    start = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            latency_ms = int((time.time() - start) * 1000)
+            headers = dict(resp.headers.items())
+            raw_body = resp.read().decode("utf-8")
+            try:
+                payload: Any = json.loads(raw_body)
+            except json.JSONDecodeError:
+                payload = raw_body.strip()
+            evaluation = evaluate_faucet_health(
+                payload,
+                headers=headers,
+                min_balance_atoms=min_balance_atoms,
+            )
+            return {
+                "status": "ok" if evaluation["ok"] else "error",
+                "latency_ms": latency_ms,
+                "headers": headers,
+                "evaluation": evaluation,
+            }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Kovanica Chain 2 Testnet Health, RPC Batch/Header & Stratum Monitor"
+        description="Kovanica Chain 2 Testnet Health, RPC Batch/Header, Stratum, Indexer & Faucet Monitor"
     )
     parser.add_argument(
         "--stratum-health-url",
         default=None,
         help="Optional Stratum gateway /health URL to check for drain and share rejection health.",
+    )
+    parser.add_argument(
+        "--indexer-health-url",
+        default=None,
+        help="Optional kovanica-indexer /health URL to check for sync_state and lag_blocks.",
+    )
+    parser.add_argument(
+        "--faucet-health-url",
+        default=None,
+        help="Optional kovanica-faucet /health URL to check for status, canonical Chain 2 tag, and balance.",
     )
     parser.add_argument(
         "--expected-chain-id",
@@ -571,6 +850,53 @@ def main(argv: list[str] | None = None) -> None:
             print(
                 f"{status_sym:6} {'stratum':<12} | Status: {str(ev['status']):<8} | "
                 f"Workers: {str(workers):<4} | Reject Ratio: {ratio:<7} | Latency: {lat}ms"
+            )
+            for alert in ev["alerts"]:
+                print(f"       -> ALERT: {alert}")
+            for warning in ev["warnings"]:
+                print(f"       -> WARNING: {warning}")
+
+    if args.indexer_health_url:
+        indexer = check_indexer_health(args.indexer_health_url, timeout=args.timeout)
+        indexer_ok = indexer["status"] == "ok"
+        if not indexer_ok:
+            overall_healthy = False
+
+        status_sym = "[OK]" if indexer_ok else "[FAIL]"
+        if "error" in indexer:
+            print(f"{status_sym:6} {'indexer':<12} | URL: {args.indexer_health_url}")
+            print(f"       -> ALERT: Indexer health check failed: {indexer['error']}")
+        else:
+            ev = indexer["evaluation"]
+            lat = indexer.get("latency_ms", "N/A")
+            print(
+                f"{status_sym:6} {'indexer':<12} | Sync: {str(ev['sync_state']):<8} | "
+                f"Height: {str(ev['indexed_height']):<6} / {str(ev['node_head_height']):<6} | "
+                f"Lag: {str(ev['lag_blocks']):<4} | Latency: {lat}ms"
+            )
+            for alert in ev["alerts"]:
+                print(f"       -> ALERT: {alert}")
+            for warning in ev["warnings"]:
+                print(f"       -> WARNING: {warning}")
+
+    if args.faucet_health_url:
+        faucet = check_faucet_health(args.faucet_health_url, timeout=args.timeout)
+        faucet_ok = faucet["status"] == "ok"
+        if not faucet_ok:
+            overall_healthy = False
+
+        status_sym = "[OK]" if faucet_ok else "[FAIL]"
+        if "error" in faucet:
+            print(f"{status_sym:6} {'faucet':<12} | URL: {args.faucet_health_url}")
+            print(f"       -> ALERT: Faucet health check failed: {faucet['error']}")
+        else:
+            ev = faucet["evaluation"]
+            lat = faucet.get("latency_ms", "N/A")
+            bal = ev["balance_atoms"] if ev["balance_atoms"] is not None else "N/A"
+            tag = ev["network_tag"] if ev["network_tag"] is not None else "N/A"
+            print(
+                f"{status_sym:6} {'faucet':<12} | Status: {str(ev['status']):<8} | "
+                f"Tag: {str(tag):<18} | Balance: {str(bal):<14} | Latency: {lat}ms"
             )
             for alert in ev["alerts"]:
                 print(f"       -> ALERT: {alert}")
