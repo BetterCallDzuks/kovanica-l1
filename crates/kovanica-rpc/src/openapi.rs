@@ -32,6 +32,8 @@ pub struct OpenApiServer {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OpenApiPathItem {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub get: Option<OpenApiOperation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub post: Option<OpenApiOperation>,
 }
 
@@ -42,7 +44,7 @@ pub struct OpenApiOperation {
     #[serde(rename = "operationId")]
     pub operation_id: String,
     pub tags: Vec<String>,
-    #[serde(rename = "requestBody")]
+    #[serde(rename = "requestBody", skip_serializing_if = "Option::is_none")]
     pub request_body: Option<OpenApiRequestBody>,
     pub responses: BTreeMap<String, OpenApiResponse>,
 }
@@ -59,8 +61,16 @@ pub struct OpenApiMediaType {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OpenApiHeader {
+    pub description: String,
+    pub schema: Value,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OpenApiResponse {
     pub description: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, OpenApiHeader>,
     pub content: BTreeMap<String, OpenApiMediaType>,
 }
 
@@ -360,6 +370,44 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
                 "reportedTipRound": { "type": ["integer", "null"] }
             },
             "required": ["peerId"]
+        }),
+    );
+
+    spec.components.schemas.insert(
+        "MempoolStats".to_string(),
+        json!({
+            "type": "object",
+            "description": "Read-only mempool size and fee-per-byte percentile snapshot (kovanica_mempoolStats)",
+            "properties": {
+                "pending_count": { "type": "integer", "minimum": 0 },
+                "total_bytes": { "type": "integer", "minimum": 0 },
+                "min_fee_per_byte": { "type": ["integer", "null"], "minimum": 0 },
+                "p50_fee_per_byte": { "type": ["integer", "null"], "minimum": 0 },
+                "p90_fee_per_byte": { "type": ["integer", "null"], "minimum": 0 },
+                "max_fee_per_byte": { "type": ["integer", "null"], "minimum": 0 }
+            },
+            "required": [
+                "pending_count",
+                "total_bytes",
+                "min_fee_per_byte",
+                "p50_fee_per_byte",
+                "p90_fee_per_byte",
+                "max_fee_per_byte"
+            ]
+        }),
+    );
+
+    spec.components.schemas.insert(
+        "HealthResponse".to_string(),
+        json!({
+            "type": "object",
+            "description": "Node health probe response (/health)",
+            "properties": {
+                "status": { "type": "string", "enum": ["ok", "degraded"] },
+                "peer_count": { "type": "integer", "minimum": 0 },
+                "healthy": { "type": "boolean" }
+            },
+            "required": ["status", "peer_count", "healthy"]
         }),
     );
 
@@ -679,6 +727,19 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             }),
             json!({
                 "$ref": "#/components/schemas/Quantity"
+            }),
+        ),
+        (
+            "kovanica_mempoolStats",
+            "Get mempool pending count, total bytes, and fee-per-byte percentiles",
+            "Mempool",
+            json!({
+                "type": "array",
+                "items": {},
+                "maxItems": 0
+            }),
+            json!({
+                "$ref": "#/components/schemas/MempoolStats"
             }),
         ),
         (
@@ -1070,6 +1131,31 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
         }
     });
 
+    let mut identity_headers = BTreeMap::new();
+    identity_headers.insert(
+        "X-Kovanica-Chain-Id".to_string(),
+        OpenApiHeader {
+            description:
+                "Decimal chain ID served by this node (e.g. 1 mainnet, 2 testnet, 3 devnet)."
+                    .to_string(),
+            schema: json!({ "type": "string", "pattern": "^[0-9]+$" }),
+        },
+    );
+    identity_headers.insert(
+        "X-Kovanica-Network-Tag".to_string(),
+        OpenApiHeader {
+            description: "Canonical network tag (<chain_id>-<16 hex of genesis digest>) advertised by this node.".to_string(),
+            schema: json!({ "type": "string" }),
+        },
+    );
+    identity_headers.insert(
+        "X-Kovanica-Rpc-Version".to_string(),
+        OpenApiHeader {
+            description: "kovanica-rpc crate version serving this endpoint.".to_string(),
+            schema: json!({ "type": "string" }),
+        },
+    );
+
     // Add the single /rpc endpoint
     let path = "/rpc";
     let operation = OpenApiOperation {
@@ -1091,6 +1177,7 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             let mut responses = BTreeMap::new();
             responses.insert("200".to_string(), OpenApiResponse {
                 description: "Successful response".to_string(),
+                headers: identity_headers.clone(),
                 content: {
                     let mut content = BTreeMap::new();
                     content.insert("application/json".to_string(), OpenApiMediaType {
@@ -1104,6 +1191,49 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
     };
 
     spec.paths.entry(path.to_string()).or_default().post = Some(operation);
+
+    // Add the /health probe endpoint
+    let health_content = || {
+        let mut content = BTreeMap::new();
+        content.insert(
+            "application/json".to_string(),
+            OpenApiMediaType {
+                schema: json!({ "$ref": "#/components/schemas/HealthResponse" }),
+            },
+        );
+        content
+    };
+    let health_operation = OpenApiOperation {
+        summary: "Node health probe".to_string(),
+        description:
+            "Returns HTTP 200 while execution and consensus are healthy, or HTTP 503 when degraded."
+                .to_string(),
+        operation_id: "health".to_string(),
+        tags: vec!["Health".to_string()],
+        request_body: None,
+        responses: {
+            let mut responses = BTreeMap::new();
+            responses.insert(
+                "200".to_string(),
+                OpenApiResponse {
+                    description: "Node is healthy".to_string(),
+                    headers: identity_headers.clone(),
+                    content: health_content(),
+                },
+            );
+            responses.insert(
+                "503".to_string(),
+                OpenApiResponse {
+                    description: "Node is degraded".to_string(),
+                    headers: identity_headers,
+                    content: health_content(),
+                },
+            );
+            responses
+        },
+    };
+
+    spec.paths.entry("/health".to_string()).or_default().get = Some(health_operation);
 
     spec
 }
@@ -1161,5 +1291,41 @@ mod tests {
             json.contains("\"kovanica_requestAirdrop\""),
             "Missing kovanica_requestAirdrop"
         );
+        assert!(
+            json.contains("\"kovanica_mempoolStats\""),
+            "Missing kovanica_mempoolStats"
+        );
+        assert!(
+            spec.components.schemas.contains_key("MempoolStats"),
+            "Missing MempoolStats schema"
+        );
+
+        let rpc_headers = &spec.paths["/rpc"]
+            .post
+            .as_ref()
+            .expect("/rpc POST operation")
+            .responses["200"]
+            .headers;
+        let health_headers = &spec.paths["/health"]
+            .get
+            .as_ref()
+            .expect("/health GET operation")
+            .responses["200"]
+            .headers;
+
+        for header in [
+            "X-Kovanica-Chain-Id",
+            "X-Kovanica-Network-Tag",
+            "X-Kovanica-Rpc-Version",
+        ] {
+            assert!(
+                rpc_headers.contains_key(header),
+                "Missing {header} on /rpc 200 response"
+            );
+            assert!(
+                health_headers.contains_key(header),
+                "Missing {header} on /health 200 response"
+            );
+        }
     }
 }

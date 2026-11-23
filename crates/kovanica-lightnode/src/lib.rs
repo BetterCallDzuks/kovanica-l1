@@ -23,7 +23,10 @@ use kovanica_keystore::{self, Keystore};
 use kovanica_types::Address;
 
 pub use config::LightConfig;
-pub use sync::{platform_note, SyncOutcome};
+pub use sync::{
+    platform_note, summarize_lightnode_sync, verify_canonical_network_tag, LightnodeSyncState,
+    LightnodeSyncSummary, SyncOutcome, CANONICAL_MAINNET_TAG, CANONICAL_TESTNET_TAG,
+};
 pub use transfer::{confirm_account, encode_raw, signed_transfer};
 
 /// Create a data directory, a config, and a new encrypted keystore.

@@ -2499,6 +2499,130 @@ mod wallet_cli_security_tests {
     }
 
     #[test]
+    fn tx_envelope_subcommands_parse_encode_and_decode_flags() {
+        use kovanica_cli::tx_envelope::{AirgapTxKind, TxEnvelopeCommand};
+
+        let sample_raw = "0xdeadbeef";
+        let sample_hash = format!("0x{}", "ab".repeat(32));
+
+        // 1. encode with defaults (--kind defaults to raw)
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "tx",
+            "envelope",
+            "encode",
+            sample_raw,
+            "--chain-id",
+            "1",
+        ])
+        .unwrap();
+        assert!(!cli.json);
+        assert_eq!(cli.chain_id, Some(1));
+        match cli.command {
+            Commands::Tx {
+                command:
+                    TxInspectCommand::Envelope {
+                        command: TxEnvelopeCommand::Encode(args),
+                    },
+            } => {
+                assert_eq!(args.raw_tx_hex, sample_raw);
+                assert_eq!(args.kind, AirgapTxKind::Raw);
+                assert_eq!(args.network_tag, None);
+                assert_eq!(args.signing_hash, None);
+            }
+            _ => panic!("expected tx envelope encode"),
+        }
+
+        // 2. encode with all optional flags + --json
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "tx",
+            "envelope",
+            "encode",
+            sample_raw,
+            "--chain-id",
+            "2",
+            "--kind",
+            "transfer",
+            "--network-tag",
+            "2-24cdb5fadd98b207",
+            "--signing-hash",
+            &sample_hash,
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        assert_eq!(cli.chain_id, Some(2));
+        match cli.command {
+            Commands::Tx {
+                command:
+                    TxInspectCommand::Envelope {
+                        command: TxEnvelopeCommand::Encode(args),
+                    },
+            } => {
+                assert_eq!(args.raw_tx_hex, sample_raw);
+                assert_eq!(args.kind, AirgapTxKind::Transfer);
+                assert_eq!(args.network_tag.as_deref(), Some("2-24cdb5fadd98b207"));
+                assert_eq!(args.signing_hash.as_deref(), Some(sample_hash.as_str()));
+            }
+            _ => panic!("expected tx envelope encode"),
+        }
+
+        // 3. encode rejects invalid --kind and missing <raw_tx_hex>
+        assert!(Cli::try_parse_from([
+            "kovanica", "tx", "envelope", "encode", sample_raw, "--kind", "unknown"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["kovanica", "tx", "envelope", "encode"]).is_err());
+
+        // 4. decode with defaults and with --expected-chain-id + --json
+        let sample_env = "kvnc-tx:v1:eyJ2ZXJzaW9uIjoxfQ";
+        let cli =
+            Cli::try_parse_from(["kovanica", "tx", "envelope", "decode", sample_env]).unwrap();
+        assert!(!cli.json);
+        match cli.command {
+            Commands::Tx {
+                command:
+                    TxInspectCommand::Envelope {
+                        command: TxEnvelopeCommand::Decode(args),
+                    },
+            } => {
+                assert_eq!(args.envelope, sample_env);
+                assert_eq!(args.expected_chain_id, None);
+            }
+            _ => panic!("expected tx envelope decode"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "tx",
+            "envelope",
+            "decode",
+            sample_env,
+            "--expected-chain-id",
+            "1",
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Tx {
+                command:
+                    TxInspectCommand::Envelope {
+                        command: TxEnvelopeCommand::Decode(args),
+                    },
+            } => {
+                assert_eq!(args.envelope, sample_env);
+                assert_eq!(args.expected_chain_id, Some(1));
+            }
+            _ => panic!("expected tx envelope decode"),
+        }
+
+        // 5. decode rejects missing <envelope_or_json>
+        assert!(Cli::try_parse_from(["kovanica", "tx", "envelope", "decode"]).is_err());
+    }
+
+    #[test]
     fn node_doctor_subcommand_parses_defaults_and_custom_flags() {
         let cli = Cli::try_parse_from(["kovanica", "node", "doctor"]).unwrap();
         assert_eq!(cli.rpc_url, "http://127.0.0.1:8545");

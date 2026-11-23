@@ -383,6 +383,20 @@ Default network configuration parameters (`crates/kovanica-node/src/config.rs`):
 - **`2`**: **kovanica-testnet** (chain ID 2) (`TESTNET` / `HYBRID_TESTNET`) — canonical Hybrid PoW + GHOSTDAG public testnet; enforces PRO-21 base32 addresses (legacy hex rejected). Official network tag: `2-24cdb5fadd98b207`. Node release: `v0.3.0-node`. External peers bootstrap at `seed1.kovanica.online:8000` (DNS name only; seed2 and seed3 are not hosts).
 - **`3`**: **kovanica-devnet** (chain ID 3, also used for local single-node testing) (`DEVNET`) — devnet; lenient address parsing; allows parameter overrides.
 
+### Operator CLI & Observability Surfaces
+- **CLI Diagnostics & Offline Inspectors (`kovanica-cli`)**:
+  - `kovanica node doctor`: Pre-flight RPC latency, chain ID, frozen canonical network tag, JSON-RPC 2.0 batch, peer/sync, and optional Stratum `/health` + `/workers` diagnostics.
+  - `kovanica rpc probe <url> [--expected-chain-id <id>] [--json]`: Single-POST JSON-RPC 2.0 batch probe with `X-Kovanica-Network-Tag`, `X-Kovanica-Rpc-Version`, and `X-Kovanica-Chain-Id` header verification.
+  - `kovanica snapshot verify <path> [--expected-chain-id <id>] [--json]`: Pre-restore manifest schema, path-safety, BLAKE3 checksum, and canonical network tag verification.
+  - `kovanica address inspect <addr> [--expected-chain-id <id>] [--json]`: Offline PRO-21 (`kvnc…dag` / `tknc…dag`) checksum and chain-policy inspector.
+  - `kovanica tx decode <hex> [--chain-id <id>] [--json]`: Offline Bincode wire transaction decoder & Ed25519 signature verifier.
+  - `kovanica tx envelope encode|decode`: Offline air-gapped `kvnc-tx:v1:<base64url>` BLAKE3-checksummed envelope codec (byte-compatible with `kovanica-sdk`).
+- **Service Telemetry & Monitoring (`ops/monitoring/`)**:
+  - **RPC (`kovanica-rpc`)**: `kovanica_mempoolStats`, identity headers (`X-Kovanica-Chain-Id`, `X-Kovanica-Network-Tag`, `X-Kovanica-Rpc-Version`), OpenMetrics `/metrics`, `kovanica-rpc-dashboard.json`, `kovanica-rpc-alerts.yml`.
+  - **Stratum (`kovanica-stratum`)**: Graceful drain (`client.reconnect`, `/health` `"draining"`, `--drain-timeout-secs`), OpenMetrics (`stratum_active_workers`, `stratum_vardiff_adjustments_total`, `stratum_graceful_drain_active`), `kovanica-stratum-alerts.yml`.
+  - **Faucet & Indexer (`kovanica-faucet`, `kovanica-indexer`)**: OpenMetrics `/metrics` (`faucet_*`, `indexer_*`), structured indexer `/health` (`sync_state`, `lag_blocks`), faucet identity headers, `kovanica-faucet-indexer-alerts.yml`, and `ops/monitoring/check-cluster.py` (with `test_check_cluster.py`).
+  - **Lightnode (`kovanica-lightnode`)**: `verify_canonical_network_tag` and `LightnodeSyncSummary` (`Synced` / `CatchingUp` / `Stalled`).
+
 ---
 
 ## 6. Key Documentation Links

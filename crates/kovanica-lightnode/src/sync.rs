@@ -10,12 +10,115 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use kovanica_light::verify_sealed_header;
 use kovanica_types::{Committee, Hash, LeaderHeader};
+use serde::{Deserialize, Serialize};
 
 use crate::config::LightConfig;
 use crate::rpc::RpcClient;
 
 /// File name of the last header whose seals verified.
 pub const HEADER_FILE: &str = "last-header.json";
+
+/// Canonical network tag for Kovanica Mainnet (chain 1).
+pub const CANONICAL_MAINNET_TAG: &str = "1-f35df34c92001436";
+
+/// Canonical network tag for Kovanica Testnet (chain 2).
+pub const CANONICAL_TESTNET_TAG: &str = "2-24cdb5fadd98b207";
+
+/// Maximum header lag considered fully synced when at least one verified peer is connected.
+const SYNCED_MAX_LAG_HEADERS: u64 = 2;
+
+/// Maximum header lag considered catching up before reporting a stall.
+const CATCHING_UP_MAX_LAG_HEADERS: u64 = 50;
+
+/// Coarse sync health classification for a light node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LightnodeSyncState {
+    /// Within 2 headers of the network head with at least one verified peer.
+    Synced,
+    /// Between 3 and 50 headers behind the network head with at least one verified peer.
+    CatchingUp,
+    /// More than 50 headers behind the network head, or zero verified peers.
+    Stalled,
+}
+
+/// Snapshot of light-node header sync progress and network identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LightnodeSyncSummary {
+    /// Current sync health classification.
+    pub sync_state: LightnodeSyncState,
+    /// Highest locally verified committed-leader header height.
+    pub header_height: u64,
+    /// Highest known network head height.
+    pub network_head_height: u64,
+    /// Saturated header lag (`network_head_height.saturating_sub(header_height)`).
+    pub lag_headers: u64,
+    /// Number of verified peers contributing to header sync.
+    pub verified_peers: usize,
+    /// Network tag observed from the peer / RPC endpoint.
+    pub network_tag: String,
+}
+
+/// Verify that `observed_tag` matches the canonical network tag for `chain_id`.
+///
+/// Fails closed on Chains 1 (mainnet) and 2 (testnet) if the tag does not match
+/// the exact canonical value. Allows any non-empty custom tag on Chain 3 / devnet.
+pub fn verify_canonical_network_tag(chain_id: u64, observed_tag: &str) -> Result<(), String> {
+    match chain_id {
+        1 => {
+            if observed_tag == CANONICAL_MAINNET_TAG {
+                Ok(())
+            } else {
+                Err(format!(
+                    "canonical network tag mismatch for chain 1 (mainnet): expected '{CANONICAL_MAINNET_TAG}', got '{observed_tag}'"
+                ))
+            }
+        }
+        2 => {
+            if observed_tag == CANONICAL_TESTNET_TAG {
+                Ok(())
+            } else {
+                Err(format!(
+                    "canonical network tag mismatch for chain 2 (testnet): expected '{CANONICAL_TESTNET_TAG}', got '{observed_tag}'"
+                ))
+            }
+        }
+        _ => {
+            if observed_tag.trim().is_empty() {
+                Err(format!(
+                    "empty network tag for chain {chain_id}: custom devnet tag must be non-empty"
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Summarize light-node header sync progress into a structured status report.
+pub fn summarize_lightnode_sync(
+    header_height: u64,
+    network_head_height: u64,
+    verified_peers: usize,
+    network_tag: String,
+) -> LightnodeSyncSummary {
+    let lag_headers = network_head_height.saturating_sub(header_height);
+    let sync_state = if verified_peers == 0 || lag_headers > CATCHING_UP_MAX_LAG_HEADERS {
+        LightnodeSyncState::Stalled
+    } else if lag_headers <= SYNCED_MAX_LAG_HEADERS {
+        LightnodeSyncState::Synced
+    } else {
+        LightnodeSyncState::CatchingUp
+    };
+
+    LightnodeSyncSummary {
+        sync_state,
+        header_height,
+        network_head_height,
+        lag_headers,
+        verified_peers,
+        network_tag,
+    }
+}
 
 /// What `sync` learned from the full node.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,4 +259,111 @@ pub fn platform_note() -> &'static str {
 #[cfg(not(windows))]
 pub fn platform_note() -> &'static str {
     "Linux: run `kovanica-lightnode run` under systemd. The unit file is installed separately. A tray UI is not part of this binary."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_tag_accepts_exact_mainnet_and_testnet() {
+        assert_eq!(
+            verify_canonical_network_tag(1, CANONICAL_MAINNET_TAG),
+            Ok(())
+        );
+        assert_eq!(
+            verify_canonical_network_tag(2, CANONICAL_TESTNET_TAG),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn canonical_tag_rejects_cross_chain_and_spoofed_tags() {
+        let mainnet_with_testnet = verify_canonical_network_tag(1, CANONICAL_TESTNET_TAG)
+            .expect_err("chain 1 must reject chain 2 tag");
+        assert!(mainnet_with_testnet.contains("chain 1"));
+        assert!(mainnet_with_testnet.contains(CANONICAL_MAINNET_TAG));
+
+        let testnet_with_mainnet = verify_canonical_network_tag(2, CANONICAL_MAINNET_TAG)
+            .expect_err("chain 2 must reject chain 1 tag");
+        assert!(testnet_with_mainnet.contains("chain 2"));
+        assert!(testnet_with_mainnet.contains(CANONICAL_TESTNET_TAG));
+
+        assert!(verify_canonical_network_tag(1, "1-deadbeefdeadbeef").is_err());
+        assert!(verify_canonical_network_tag(1, " 1-f35df34c92001436 ").is_err());
+        assert!(verify_canonical_network_tag(1, "").is_err());
+        assert!(verify_canonical_network_tag(2, "2-deadbeefdeadbeef").is_err());
+        assert!(verify_canonical_network_tag(2, "").is_err());
+    }
+
+    #[test]
+    fn canonical_tag_allows_non_empty_devnet_and_rejects_empty() {
+        assert_eq!(
+            verify_canonical_network_tag(3, "3-localdev00000001"),
+            Ok(())
+        );
+        assert_eq!(verify_canonical_network_tag(3, "devnet-custom"), Ok(()));
+        assert!(verify_canonical_network_tag(3, "").is_err());
+        assert!(verify_canonical_network_tag(3, "   \t\n").is_err());
+    }
+
+    #[test]
+    fn summarize_sync_reports_synced_within_threshold() {
+        let at_head = summarize_lightnode_sync(100, 100, 3, CANONICAL_TESTNET_TAG.into());
+        assert_eq!(
+            at_head,
+            LightnodeSyncSummary {
+                sync_state: LightnodeSyncState::Synced,
+                header_height: 100,
+                network_head_height: 100,
+                lag_headers: 0,
+                verified_peers: 3,
+                network_tag: CANONICAL_TESTNET_TAG.into(),
+            }
+        );
+
+        let lag_two = summarize_lightnode_sync(98, 100, 1, CANONICAL_MAINNET_TAG.into());
+        assert_eq!(lag_two.sync_state, LightnodeSyncState::Synced);
+        assert_eq!(lag_two.lag_headers, 2);
+
+        let ahead = summarize_lightnode_sync(105, 100, 2, CANONICAL_MAINNET_TAG.into());
+        assert_eq!(ahead.sync_state, LightnodeSyncState::Synced);
+        assert_eq!(ahead.lag_headers, 0);
+    }
+
+    #[test]
+    fn summarize_sync_reports_catching_up_between_three_and_fifty() {
+        let lag_three = summarize_lightnode_sync(97, 100, 1, CANONICAL_TESTNET_TAG.into());
+        assert_eq!(lag_three.sync_state, LightnodeSyncState::CatchingUp);
+        assert_eq!(lag_three.lag_headers, 3);
+
+        let lag_fifty = summarize_lightnode_sync(50, 100, 4, CANONICAL_TESTNET_TAG.into());
+        assert_eq!(lag_fifty.sync_state, LightnodeSyncState::CatchingUp);
+        assert_eq!(lag_fifty.lag_headers, 50);
+    }
+
+    #[test]
+    fn summarize_sync_reports_stalled_on_large_lag_or_zero_peers() {
+        let lag_fifty_one = summarize_lightnode_sync(49, 100, 5, CANONICAL_MAINNET_TAG.into());
+        assert_eq!(lag_fifty_one.sync_state, LightnodeSyncState::Stalled);
+        assert_eq!(lag_fifty_one.lag_headers, 51);
+
+        let zero_peers_at_head =
+            summarize_lightnode_sync(100, 100, 0, CANONICAL_MAINNET_TAG.into());
+        assert_eq!(zero_peers_at_head.sync_state, LightnodeSyncState::Stalled);
+        assert_eq!(zero_peers_at_head.lag_headers, 0);
+        assert_eq!(zero_peers_at_head.verified_peers, 0);
+    }
+
+    #[test]
+    fn summarize_sync_serializes_cleanly() {
+        let summary = summarize_lightnode_sync(42, 45, 2, CANONICAL_TESTNET_TAG.into());
+        let json = serde_json::to_value(&summary).expect("serialize LightnodeSyncSummary");
+        assert_eq!(json["sync_state"], "CatchingUp");
+        assert_eq!(json["header_height"], 42);
+        assert_eq!(json["network_head_height"], 45);
+        assert_eq!(json["lag_headers"], 3);
+        assert_eq!(json["verified_peers"], 2);
+        assert_eq!(json["network_tag"], CANONICAL_TESTNET_TAG);
+    }
 }

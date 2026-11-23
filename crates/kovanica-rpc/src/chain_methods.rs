@@ -1591,6 +1591,20 @@ pub async fn handle_estimate_fee(_params: Value, state: RpcState) -> Result<Valu
     Ok(quantity(rate))
 }
 
+/// `kovanica_mempoolStats()` — read-only mempool size and fee-per-byte
+/// percentile snapshot.
+pub async fn handle_mempool_stats(_params: Value, state: RpcState) -> Result<Value, RpcError> {
+    let stats = state.mempool.fee_stats();
+    Ok(json!({
+        "pending_count": stats.pending_count,
+        "total_bytes": stats.total_bytes,
+        "min_fee_per_byte": stats.min_fee_per_byte,
+        "p50_fee_per_byte": stats.p50_fee_per_byte,
+        "p90_fee_per_byte": stats.p90_fee_per_byte,
+        "max_fee_per_byte": stats.max_fee_per_byte,
+    }))
+}
+
 /// Helper to simulate a call or estimate gas consumption.
 fn simulate_call_internal(call_obj: &Value, state: &RpcState) -> Result<(u64, Vec<u8>), RpcError> {
     let chain_id = served_chain_id(state);
