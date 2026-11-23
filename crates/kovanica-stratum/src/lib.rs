@@ -34,4 +34,7 @@ pub use gateway::{
 pub use job::{Job, JobManager};
 pub use protocol::{StratumNotification, StratumRequest, StratumResponse};
 pub use rpc::{NodeRpcClient, WorkTemplate};
-pub use session::{parse_and_validate_username, AuthorizedWorker, SessionRegistry, WorkerSession};
+pub use session::{
+    parse_and_validate_username, parse_numeric_session_id, AuthorizedWorker, SessionRegistry,
+    WorkerSession, WorkerSessionSummary, WorkersResponse,
+};

@@ -1560,3 +1560,176 @@ async fn test_per_ip_invalid_share_rate_limit_temporary_ban_and_expiry_e2e() {
 
     gateway.shutdown();
 }
+
+#[tokio::test]
+async fn test_observability_workers_endpoint_e2e() {
+    let (gateway, stratum_addr) = start_test_gateway(0.0).await;
+
+    let job = gateway
+        .job_manager()
+        .add_template(create_test_header(88, 0x207f_ffff));
+
+    // Start observability HTTP server on ephemeral port
+    let obs_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind observability listener");
+    let obs_addr = obs_listener.local_addr().expect("observability local addr");
+    let obs_gateway = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = obs_gateway.serve_observability(obs_listener).await;
+    });
+
+    let http = reqwest::Client::new();
+
+    // 1. Query GET /workers before any miner connects
+    let init_resp = http
+        .get(format!("http://{obs_addr}/workers"))
+        .send()
+        .await
+        .expect("GET /workers initial");
+    assert_eq!(init_resp.status(), 200);
+    let init_json: Value = init_resp.json().await.expect("parse initial /workers JSON");
+    assert_eq!(init_json["active_workers"], 0);
+    assert_eq!(init_json["vardiff_enabled"], false);
+    assert_eq!(
+        init_json["workers"]
+            .as_array()
+            .expect("workers array")
+            .len(),
+        0
+    );
+    assert!(init_json["timestamp"].as_u64().expect("timestamp u64") > 0);
+
+    // 2. Connect worker 1, subscribe, and authorize
+    let mut client1 = TestClient::connect(stratum_addr).await;
+    client1
+        .send_line(
+            &json!({"id": 1, "method": "mining.subscribe", "params": ["workers-e2e/1.0"]})
+                .to_string(),
+        )
+        .await;
+    let _ = client1.read_json().await;
+
+    let (_sk1, pk1) = generate_keypair();
+    let addr1_str = Address(pk1.0).encode();
+    let username1 = format!("{addr1_str}.rig_01");
+    client1
+        .send_line(
+            &json!({"id": 2, "method": "mining.authorize", "params": [username1.clone(), "secret_pw"]})
+                .to_string(),
+        )
+        .await;
+    let _ = client1.read_json().await; // authorize ok
+    let _ = client1.read_json().await; // set_difficulty
+    let _ = client1.read_json().await; // notify
+
+    // Verify GET /workers lists the authorized worker with 0 shares and no sensitive fields
+    let after_auth_resp = http
+        .get(format!("http://{obs_addr}/workers"))
+        .send()
+        .await
+        .expect("GET /workers after authorize");
+    assert_eq!(after_auth_resp.status(), 200);
+    let after_auth_text = after_auth_resp.text().await.expect("read /workers body");
+    assert!(
+        !after_auth_text.contains("127.0.0.1"),
+        "/workers must never expose client IP: {after_auth_text}"
+    );
+    assert!(
+        !after_auth_text.contains(&addr1_str),
+        "/workers must not expose payout address: {after_auth_text}"
+    );
+    assert!(
+        !after_auth_text.contains("secret_pw"),
+        "/workers must never expose password: {after_auth_text}"
+    );
+
+    let after_auth_json: Value =
+        serde_json::from_str(&after_auth_text).expect("parse /workers JSON");
+    assert_eq!(after_auth_json["active_workers"], 1);
+    assert_eq!(after_auth_json["vardiff_enabled"], false);
+    let w0 = &after_auth_json["workers"][0];
+    assert_eq!(w0["session_id"], 1);
+    assert_eq!(w0["worker_name"], "rig_01");
+    assert_eq!(w0["authorized"], true);
+    assert_eq!(w0["difficulty"], 0.0);
+    assert_eq!(w0["shares_accepted"], 0);
+    assert_eq!(w0["shares_rejected"], 0);
+    assert!(w0["connected_secs"].as_u64().is_some());
+
+    // 3. Submit 2 valid shares and 1 duplicate share + 1 stale share
+    client1
+        .send_line(
+            &json!({"id": 3, "method": "mining.submit", "params": [username1.clone(), job.job_id, "00000001", "00000001"]})
+                .to_string(),
+        )
+        .await;
+    assert_eq!(client1.read_json().await["result"], true);
+
+    client1
+        .send_line(
+            &json!({"id": 4, "method": "mining.submit", "params": [username1.clone(), job.job_id, "00000001", "00000002"]})
+                .to_string(),
+        )
+        .await;
+    assert_eq!(client1.read_json().await["result"], true);
+
+    // Duplicate share -> rejected (22)
+    client1
+        .send_line(
+            &json!({"id": 5, "method": "mining.submit", "params": [username1.clone(), job.job_id, "00000001", "00000001"]})
+                .to_string(),
+        )
+        .await;
+    assert_eq!(client1.read_json().await["error"][0], 22);
+
+    // Stale share -> rejected (21)
+    client1
+        .send_line(
+            &json!({"id": 6, "method": "mining.submit", "params": [username1, "unknown_job", "00000001", "00000003"]})
+                .to_string(),
+        )
+        .await;
+    assert_eq!(client1.read_json().await["error"][0], 21);
+
+    // 4. Verify GET /workers reports updated share counters (2 accepted, 2 rejected)
+    let after_submit_json: Value = http
+        .get(format!("http://{obs_addr}/workers"))
+        .send()
+        .await
+        .expect("GET /workers after submit")
+        .json()
+        .await
+        .expect("parse /workers JSON after submit");
+    assert_eq!(after_submit_json["active_workers"], 1);
+    let w0_updated = &after_submit_json["workers"][0];
+    assert_eq!(w0_updated["session_id"], 1);
+    assert_eq!(w0_updated["worker_name"], "rig_01");
+    assert_eq!(w0_updated["authorized"], true);
+    assert_eq!(w0_updated["shares_accepted"], 2);
+    assert_eq!(w0_updated["shares_rejected"], 2);
+
+    // 5. Disconnect worker and verify GET /workers returns to 0 active workers
+    drop(client1);
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let snap: Value = http
+                .get(format!("http://{obs_addr}/workers"))
+                .send()
+                .await
+                .expect("GET /workers after disconnect")
+                .json()
+                .await
+                .expect("parse /workers JSON");
+            if snap["active_workers"] == 0 {
+                assert_eq!(snap["workers"].as_array().unwrap().len(), 0);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("/workers active_workers must decrement to 0 after disconnect");
+
+    gateway.shutdown();
+}

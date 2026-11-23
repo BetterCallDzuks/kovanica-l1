@@ -522,7 +522,10 @@ use crate::difficulty::{check_network_solution, check_share_hash_meets_difficult
 use crate::job::{Job, JobManager};
 use crate::protocol::{StratumNotification, StratumRequest, StratumResponse};
 use crate::rpc::NodeRpcClient;
-use crate::session::{parse_and_validate_username, SessionRegistry, WorkerSession};
+use crate::session::{
+    parse_and_validate_username, SessionRegistry, WorkerSession, WorkerSessionSummary,
+    WorkersResponse,
+};
 use crate::{KOVANICA_STRATUM_ALGORITHM, KOVANICA_STRATUM_CAPABILITY};
 
 /// Bounded channel message to send to a connected client TCP stream.
@@ -1289,13 +1292,38 @@ impl StratumGateway {
         self.start_time
     }
 
-    /// Build the Axum HTTP router exposing `/metrics` (Prometheus) and `/health` (JSON).
+    /// Build a sanitized snapshot of active worker sessions for `GET /workers`.
+    ///
+    /// Never exposes client IP addresses, payout addresses, or authentication secrets.
+    pub fn workers_snapshot(&self) -> WorkersResponse {
+        let mut workers: Vec<WorkerSessionSummary> = self
+            .active_sessions
+            .read()
+            .values()
+            .map(|sess| sess.summary())
+            .collect();
+        workers.sort_by_key(|w| w.session_id);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        WorkersResponse {
+            active_workers: workers.len(),
+            vardiff_enabled: self.config.vardiff_enabled,
+            workers,
+            timestamp,
+        }
+    }
+
+    /// Build the Axum HTTP router exposing `/metrics` (Prometheus), `/health` (JSON), and `/workers` (JSON).
     pub fn observability_router(&self) -> Router {
         let gateway_for_metrics = self.clone();
         let gateway_for_health = self.clone();
+        let gateway_for_workers = self.clone();
         let obs_semaphore = Arc::new(Semaphore::new(16));
         let metrics_sem = Arc::clone(&obs_semaphore);
         let health_sem = Arc::clone(&obs_semaphore);
+        let workers_sem = Arc::clone(&obs_semaphore);
 
         Router::new()
             .route(
@@ -1324,7 +1352,7 @@ impl StratumGateway {
                                 .status(500)
                                 .body(format!("metrics encoding error: {e}"))
                                 .unwrap_or_default();
-                        }
+                        };
                         axum::response::Response::builder()
                             .header(
                                 "Content-Type",
@@ -1366,12 +1394,34 @@ impl StratumGateway {
                     }
                 }),
             )
+            .route(
+                "/workers",
+                get(move || {
+                    let gw = gateway_for_workers.clone();
+                    let sem = Arc::clone(&workers_sem);
+                    async move {
+                        let Ok(_permit) = sem.try_acquire() else {
+                            return axum::response::Response::builder()
+                                .status(503)
+                                .body("too many concurrent observability requests".to_string())
+                                .unwrap_or_default();
+                        };
+                        let snapshot = gw.workers_snapshot();
+                        let body =
+                            serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".to_string());
+                        axum::response::Response::builder()
+                            .header("Content-Type", "application/json")
+                            .body(body)
+                            .unwrap_or_default()
+                    }
+                }),
+            )
     }
 
-    /// Serve `/metrics` and `/health` on the given bound TCP listener.
+    /// Serve `/metrics`, `/health`, and `/workers` on the given bound TCP listener.
     pub async fn serve_observability(&self, listener: TcpListener) -> Result<()> {
         let local_addr = listener.local_addr().unwrap_or(self.config.metrics_addr);
-        info!(%local_addr, "Stratum observability HTTP server (/metrics, /health) started");
+        info!(%local_addr, "Stratum observability HTTP server (/metrics, /health, /workers) started");
         axum::serve(listener, self.observability_router())
             .await
             .context("observability HTTP server exited with error")
@@ -2992,5 +3042,72 @@ mod tests {
         }
         assert!(!scorer.is_banned(&ip));
         assert_eq!(scorer.tracked_ip_count(), 0);
+    }
+
+    #[test]
+    fn test_workers_snapshot_schema_and_sanitization() {
+        let config = StratumConfig {
+            difficulty: 4.0,
+            vardiff_enabled: true,
+            vardiff_min_difficulty: 1.0,
+            vardiff_max_difficulty: 64.0,
+            rpc_token: Some("super_secret_rpc_token_do_not_leak".to_string()),
+            ..Default::default()
+        };
+        let gateway = StratumGateway::new(config).expect("gateway creation must succeed");
+
+        // Initially empty
+        let empty_snap = gateway.workers_snapshot();
+        assert_eq!(empty_snap.active_workers, 0);
+        assert!(empty_snap.vardiff_enabled);
+        assert!(empty_snap.workers.is_empty());
+        assert!(empty_snap.timestamp > 0);
+
+        // Register two active sessions (one authorized, one unauthorized)
+        let s1 = gateway.session_registry().create_session(4.0);
+        let (_sk, pk) = kovanica_crypto::generate_keypair();
+        let addr_str = kovanica_types::Address(pk.0).encode();
+        let auth =
+            parse_and_validate_username(&format!("{addr_str}.miner_01")).expect("valid user");
+        s1.authorize(auth);
+        s1.record_accepted_share();
+        s1.record_accepted_share();
+        s1.record_accepted_share();
+        s1.record_rejected_share();
+
+        let s2 = gateway.session_registry().create_session(8.0);
+        s2.record_rejected_share();
+        s2.record_rejected_share();
+
+        {
+            let mut active = gateway.active_sessions.write();
+            active.insert(s2.session_id.clone(), Arc::clone(&s2));
+            active.insert(s1.session_id.clone(), Arc::clone(&s1));
+        }
+
+        let snap = gateway.workers_snapshot();
+        assert_eq!(snap.active_workers, 2);
+        assert!(snap.vardiff_enabled);
+        assert_eq!(snap.workers.len(), 2);
+
+        // Must be sorted by numeric session_id ascending
+        assert_eq!(snap.workers[0].session_id, 1);
+        assert_eq!(snap.workers[0].worker_name, "miner_01");
+        assert!(snap.workers[0].authorized);
+        assert!((snap.workers[0].difficulty - 4.0).abs() < 1e-9);
+        assert_eq!(snap.workers[0].shares_accepted, 3);
+        assert_eq!(snap.workers[0].shares_rejected, 1);
+
+        assert_eq!(snap.workers[1].session_id, 2);
+        assert_eq!(snap.workers[1].worker_name, "unauthorized");
+        assert!(!snap.workers[1].authorized);
+        assert!((snap.workers[1].difficulty - 8.0).abs() < 1e-9);
+        assert_eq!(snap.workers[1].shares_accepted, 0);
+        assert_eq!(snap.workers[1].shares_rejected, 2);
+
+        let json_str = serde_json::to_string(&snap).expect("serialize workers response");
+        assert!(!json_str.contains("super_secret_rpc_token_do_not_leak"));
+        assert!(!json_str.contains(&addr_str));
+        assert!(!json_str.contains("127.0.0.1"));
     }
 }

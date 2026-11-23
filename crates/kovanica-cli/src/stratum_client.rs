@@ -28,7 +28,7 @@ use tokio_rustls::client::TlsStream;
 use tokio_rustls::{rustls::ClientConfig, TlsConnector};
 use tracing::{error, info, warn};
 
-use crate::miner::{format_hashrate, MiningStats};
+use crate::miner::{format_hashrate, format_summary, MinerSessionSummary, MiningStats};
 
 /// Wrapper for both TLS and non-TLS streams.
 enum MaybeTlsStream {
@@ -192,6 +192,26 @@ impl StratumMiner {
     pub fn stop(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
         self.shutdown_notify.notify_waiters();
+    }
+
+    /// Build a structured [`MinerSessionSummary`] snapshot for this Stratum miner session.
+    pub fn session_summary(&self, elapsed_secs: f64) -> MinerSessionSummary {
+        let use_tls = self.tls || Self::endpoint_uses_tls_scheme(&self.endpoint);
+        let target_endpoint = Self::clean_endpoint(&self.endpoint);
+        MinerSessionSummary::new(
+            "stratum",
+            target_endpoint,
+            &self.address,
+            Some(self.worker.clone()),
+            self.chain_id,
+            self.threads,
+            use_tls,
+            self.stats.total_hashes(),
+            self.stats.blocks_found(),
+            self.stats.blocks_accepted(),
+            self.stats.blocks_rejected(),
+            elapsed_secs,
+        )
     }
 
     /// Clean endpoint string by stripping URL schemes.
@@ -637,12 +657,15 @@ impl StratumMiner {
         }
 
         let elapsed = start_time.elapsed().as_secs_f64();
-        let total = self.stats.total_hashes();
+        let summary = self.session_summary(elapsed);
+        println!("\n{}", format_summary(&summary));
         info!(
-            elapsed_secs = elapsed,
-            total_hashes = total,
-            shares_accepted = self.stats.blocks_accepted(),
-            shares_rejected = self.stats.blocks_rejected(),
+            elapsed_secs = summary.elapsed_secs,
+            total_hashes = summary.total_hashes,
+            shares_submitted = summary.submitted,
+            shares_accepted = summary.accepted,
+            shares_rejected = summary.rejected,
+            average_hashrate = %summary.average_hashrate,
             "Stratum miner stopped"
         );
 
@@ -917,5 +940,31 @@ mod tests {
             StratumMiner::clean_endpoint("stratum+tcp://127.0.0.1:3333"),
             "127.0.0.1:3333"
         );
+    }
+
+    #[test]
+    fn stratum_miner_session_summary_captures_tls_and_share_counters() {
+        let miner = StratumMiner::new(
+            "stratum+tls://pool.kovanica.online:3333".to_string(),
+            "kvnc111111111111111111111111111111111111111111111111111111111dag".to_string(),
+            "rig_tls".to_string(),
+            "x".to_string(),
+            2,
+            4,
+        );
+        miner.stats().total_hashes.store(50_000, Ordering::Relaxed);
+        miner.stats().blocks_found.store(10, Ordering::Relaxed);
+        miner.stats().blocks_accepted.store(9, Ordering::Relaxed);
+        miner.stats().blocks_rejected.store(1, Ordering::Relaxed);
+
+        let summary = miner.session_summary(20.0);
+        assert_eq!(summary.mode, "stratum");
+        assert_eq!(summary.endpoint, "pool.kovanica.online:3333");
+        assert!(summary.tls_enabled);
+        assert_eq!(summary.worker.as_deref(), Some("rig_tls"));
+        assert_eq!(summary.submitted, 10);
+        assert_eq!(summary.accepted, 9);
+        assert_eq!(summary.rejected, 1);
+        assert_eq!(summary.average_hashrate, "2.50 kH/s");
     }
 }

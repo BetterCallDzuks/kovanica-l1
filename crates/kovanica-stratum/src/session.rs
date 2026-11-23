@@ -3,8 +3,10 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 
 use kovanica_types::Address;
 
@@ -90,11 +92,63 @@ const TARGET_SHARES_PER_WINDOW: f64 = 18.0; // ~1 share per 3.33 seconds at diff
 /// Minimum shares required before first retarget is allowed.
 const MIN_SHARES_FOR_RETARGET: usize = 5;
 
+/// Sanitized per-worker session summary returned by `GET /workers`.
+///
+/// Intentionally excludes client IP addresses, payout addresses, and secrets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkerSessionSummary {
+    /// Numeric connection session identifier.
+    pub session_id: u64,
+    /// Authorized worker name suffix (or `"unauthorized"` prior to authorization).
+    pub worker_name: String,
+    /// Whether the worker has completed `mining.authorize`.
+    pub authorized: bool,
+    /// Current assigned share difficulty.
+    pub difficulty: f64,
+    /// Count of shares accepted in this session.
+    pub shares_accepted: u64,
+    /// Count of shares rejected in this session.
+    pub shares_rejected: u64,
+    /// Elapsed connection duration in seconds.
+    pub connected_secs: u64,
+}
+
+/// Sanitized response payload for `GET /workers` on the Stratum observability HTTP server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkersResponse {
+    /// Count of currently active worker sessions.
+    pub active_workers: usize,
+    /// Whether variable difficulty (`VarDiff`) retargeting is enabled on this gateway.
+    pub vardiff_enabled: bool,
+    /// Active worker session summaries sorted by `session_id`.
+    pub workers: Vec<WorkerSessionSummary>,
+    /// Response generation timestamp (Unix seconds).
+    pub timestamp: u64,
+}
+
+/// Parse a numeric session ID from a session identifier string (e.g. `"sess_00000001"` or `"s1"`).
+pub fn parse_numeric_session_id(session_id: &str) -> u64 {
+    if let Some(hex_part) = session_id.strip_prefix("sess_") {
+        if let Ok(id) = u64::from_str_radix(hex_part, 16) {
+            return id;
+        }
+    }
+    let digits = session_id.trim_start_matches(|c: char| !c.is_ascii_digit());
+    if !digits.is_empty() {
+        if let Ok(id) = digits.parse::<u64>() {
+            return id;
+        }
+    }
+    0
+}
+
 /// Active connection session for a single Stratum client.
 #[derive(Debug)]
 pub struct WorkerSession {
     /// Unique connection session ID.
     pub session_id: String,
+    /// Numeric session identifier used in observability summaries.
+    pub numeric_session_id: u64,
     /// Unique allocated `extranonce1` hex string (e.g. 8 hex characters).
     pub extranonce1: String,
     /// Size of `extranonce2` in bytes (4).
@@ -119,6 +173,8 @@ pub struct WorkerSession {
     last_retarget: Mutex<Option<u64>>,
     /// Session creation timestamp (Unix seconds).
     created_at: u64,
+    /// Monotonic connection instant for elapsed connection time calculation.
+    pub connected_at: Instant,
 }
 
 impl WorkerSession {
@@ -138,8 +194,10 @@ impl WorkerSession {
         initial_difficulty: f64,
         created_at: u64,
     ) -> Self {
+        let numeric_session_id = parse_numeric_session_id(&session_id);
         Self {
             session_id,
+            numeric_session_id,
             extranonce1,
             extranonce2_size: 4,
             authorized_worker: RwLock::new(None),
@@ -152,6 +210,48 @@ impl WorkerSession {
             share_timestamps: Mutex::new(Vec::new()),
             last_retarget: Mutex::new(None),
             created_at,
+            connected_at: Instant::now(),
+        }
+    }
+
+    /// Return the total count of accepted shares for this session.
+    pub fn shares_accepted(&self) -> u64 {
+        self.accepted_shares.load(Ordering::Relaxed)
+    }
+
+    /// Return the total count of rejected shares for this session.
+    pub fn shares_rejected(&self) -> u64 {
+        self.rejected_shares.load(Ordering::Relaxed)
+    }
+
+    /// Return the elapsed connection duration in seconds.
+    pub fn connected_secs(&self) -> u64 {
+        self.connected_at.elapsed().as_secs()
+    }
+
+    /// Return the authorized worker name (or `"unauthorized"` if not yet authorized).
+    pub fn worker_name(&self) -> String {
+        self.authorized_worker
+            .read()
+            .as_ref()
+            .map(|w| w.worker_name.clone())
+            .unwrap_or_else(|| "unauthorized".to_string())
+    }
+
+    /// Build a sanitized [`WorkerSessionSummary`] for the `GET /workers` observability endpoint.
+    pub fn summary(&self) -> WorkerSessionSummary {
+        let (authorized, worker_name) = match self.authorized_worker.read().as_ref() {
+            Some(w) => (true, w.worker_name.clone()),
+            None => (false, "unauthorized".to_string()),
+        };
+        WorkerSessionSummary {
+            session_id: self.numeric_session_id,
+            worker_name,
+            authorized,
+            difficulty: self.get_difficulty(),
+            shares_accepted: self.shares_accepted(),
+            shares_rejected: self.shares_rejected(),
+            connected_secs: self.connected_secs(),
         }
     }
 
@@ -733,6 +833,47 @@ mod tests {
         assert_eq!(
             low_session.maybe_retarget_difficulty_with_config(&cfg, 1_120),
             None
+        );
+    }
+
+    #[test]
+    fn test_worker_session_summary_tracks_counters_and_omits_sensitive_fields() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_session(2.5);
+        assert_eq!(session.numeric_session_id, 1);
+
+        // Unauthorized initial state
+        let initial_summary = session.summary();
+        assert_eq!(initial_summary.session_id, 1);
+        assert_eq!(initial_summary.worker_name, "unauthorized");
+        assert!(!initial_summary.authorized);
+        assert!((initial_summary.difficulty - 2.5).abs() < 1e-9);
+        assert_eq!(initial_summary.shares_accepted, 0);
+        assert_eq!(initial_summary.shares_rejected, 0);
+
+        // Authorize worker and record accepted/rejected shares
+        let (_sk, pk) = kovanica_crypto::generate_keypair();
+        let addr = Address(pk.0);
+        let addr_str = addr.encode();
+        let username = format!("{addr_str}.rig_alpha");
+        let auth = parse_and_validate_username(&username).expect("valid username");
+        session.authorize(auth);
+        session.record_accepted_share();
+        session.record_accepted_share();
+        session.record_rejected_share();
+
+        let summary = session.summary();
+        assert_eq!(summary.session_id, 1);
+        assert_eq!(summary.worker_name, "rig_alpha");
+        assert!(summary.authorized);
+        assert!((summary.difficulty - 2.5).abs() < 1e-9);
+        assert_eq!(summary.shares_accepted, 2);
+        assert_eq!(summary.shares_rejected, 1);
+
+        let serialized = serde_json::to_string(&summary).expect("serialize summary");
+        assert!(
+            !serialized.contains(&addr_str),
+            "summary must not expose payout address: {serialized}"
         );
     }
 }
