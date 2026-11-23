@@ -104,11 +104,11 @@ impl TokenBucket {
         self.last_refill = now;
     }
 
-    fn retry_after(&self) -> Option<u64> {
-        if self.tokens >= 1.0 {
+    fn retry_after_for(&self, tokens: u32) -> Option<u64> {
+        let needed = tokens as f64 - self.tokens;
+        if needed <= 0.0 {
             return None;
         }
-        let needed = 1.0 - self.tokens;
         let seconds = (needed / self.refill_rate).ceil() as u64;
         Some(seconds.max(1))
     }
@@ -306,11 +306,21 @@ impl RateLimiterState {
             .resolve_client_ip(socket_ip, forwarded_for)
     }
 
-    /// Check if a request from `client` is allowed; returns
+    /// Check if a single-unit request from `client` is allowed; returns
     /// `(allowed, retry_after_secs)`.
     pub fn check_limit(&self, client: IpAddr) -> (bool, Option<u64>) {
-        // A configured rate of 0 disables rate limiting (admit everything).
-        if self.config.is_disabled() {
+        self.check_limit_n(client, 1)
+    }
+
+    /// Check if a request costing `cost` tokens from `client` is allowed;
+    /// returns `(allowed, retry_after_secs)`.
+    ///
+    /// Fails closed without consuming partial tokens if fewer than `cost`
+    /// tokens are currently available.
+    pub fn check_limit_n(&self, client: IpAddr, cost: u32) -> (bool, Option<u64>) {
+        // A configured rate of 0 disables rate limiting (admit everything),
+        // and a zero-cost check requires no tokens.
+        if cost == 0 || self.config.is_disabled() {
             return (true, None);
         }
 
@@ -340,8 +350,8 @@ impl RateLimiterState {
         });
 
         limiter.last_seen = now;
-        let allowed = limiter.bucket.consume(1);
-        let retry_after = limiter.bucket.retry_after();
+        let allowed = limiter.bucket.consume(cost);
+        let retry_after = limiter.bucket.retry_after_for(cost);
         (allowed, retry_after)
     }
 
@@ -457,10 +467,29 @@ fn client_ip(request: &Request) -> IpAddr {
         .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
 }
 
+/// Resolved client IP attached to the request by [`rate_limit_middleware`]
+/// so downstream handlers (such as JSON-RPC batch dispatch) can charge
+/// additional rate-limit tokens against the exact same bucket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedClientIp(pub IpAddr);
+
+/// Build the standard HTTP 429 Too Many Requests response with optional
+/// `Retry-After` header.
+pub fn rate_limit_exceeded_response(retry_after: Option<u64>) -> Response {
+    let mut response = Response::new("Rate limit exceeded".into());
+    *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+    if let Some(seconds) = retry_after {
+        if let Ok(value) = seconds.to_string().parse() {
+            response.headers_mut().insert("Retry-After", value);
+        }
+    }
+    response
+}
+
 /// Per-client-IP rate limiting middleware.
 pub async fn rate_limit_middleware(
     Extension(rate_limiter): Extension<Arc<RateLimiterState>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let socket_ip = client_ip(&request);
@@ -471,15 +500,11 @@ pub async fn rate_limit_middleware(
     let resolved_ip = rate_limiter.resolve_client_ip(socket_ip, xff);
     let (allowed, retry_after) = rate_limiter.check_limit(resolved_ip);
     if !allowed {
-        let mut response = Response::new("Rate limit exceeded".into());
-        *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-        if let Some(seconds) = retry_after {
-            if let Ok(value) = seconds.to_string().parse() {
-                response.headers_mut().insert("Retry-After", value);
-            }
-        }
-        return response;
+        return rate_limit_exceeded_response(retry_after);
     }
+    request
+        .extensions_mut()
+        .insert(ResolvedClientIp(resolved_ip));
     next.run(request).await
 }
 
@@ -721,5 +746,29 @@ mod tests {
         assert!(!limiter.check_limit(a).0, "same /64 should share bucket");
         assert!(limiter.check_limit(c).0, "different /64 gets own bucket");
         assert_eq!(limiter.tracked_clients(), 2);
+    }
+
+    #[test]
+    fn check_limit_n_charges_exact_tokens_and_fails_closed() {
+        let limiter = RateLimiterState::new(RateLimitConfig {
+            requests_per_minute: 60,
+            burst: 5,
+        });
+        let ip: IpAddr = "10.0.0.9".parse().unwrap();
+
+        // Zero-cost check succeeds without consuming tokens.
+        assert_eq!(limiter.check_limit_n(ip, 0), (true, None));
+
+        // Consume 3 of 5 tokens.
+        assert!(limiter.check_limit_n(ip, 3).0);
+
+        // Requesting 3 more must fail closed without consuming the remaining 2.
+        let (allowed, retry) = limiter.check_limit_n(ip, 3);
+        assert!(!allowed);
+        assert!(retry.is_some());
+
+        // The remaining 2 tokens are still intact.
+        assert!(limiter.check_limit_n(ip, 2).0);
+        assert!(!limiter.check_limit(ip).0);
     }
 }

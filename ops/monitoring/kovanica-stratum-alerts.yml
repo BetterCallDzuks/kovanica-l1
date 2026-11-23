@@ -1,0 +1,63 @@
+groups:
+  - name: kovanica_stratum_alerts
+    interval: 30s
+    rules:
+      - alert: StratumGatewayDown
+        expr: up{job="kovanica-stratum"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: kovanica-stratum
+        annotations:
+          summary: "Kovanica Stratum gateway is down ({{ $labels.instance }})"
+          description: "Prometheus cannot scrape the kovanica-stratum target {{ $labels.instance }} for more than 1 minute."
+
+      - alert: StratumHighShareRejectionRatio
+        expr: (sum(rate(stratum_shares_rejected_total[5m])) / clamp_min(sum(rate(stratum_shares_submitted_total[5m])), 1e-9)) > 0.20 and sum(increase(stratum_shares_submitted_total[5m])) > 20
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-stratum
+        annotations:
+          summary: "High Stratum share rejection ratio (>20% over 5m)"
+          description: "Share rejection ratio has exceeded 20% for 5 minutes (current ratio: {{ $value | humanizePercentage }}). Inspect stratum_shares_rejected_by_reason_total for root cause."
+
+      - alert: StratumTlsHandshakeFailureSpike
+        expr: sum(rate(stratum_tls_handshakes_total{result="failure"}[5m])) > 0.5 or ((sum(rate(stratum_tls_handshakes_total{result="failure"}[5m])) / clamp_min(sum(rate(stratum_tls_handshakes_total[5m])), 1e-9)) > 0.25 and sum(increase(stratum_tls_handshakes_total[5m])) > 10)
+        for: 3m
+        labels:
+          severity: warning
+          service: kovanica-stratum
+        annotations:
+          summary: "TLS handshake failure spike on kovanica-stratum"
+          description: "Elevated TLS handshake failures detected over the last 5 minutes (value: {{ $value }}). Check TLS certificate expiry, cipher compatibility, or port scanning."
+
+      - alert: StratumStaleTemplateNoNewJobs
+        expr: (increase(stratum_job_broadcast_latency_seconds_count[5m]) == 0 and stratum_active_connections > 0) or (rate(stratum_rpc_getwork_errors_total[5m]) > 0)
+        for: 2m
+        labels:
+          severity: critical
+          service: kovanica-stratum
+        annotations:
+          summary: "Zero new mining jobs broadcast or upstream getWork RPC errors"
+          description: "No new mining jobs have been broadcast in the last 5 minutes while miners are connected, or upstream getWork RPC calls are failing. Verify kovanica-node RPC health and block template updates."
+
+      - alert: StratumIpBanStorm
+        expr: sum(rate(stratum_ip_bans_total[5m])) > 0.1 or stratum_banned_ips_active >= 20
+        for: 2m
+        labels:
+          severity: warning
+          service: kovanica-stratum
+        annotations:
+          summary: "Stratum IP ban storm detected"
+          description: "High rate of per-IP misbehavior bans or >=20 simultaneously banned IPs (value: {{ $value }}). Investigate potential invalid-share flood or misconfigured mining farm."
+
+      - alert: StratumHighIdleSessionEvictionRate
+        expr: sum(rate(stratum_idle_evictions_total[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-stratum
+        annotations:
+          summary: "High idle miner session eviction rate"
+          description: "Idle worker sessions are being evicted at an elevated rate ({{ $value | printf \"%.2f\" }}/s over 5m). Check miner connectivity, keepalive mining.ping intervals, or network instability."
