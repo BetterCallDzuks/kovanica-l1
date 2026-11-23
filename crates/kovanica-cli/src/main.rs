@@ -24,7 +24,8 @@ use kovanica_cli::miner::{run_miner, run_miner_bench, MinerBenchArgs, MinerComma
 use kovanica_cli::rpc::RpcClient;
 use kovanica_cli::tx_inspect::{self, TxInspectCommand};
 use kovanica_cli::{
-    comms, contracts, mining, node, node_doctor, output, snapshot_verify, tui, tx, wallet,
+    comms, contracts, mining, node, node_doctor, output, rpc_probe, snapshot_verify, tui, tx,
+    wallet,
 };
 use kovanica_types::transaction::TransactionKind;
 use kovanica_types::{crypto::PublicKey, crypto::SigningKey, Address};
@@ -178,6 +179,11 @@ enum Commands {
     Snapshot {
         #[command(subcommand)]
         command: snapshot_verify::SnapshotCommand,
+    },
+    /// JSON-RPC endpoint inspection and diagnostics
+    Rpc {
+        #[command(subcommand)]
+        command: rpc_probe::RpcCommand,
     },
 }
 
@@ -602,6 +608,9 @@ async fn main() -> Result<()> {
         },
         Commands::Snapshot { command } => match command {
             snapshot_verify::SnapshotCommand::Verify(args) => snapshot_verify::run(args, json),
+        },
+        Commands::Rpc { command } => match command {
+            rpc_probe::RpcCommand::Probe(args) => rpc_probe::run(args, json).await,
         },
     }
 }
@@ -2632,5 +2641,49 @@ mod wallet_cli_security_tests {
 
         // 4. Missing address argument to `kovanica address inspect` fails
         assert!(Cli::try_parse_from(["kovanica", "address", "inspect"]).is_err());
+    }
+
+    #[test]
+    fn rpc_probe_subcommand_parses_defaults_and_custom_flags() {
+        let cli =
+            Cli::try_parse_from(["kovanica", "rpc", "probe", "http://127.0.0.1:8545"]).unwrap();
+        assert!(!cli.json);
+        match cli.command {
+            Commands::Rpc {
+                command: rpc_probe::RpcCommand::Probe(args),
+            } => {
+                assert_eq!(args.url, "http://127.0.0.1:8545");
+                assert_eq!(args.expected_chain_id, None);
+                assert_eq!(args.timeout_secs, rpc_probe::DEFAULT_PROBE_TIMEOUT_SECS);
+            }
+            _ => panic!("expected rpc probe"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "rpc",
+            "probe",
+            "https://rpc.testnet.kovanica.org",
+            "--expected-chain-id",
+            "2",
+            "--timeout-secs",
+            "15",
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Rpc {
+                command: rpc_probe::RpcCommand::Probe(args),
+            } => {
+                assert_eq!(args.url, "https://rpc.testnet.kovanica.org");
+                assert_eq!(args.expected_chain_id, Some(2));
+                assert_eq!(args.timeout_secs, 15);
+            }
+            _ => panic!("expected rpc probe"),
+        }
+
+        // Missing URL argument must fail
+        assert!(Cli::try_parse_from(["kovanica", "rpc", "probe"]).is_err());
     }
 }

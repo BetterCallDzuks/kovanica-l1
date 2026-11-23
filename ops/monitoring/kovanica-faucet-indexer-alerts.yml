@@ -1,0 +1,66 @@
+groups:
+  - name: kovanica_faucet_alerts
+    interval: 30s
+    rules:
+      - alert: FaucetLowBalance
+        expr: faucet_balance_atoms < 100000000000
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-faucet
+        annotations:
+          summary: "Kovanica faucet balance is low ({{ $labels.instance }})"
+          description: "kovanica-faucet balance has remained below 100000000000 atoms for 5 minutes (current: {{ $value }} atoms). Refill the Chain 2 testnet faucet wallet."
+
+      - alert: FaucetHighRejectionRate
+        expr: (sum by (instance) (rate(faucet_drips_rejected_total[5m])) / clamp_min(sum by (instance) (rate(faucet_drips_succeeded_total[5m])) + sum by (instance) (rate(faucet_drips_rejected_total[5m])), 1e-9)) > 0.25 and sum by (instance) (increase(faucet_drips_rejected_total[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-faucet
+        annotations:
+          summary: "High faucet drip rejection rate (>25% over 5m) on {{ $labels.instance }}"
+          description: "More than 25% of faucet drip requests are being rejected over the last 5 minutes (ratio: {{ $value | humanizePercentage }}). Inspect upstream RPC connectivity, nonce synchronization, and faucet balance."
+
+      - alert: FaucetRateLimitSpike
+        expr: sum by (instance) (rate(faucet_rate_limited_total[5m])) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+          service: kovanica-faucet
+        annotations:
+          summary: "Faucet rate-limit rejection spike on {{ $labels.instance }}"
+          description: "Faucet requests are being rate-limited at {{ $value | printf \"%.2f\" }}/s over the last 5 minutes. Investigate potential abuse, bot traffic, or reverse-proxy X-Forwarded-For configuration."
+
+  - name: kovanica_indexer_alerts
+    interval: 30s
+    rules:
+      - alert: IndexerLagging
+        expr: indexer_lag_blocks > 10
+        for: 3m
+        labels:
+          severity: warning
+          service: kovanica-indexer
+        annotations:
+          summary: "Kovanica indexer is lagging behind L1 head ({{ $labels.instance }})"
+          description: "kovanica-indexer has been more than 10 blocks behind the L1 node head for 3 minutes (current lag: {{ $value }} blocks). Check L1 RPC latency and indexer store write throughput."
+
+      - alert: IndexerStalled
+        expr: indexer_lag_blocks > 50
+        for: 5m
+        labels:
+          severity: critical
+          service: kovanica-indexer
+        annotations:
+          summary: "Kovanica indexer is stalled (>50 blocks behind) on {{ $labels.instance }}"
+          description: "kovanica-indexer has remained more than 50 blocks behind the L1 node head for 5 minutes (current lag: {{ $value }} blocks). Verify indexer_indexed_height and indexer_blocks_processed_total progression and inspect indexer logs."
+
+      - alert: IndexerZeroProgress
+        expr: indexer_lag_blocks > 0 and increase(indexer_blocks_processed_total[5m]) == 0 and changes(indexer_indexed_height[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-indexer
+        annotations:
+          summary: "Kovanica indexer has processed zero blocks while behind head ({{ $labels.instance }})"
+          description: "kovanica-indexer is behind the L1 head (lag: {{ $value }} blocks) with zero increase in indexer_blocks_processed_total and no change in indexer_indexed_height over the last 5 minutes."

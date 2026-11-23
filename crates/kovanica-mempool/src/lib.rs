@@ -777,6 +777,32 @@ impl Mempool {
         }
     }
 
+    /// Read-only snapshot of pending transaction count, total bytes, and
+    /// fee-per-byte percentiles (nearest-rank) across all tracked transactions.
+    pub fn fee_stats(&self) -> MempoolFeeStats {
+        let (pending_count, total_bytes, mut rates) = {
+            let state = self.state.lock();
+            let rates: Vec<u64> = state.by_hash.values().map(|e| e.fee_rate).collect();
+            (state.by_hash.len(), state.total_size, rates)
+        };
+        if rates.is_empty() {
+            return MempoolFeeStats {
+                pending_count,
+                total_bytes,
+                ..MempoolFeeStats::default()
+            };
+        }
+        rates.sort_unstable();
+        MempoolFeeStats {
+            pending_count,
+            total_bytes,
+            min_fee_per_byte: rates.first().copied(),
+            p50_fee_per_byte: nearest_rank_percentile(&rates, 50),
+            p90_fee_per_byte: nearest_rank_percentile(&rates, 90),
+            max_fee_per_byte: rates.last().copied(),
+        }
+    }
+
     /// Re-queue transactions that have been in-flight longer than the
     /// configured timeout back into the queued state, so they can be
     /// proposed again by a future `get_next_transactions` call during
@@ -860,6 +886,28 @@ pub struct MempoolStats {
     pub tx_count: usize,
     pub total_size: usize,
     pub fee_rates: Vec<(u64, usize)>, // (fee_rate, count)
+}
+
+/// Read-only snapshot of mempool size and fee-per-byte percentiles.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+pub struct MempoolFeeStats {
+    pub pending_count: usize,
+    pub total_bytes: usize,
+    pub min_fee_per_byte: Option<u64>,
+    pub p50_fee_per_byte: Option<u64>,
+    pub p90_fee_per_byte: Option<u64>,
+    pub max_fee_per_byte: Option<u64>,
+}
+
+/// Nearest-rank percentile over an ascending-sorted slice.
+fn nearest_rank_percentile(sorted: &[u64], percentile: u8) -> Option<u64> {
+    let n = sorted.len();
+    if n == 0 {
+        return None;
+    }
+    let rank = ((n as u128) * (percentile as u128)).div_ceil(100) as usize;
+    let idx = rank.saturating_sub(1).min(n - 1);
+    sorted.get(idx).copied()
 }
 
 /// Per-transaction result of [`Mempool::reinsert_returned`].
@@ -1929,5 +1977,84 @@ mod tests {
             .await
             .expect("notified should wake promptly")
             .unwrap();
+    }
+
+    #[test]
+    fn fee_stats_empty_mempool() {
+        let fx = Fixture::new();
+        let pool = fx.pool(MempoolConfig::default());
+
+        assert_eq!(
+            pool.fee_stats(),
+            MempoolFeeStats {
+                pending_count: 0,
+                total_bytes: 0,
+                min_fee_per_byte: None,
+                p50_fee_per_byte: None,
+                p90_fee_per_byte: None,
+                max_fee_per_byte: None,
+            }
+        );
+    }
+
+    #[test]
+    fn fee_stats_single_transaction() {
+        let fx = Fixture::new();
+        let (sk, sender) = fx.funded(1_000_000, 0);
+        let pool = fx.pool(MempoolConfig::default());
+
+        let probe = transfer(&sk, sender, 0, 1, 1);
+        let size = bincode::serialized_size(&probe).unwrap() as usize;
+        let tx = transfer(&sk, sender, 0, 1, size as u64 * 7);
+        let actual_size = bincode::serialized_size(&tx).unwrap() as usize;
+        assert_eq!(actual_size, size);
+        pool.add_transaction(tx).unwrap();
+
+        assert_eq!(
+            pool.fee_stats(),
+            MempoolFeeStats {
+                pending_count: 1,
+                total_bytes: size,
+                min_fee_per_byte: Some(7),
+                p50_fee_per_byte: Some(7),
+                p90_fee_per_byte: Some(7),
+                max_fee_per_byte: Some(7),
+            }
+        );
+    }
+
+    #[test]
+    fn fee_stats_multiple_transactions_percentiles() {
+        let fx = Fixture::new();
+        let pool = fx.pool(MempoolConfig::default());
+
+        // Insert 10 transactions out of order with exact fee rates 1..=10.
+        let target_rates: [u64; 10] = [7, 2, 10, 4, 1, 9, 5, 3, 8, 6];
+        let mut expected_total_bytes = 0usize;
+
+        for &rate in &target_rates {
+            let (sk, sender) = fx.funded(10_000_000, 0);
+            let probe = transfer(&sk, sender, 0, 1, 1);
+            let size = bincode::serialized_size(&probe).unwrap() as usize;
+            let tx = transfer(&sk, sender, 0, 1, size as u64 * rate);
+            let actual_size = bincode::serialized_size(&tx).unwrap() as usize;
+            assert_eq!(actual_size, size);
+            expected_total_bytes += actual_size;
+            pool.add_transaction(tx).unwrap();
+        }
+
+        // For sorted [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
+        // min = 1, p50 = ceil(0.5 * 10) = 5th => 5, p90 = ceil(0.9 * 10) = 9th => 9, max = 10.
+        assert_eq!(
+            pool.fee_stats(),
+            MempoolFeeStats {
+                pending_count: 10,
+                total_bytes: expected_total_bytes,
+                min_fee_per_byte: Some(1),
+                p50_fee_per_byte: Some(5),
+                p90_fee_per_byte: Some(9),
+                max_fee_per_byte: Some(10),
+            }
+        );
     }
 }
