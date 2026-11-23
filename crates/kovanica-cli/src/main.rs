@@ -556,7 +556,7 @@ async fn main() -> Result<()> {
         Commands::Deploy(args) => cmd_deploy(&client, chain_id, args, json).await,
         Commands::Call(args) => cmd_call(&client, chain_id, args, json).await,
         Commands::Contract { command } => contract_inspect::run(&client, command, json).await,
-        Commands::Tx { command } => tx_inspect::run(&client, command, json).await,
+        Commands::Tx { command } => tx_inspect::run(&client, command, chain_id, json).await,
         Commands::Htlc { command } => {
             contracts::run(&client, chain_id, ContractCommand::Htlc { command }, json).await
         }
@@ -2425,6 +2425,44 @@ mod wallet_cli_security_tests {
 
         // 4. Missing tx-hash fails
         assert!(Cli::try_parse_from(["kovanica", "tx", "receipt"]).is_err());
+
+        // 5. tx decode <hex> defaults and --json / --chain-id
+        let sample_raw = "0xdeadbeef";
+        let cli = Cli::try_parse_from(["kovanica", "tx", "decode", sample_raw]).unwrap();
+        assert!(!cli.json);
+        assert_eq!(cli.chain_id, None);
+        match cli.command {
+            Commands::Tx {
+                command: TxInspectCommand::Decode(args),
+            } => {
+                assert_eq!(args.raw_tx, sample_raw);
+            }
+            _ => panic!("expected tx decode"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "tx",
+            "decode",
+            sample_raw,
+            "--chain-id",
+            "2",
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        assert_eq!(cli.chain_id, Some(2));
+        match cli.command {
+            Commands::Tx {
+                command: TxInspectCommand::Decode(args),
+            } => {
+                assert_eq!(args.raw_tx, sample_raw);
+            }
+            _ => panic!("expected tx decode"),
+        }
+
+        // 6. Missing raw tx hex fails
+        assert!(Cli::try_parse_from(["kovanica", "tx", "decode"]).is_err());
     }
 
     #[test]

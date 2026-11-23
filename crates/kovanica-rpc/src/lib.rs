@@ -68,6 +68,8 @@ pub const MAX_JSONRPC_BATCH_SIZE: usize = 32;
 pub const RPC_VERSION_HEADER: &str = "x-kovanica-rpc-version";
 /// HTTP response header carrying the node's canonical network tag.
 pub const NETWORK_TAG_HEADER: &str = "x-kovanica-network-tag";
+/// HTTP response header carrying the node's decimal chain ID.
+pub const CHAIN_ID_HEADER: &str = "x-kovanica-chain-id";
 /// Canonical frozen mainnet network tag (`chain_id = 1`).
 const CANONICAL_MAINNET_NETWORK_TAG: &str = "1-f35df34c92001436";
 /// Canonical frozen testnet network tag (`chain_id = 2`).
@@ -444,6 +446,7 @@ impl ActivityTracker {
 struct RpcIdentityHeaders {
     rpc_version: HeaderValue,
     network_tag: HeaderValue,
+    chain_id: HeaderValue,
 }
 
 /// Resolve the canonical network tag advertised in `X-Kovanica-Network-Tag`.
@@ -471,9 +474,9 @@ pub fn resolve_network_tag(state: &RpcState) -> String {
     }
 }
 
-/// Attach `X-Kovanica-Rpc-Version` and `X-Kovanica-Network-Tag` to `/rpc` and
-/// `/health` responses so clients can verify server version and network
-/// identity without an extra roundtrip.
+/// Attach `X-Kovanica-Rpc-Version`, `X-Kovanica-Network-Tag`, and
+/// `X-Kovanica-Chain-Id` to `/rpc` and `/health` responses so clients can
+/// verify server version, network tag, and chain ID without an extra roundtrip.
 async fn attach_identity_headers(
     Extension(identity): Extension<RpcIdentityHeaders>,
     request: Request,
@@ -491,6 +494,7 @@ async fn attach_identity_headers(
             HeaderName::from_static(NETWORK_TAG_HEADER),
             identity.network_tag,
         );
+        headers.insert(HeaderName::from_static(CHAIN_ID_HEADER), identity.chain_id);
     }
     response
 }
@@ -523,9 +527,13 @@ impl RpcServer {
         let resolved_tag = resolve_network_tag(&state);
         let network_tag = HeaderValue::from_str(&resolved_tag)
             .unwrap_or_else(|_| HeaderValue::from_static("unknown"));
+        let chain_id_str = state.mempool.signing_context().chain_id.to_string();
+        let chain_id =
+            HeaderValue::from_str(&chain_id_str).unwrap_or_else(|_| HeaderValue::from_static("0"));
         let identity_headers = RpcIdentityHeaders {
             rpc_version: HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
             network_tag,
+            chain_id,
         };
 
         let mut server = Self {
@@ -1270,7 +1278,13 @@ fn append_rpc_metrics(mut base: String) -> String {
          rpc_get_logs_results_total {}\n\
          # HELP rpc_get_logs_truncated_total Total number of kovanica_getLogs calls rejected or truncated for exceeding range, result, or scan limits.\n\
          # TYPE rpc_get_logs_truncated_total counter\n\
-         rpc_get_logs_truncated_total {}",
+         rpc_get_logs_truncated_total {}\n\
+         # HELP rpc_tx_submitted_total Total number of raw transactions accepted by kovanica_sendRawTransaction.\n\
+         # TYPE rpc_tx_submitted_total counter\n\
+         rpc_tx_submitted_total {}\n\
+         # HELP rpc_tx_rejected_total Total number of raw transactions rejected by kovanica_sendRawTransaction.\n\
+         # TYPE rpc_tx_rejected_total counter\n\
+         rpc_tx_rejected_total {}",
         latency.count,
         latency.sum_secs,
         latency.count,
@@ -1285,6 +1299,8 @@ fn append_rpc_metrics(mut base: String) -> String {
         rpc_get_logs_blocks_scanned_total(),
         rpc_get_logs_results_total(),
         rpc_get_logs_truncated_total(),
+        rpc_tx_submitted_total(),
+        rpc_tx_rejected_total(),
     );
     if has_eof {
         base.push_str("# EOF\n");
@@ -2453,5 +2469,259 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some(expected_fallback.as_str())
         );
+        assert_eq!(
+            fallback_health
+                .headers()
+                .get("X-Kovanica-Chain-Id")
+                .and_then(|v| v.to_str().ok()),
+            Some(
+                kovanica_types::signing::chain_id::DEVNET
+                    .to_string()
+                    .as_str()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn rpc_and_health_responses_include_and_expose_chain_id_header() {
+        let (_dir, srv) = server(unlimited(), open_auth()).await;
+        let expected_chain_id = kovanica_types::signing::chain_id::DEVNET.to_string();
+        let allowed_origin = "https://kovanica.online";
+
+        // `/rpc` response includes `X-Kovanica-Chain-Id` and exposes it via CORS.
+        let rpc_req = Request::post("/rpc")
+            .header("content-type", "application/json")
+            .header("origin", allowed_origin)
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "kovanica_blockNumber",
+                    "params": [],
+                    "id": 1
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let rpc_resp = srv.router().oneshot(rpc_req).await.unwrap();
+        assert_eq!(rpc_resp.status(), StatusCode::OK);
+        assert_eq!(
+            rpc_resp
+                .headers()
+                .get("X-Kovanica-Chain-Id")
+                .and_then(|v| v.to_str().ok()),
+            Some(expected_chain_id.as_str())
+        );
+        let rpc_exposed = rpc_resp
+            .headers()
+            .get(axum::http::header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .and_then(|v| v.to_str().ok())
+            .expect("Access-Control-Expose-Headers must be set on /rpc");
+        assert!(
+            rpc_exposed.contains("X-Kovanica-Chain-Id"),
+            "Access-Control-Expose-Headers must include X-Kovanica-Chain-Id, got: {rpc_exposed}"
+        );
+
+        // `/health` response includes `X-Kovanica-Chain-Id` and exposes it via CORS.
+        let health_req = Request::get("/health")
+            .header("origin", allowed_origin)
+            .body(Body::empty())
+            .unwrap();
+        let health_resp = srv.router().oneshot(health_req).await.unwrap();
+        assert_eq!(health_resp.status(), StatusCode::OK);
+        assert_eq!(
+            health_resp
+                .headers()
+                .get("X-Kovanica-Chain-Id")
+                .and_then(|v| v.to_str().ok()),
+            Some(expected_chain_id.as_str())
+        );
+        let health_exposed = health_resp
+            .headers()
+            .get(axum::http::header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .and_then(|v| v.to_str().ok())
+            .expect("Access-Control-Expose-Headers must be set on /health");
+        assert!(
+            health_exposed.contains("X-Kovanica-Chain-Id"),
+            "Access-Control-Expose-Headers must include X-Kovanica-Chain-Id, got: {health_exposed}"
+        );
+
+        // Preflight `OPTIONS /rpc` also exposes `X-Kovanica-Chain-Id`.
+        let preflight_req = Request::options("/rpc")
+            .header("origin", allowed_origin)
+            .body(Body::empty())
+            .unwrap();
+        let preflight_resp = srv.router().oneshot(preflight_req).await.unwrap();
+        assert_eq!(preflight_resp.status(), StatusCode::NO_CONTENT);
+        let preflight_exposed = preflight_resp
+            .headers()
+            .get(axum::http::header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .and_then(|v| v.to_str().ok())
+            .expect("Access-Control-Expose-Headers must be set on preflight");
+        assert!(
+            preflight_exposed.contains("X-Kovanica-Chain-Id"),
+            "preflight Access-Control-Expose-Headers must include X-Kovanica-Chain-Id, got: {preflight_exposed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tx_submission_and_batch_metrics_increment_and_export_without_duplicate_types() {
+        let (_dir, srv) = server(unlimited(), open_auth()).await;
+
+        let submitted_before = rpc_tx_submitted_total();
+        let rejected_before = rpc_tx_rejected_total();
+        let batch_reqs_before = rpc_batch_requests_total();
+        let batch_items_before = rpc_batch_items_total();
+
+        // Build a valid signed devnet transfer transaction and fund the sender via devnet airdrop.
+        let (sk, pk) = kovanica_crypto::generate_keypair();
+        let sender = kovanica_types::Address::from_public_key(&pk);
+        let (_, recipient_pk) = kovanica_crypto::generate_keypair();
+        let recipient = kovanica_types::Address::from_public_key(&recipient_pk);
+
+        let (airdrop_status, airdrop_body) = call(
+            srv.router(),
+            "kovanica_requestAirdrop",
+            json!([sender.to_string(), 100_000u64]),
+            None,
+        )
+        .await;
+        assert_eq!(airdrop_status, StatusCode::OK);
+        assert!(
+            airdrop_body["error"].is_null(),
+            "expected devnet airdrop to succeed, got: {airdrop_body}"
+        );
+
+        let mut tx = kovanica_types::Transaction {
+            sender,
+            nonce: 0,
+            kind: kovanica_types::TransactionKind::Transfer {
+                to: recipient,
+                amount: 1_000,
+            },
+            fee: 10_000,
+            signature: kovanica_types::Signature([0; 64]),
+            hash: kovanica_types::Hash::zero(),
+        };
+        let signing_ctx =
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
+        let signing_hash = tx.signing_hash(&signing_ctx);
+        tx.signature = kovanica_crypto::sign(&sk, signing_hash.as_ref());
+        tx.hash = signing_hash;
+        let raw_hex = format!("0x{}", hex::encode(bincode::serialize(&tx).unwrap()));
+
+        // 1. Accepted raw tx increments `rpc_tx_submitted_total`.
+        let (status, body) = call(
+            srv.router(),
+            "kovanica_sendRawTransaction",
+            json!([raw_hex]),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["error"].is_null(), "expected accepted tx, got: {body}");
+
+        // 2. Rejected raw txs (invalid hex, invalid encoding, duplicate in mempool)
+        //    increment `rpc_tx_rejected_total`.
+        let (status, body) = call(
+            srv.router(),
+            "kovanica_sendRawTransaction",
+            json!(["0xzzzz"]),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body["error"].is_null(), "expected invalid hex error");
+
+        let (status, body) = call(
+            srv.router(),
+            "kovanica_sendRawTransaction",
+            json!(["0xdeadbeef"]),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body["error"].is_null(), "expected invalid encoding error");
+
+        let (status, body) = call(
+            srv.router(),
+            "kovanica_sendRawTransaction",
+            json!([raw_hex]),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body["error"].is_null(), "expected duplicate tx error");
+
+        // 3. Batch request increments `rpc_batch_requests_total` and `rpc_batch_items_total`.
+        let batch = json!([
+            {"jsonrpc": "2.0", "id": 1, "method": "kovanica_blockNumber", "params": []},
+            {"jsonrpc": "2.0", "id": 2, "method": "kovanica_getDagTips", "params": []}
+        ]);
+        let (status, body) = call_raw(srv.router(), batch, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().map(|a| a.len()), Some(2));
+
+        assert!(
+            rpc_tx_submitted_total() > submitted_before,
+            "rpc_tx_submitted_total must increment on accepted tx"
+        );
+        assert!(
+            rpc_tx_rejected_total() >= rejected_before + 3,
+            "rpc_tx_rejected_total must increment on each rejected tx"
+        );
+        assert!(
+            rpc_batch_requests_total() > batch_reqs_before,
+            "rpc_batch_requests_total must increment on batch request"
+        );
+        assert!(
+            rpc_batch_items_total() >= batch_items_before + 2,
+            "rpc_batch_items_total must increment by batch item count"
+        );
+
+        // 4. Verify `/metrics` exports all four counters before `# EOF` with zero duplicate `# TYPE`.
+        let metrics_resp = srv
+            .router()
+            .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(metrics_resp.status(), StatusCode::OK);
+        let metrics_bytes = metrics_resp.into_body().collect().await.unwrap().to_bytes();
+        let metrics_str = String::from_utf8(metrics_bytes.to_vec()).unwrap();
+
+        for metric in [
+            "rpc_tx_submitted_total",
+            "rpc_tx_rejected_total",
+            "rpc_batch_requests_total",
+            "rpc_batch_items_total",
+        ] {
+            let type_line = format!("# TYPE {metric} counter");
+            assert_eq!(
+                metrics_str.matches(&type_line).count(),
+                1,
+                "expected exactly one `{type_line}` in /metrics"
+            );
+            assert!(
+                metrics_str.contains(&format!("\n{metric} ")),
+                "expected sample line for `{metric}` in /metrics"
+            );
+            if let Some(eof_pos) = metrics_str.find("# EOF") {
+                assert!(
+                    metrics_str.find(&type_line).unwrap() < eof_pos,
+                    "`{metric}` must appear before # EOF"
+                );
+            }
+        }
+
+        let mut seen_types = std::collections::HashSet::new();
+        for line in metrics_str.lines() {
+            if let Some(rest) = line.strip_prefix("# TYPE ") {
+                if let Some(name) = rest.split_whitespace().next() {
+                    assert!(
+                        seen_types.insert(name.to_string()),
+                        "duplicate # TYPE declaration for metric `{name}`"
+                    );
+                }
+            }
+        }
     }
 }
