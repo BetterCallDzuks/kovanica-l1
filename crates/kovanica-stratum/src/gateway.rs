@@ -533,12 +533,13 @@ use crate::{KOVANICA_STRATUM_ALGORITHM, KOVANICA_STRATUM_CAPABILITY};
 type ClientSender = mpsc::Sender<String>;
 
 /// Read a single newline-terminated line with an explicit byte limit [`MAX_STRATUM_LINE_BYTES`]
-/// and idle timeout [`STRATUM_IDLE_TIMEOUT`].
+/// and optional per-connection idle timeout.
 ///
 /// Returns `Ok(0)` on clean EOF, `Ok(n)` on a line read, or an error on timeout / oversized line.
-async fn read_bounded_line<R: AsyncBufReadExt + Unpin>(
+async fn read_bounded_line_with_timeout<R: AsyncBufReadExt + Unpin>(
     reader: &mut R,
     buf: &mut String,
+    idle_timeout: Option<Duration>,
 ) -> std::io::Result<usize> {
     buf.clear();
     let mut raw = Vec::new();
@@ -554,14 +555,18 @@ async fn read_bounded_line<R: AsyncBufReadExt + Unpin>(
         Ok(n)
     };
 
-    let n = match tokio::time::timeout(STRATUM_IDLE_TIMEOUT, read_fut).await {
-        Ok(res) => res?,
-        Err(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Stratum connection idle read timeout",
-            ));
+    let n = if let Some(timeout_dur) = idle_timeout {
+        match tokio::time::timeout(timeout_dur, read_fut).await {
+            Ok(res) => res?,
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Stratum connection idle read timeout",
+                ));
+            }
         }
+    } else {
+        read_fut.await?
     };
     if n == 0 {
         return Ok(0);
@@ -706,9 +711,11 @@ pub struct GatewayMetrics {
     // Hashrate metrics
     pub worker_hashrate: Family<WorkerLabel, Gauge>,
 
-    // Request metrics
+    // Request & session keepalive metrics
     pub request_rate_limit_hits: Counter,
     pub extranonce_subscriptions: Counter,
+    pub pings: Counter,
+    pub idle_evictions: Counter,
 
     // RPC metrics
     pub rpc_getwork_latency: Histogram,
@@ -932,6 +939,20 @@ impl GatewayMetrics {
             extranonce_subscriptions.clone(),
         );
 
+        let pings = Counter::default();
+        registry.register(
+            "stratum_pings",
+            "Total mining.ping keepalive requests processed",
+            pings.clone(),
+        );
+
+        let idle_evictions = Counter::default();
+        registry.register(
+            "stratum_idle_evictions",
+            "Total idle worker sessions evicted due to inactivity timeout",
+            idle_evictions.clone(),
+        );
+
         // RPC metrics
         let rpc_getwork_latency =
             Histogram::new(exponential_buckets(0.001, 2.0, 20).collect::<Vec<f64>>());
@@ -1067,6 +1088,8 @@ impl GatewayMetrics {
             worker_hashrate,
             request_rate_limit_hits,
             extranonce_subscriptions,
+            pings,
+            idle_evictions,
             rpc_getwork_latency,
             rpc_submitwork_latency,
             rpc_getwork_errors,
@@ -1449,6 +1472,61 @@ impl StratumGateway {
         self.metrics.banned_ips_active.set(active_bans as i64);
     }
 
+    /// Evict worker sessions that have been idle for at least `max_idle_secs` seconds.
+    ///
+    /// When `max_idle_secs == 0`, idle timeout is disabled and no sessions are evicted.
+    /// Increments `stratum_idle_evictions_total` for each newly evicted session and returns
+    /// the number of sessions evicted on this sweep.
+    pub fn evict_idle_sessions(&self, max_idle_secs: u64) -> usize {
+        if max_idle_secs == 0 {
+            return 0;
+        }
+
+        let mut candidates: HashMap<String, Arc<WorkerSession>> = HashMap::new();
+        for sess in self.session_registry.evict_idle_sessions(max_idle_secs) {
+            candidates.insert(sess.session_id.clone(), sess);
+        }
+
+        {
+            let active = self.active_sessions.read();
+            for (id, sess) in active.iter() {
+                if sess.is_idle(max_idle_secs) {
+                    candidates.insert(id.clone(), Arc::clone(sess));
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            return 0;
+        }
+
+        let mut evicted_count = 0usize;
+        {
+            let mut active = self.active_sessions.write();
+            let mut subs = self.active_subscribers.write();
+            for (id, sess) in &candidates {
+                active.remove(id);
+                subs.remove(id);
+                self.session_registry.remove_session(id);
+                if sess.mark_evicted() {
+                    self.metrics.idle_evictions.inc();
+                    evicted_count += 1;
+                    info!(
+                        event = "stratum_session_idle_evicted",
+                        session_id = %id,
+                        worker = %sess.worker_name(),
+                        idle_secs = sess.idle_secs(),
+                        max_idle_secs,
+                        "evicted idle Stratum worker session"
+                    );
+                }
+            }
+        }
+
+        self.refresh_difficulty_metrics();
+        evicted_count
+    }
+
     /// Recompute active worker difficulty min/max/avg gauges from connected sessions.
     pub fn refresh_difficulty_metrics(&self) {
         Self::refresh_difficulty_metrics_from(&self.active_sessions, &self.metrics);
@@ -1662,20 +1740,29 @@ impl StratumGateway {
             }
         });
 
-        // Spawn periodic connection rate-limiter and ban-scorer cleanup task
+        // Spawn periodic connection rate-limiter, ban-scorer, and idle-session sweep task
         let cleanup_shutdown = Arc::clone(&self.shutdown);
         let cleanup_shutdown_notify = Arc::clone(&self.shutdown_notify);
-        let cleanup_limiter = Arc::clone(&self.connection_rate_limiter);
-        let cleanup_ban_scorer = Arc::clone(&self.ip_ban_scorer);
-        let cleanup_metrics = self.metrics.clone();
+        let cleanup_gateway = self.clone();
+        let idle_timeout_secs = self.config.session_idle_timeout_secs;
+        let sweep_interval = if idle_timeout_secs > 0 && idle_timeout_secs < 10 {
+            Duration::from_millis(200)
+        } else {
+            Duration::from_secs(1)
+        };
         tokio::spawn(async move {
+            let mut last_rate_cleanup = Instant::now();
             while !cleanup_shutdown.load(Ordering::Relaxed) {
                 tokio::select! {
                     _ = cleanup_shutdown_notify.notified() => break,
-                    _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                        cleanup_limiter.cleanup();
-                        let active_bans = cleanup_ban_scorer.cleanup();
-                        cleanup_metrics.banned_ips_active.set(active_bans as i64);
+                    _ = tokio::time::sleep(sweep_interval) => {
+                        if idle_timeout_secs > 0 {
+                            cleanup_gateway.evict_idle_sessions(idle_timeout_secs);
+                        }
+                        if last_rate_cleanup.elapsed() >= Duration::from_secs(10) {
+                            cleanup_gateway.cleanup_rate_limiter();
+                            last_rate_cleanup = Instant::now();
+                        }
                     }
                 }
             }
@@ -1866,6 +1953,14 @@ impl StratumGateway {
                             };
 
                             let session_for_log = Arc::clone(&session);
+                            let idle_timeout = if gateway_self.config.session_idle_timeout_secs > 0
+                            {
+                                Some(Duration::from_secs(
+                                    gateway_self.config.session_idle_timeout_secs,
+                                ))
+                            } else {
+                                None
+                            };
                             let result = if let Some(upgraded_socket) = upgraded_socket {
                                 Self::handle_connection(
                                     upgraded_socket,
@@ -1874,11 +1969,13 @@ impl StratumGateway {
                                     gateway_jobs,
                                     gateway_subscribers,
                                     gateway_active_sessions,
+                                    Arc::clone(&gateway_self.session_registry),
                                     gateway_rpc,
                                     request_rate_limiter,
                                     Arc::clone(&gateway_self.ip_ban_scorer),
                                     gateway_self.metrics.clone(),
                                     vardiff_config,
+                                    idle_timeout,
                                     correlation_id.clone(),
                                 )
                                 .await
@@ -1886,12 +1983,15 @@ impl StratumGateway {
                                 Ok(())
                             };
 
-                            // Remove session from active difficulty tracking
+                            // Remove session from active difficulty tracking and session registry
                             {
                                 gateway_self
                                     .active_sessions
                                     .write()
                                     .remove(&session_for_log.session_id);
+                                gateway_self
+                                    .session_registry
+                                    .remove_session(&session_for_log.session_id);
                             }
                             gateway_self.refresh_difficulty_metrics();
 
@@ -1969,11 +2069,13 @@ impl StratumGateway {
         job_manager: Arc<JobManager>,
         active_subscribers: Arc<RwLock<HashMap<String, ClientSender>>>,
         active_sessions: Arc<RwLock<HashMap<String, Arc<WorkerSession>>>>,
+        session_registry: Arc<SessionRegistry>,
         rpc_client: NodeRpcClient,
         request_rate_limiter: Arc<RequestRateLimiter>,
         ip_ban_scorer: Arc<IpBanScorer>,
         metrics: GatewayMetrics,
         vardiff_config: VarDiffConfig,
+        idle_timeout: Option<Duration>,
         correlation_id: String,
     ) -> Result<()> {
         let client_ip = remote_addr.ip();
@@ -2011,7 +2113,46 @@ impl StratumGateway {
 
         let mut line = String::new();
         let mut req_seq: u64 = 0;
-        while read_bounded_line(&mut buf_reader, &mut line).await? > 0 {
+        loop {
+            let read_res = tokio::select! {
+                _ = session.evicted_notified() => {
+                    debug!(
+                        %correlation_id,
+                        %remote_addr,
+                        session_id = %session.session_id,
+                        "closing Stratum connection evicted by idle session sweep"
+                    );
+                    break;
+                }
+                res = read_bounded_line_with_timeout(&mut buf_reader, &mut line, idle_timeout) => res,
+            };
+
+            let bytes_read = match read_res {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    active_sessions.write().remove(&session.session_id);
+                    active_subscribers.write().remove(&session.session_id);
+                    session_registry.remove_session(&session.session_id);
+                    if session.mark_evicted() {
+                        metrics.idle_evictions.inc();
+                        info!(
+                            event = "stratum_session_idle_evicted",
+                            %correlation_id,
+                            %remote_addr,
+                            session_id = %session.session_id,
+                            worker = %session.worker_name(),
+                            idle_secs = session.idle_secs(),
+                            "evicted idle Stratum worker session on read timeout"
+                        );
+                    }
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            };
+
+            if bytes_read == 0 {
+                break;
+            }
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 line.clear();
@@ -2054,6 +2195,7 @@ impl StratumGateway {
                 // mining.subscribe
                 // -------------------------------------------------------------
                 "mining.subscribe" => {
+                    session.touch_activity();
                     // Register as active subscriber for broadcasts
                     {
                         let mut subs = active_subscribers.write();
@@ -2083,6 +2225,7 @@ impl StratumGateway {
                 // mining.authorize
                 // -------------------------------------------------------------
                 "mining.authorize" => {
+                    session.touch_activity();
                     let params = req.params.as_array();
                     let username = params
                         .and_then(|arr| arr.first())
@@ -2137,6 +2280,7 @@ impl StratumGateway {
                 // mining.submit
                 // -------------------------------------------------------------
                 "mining.submit" => {
+                    session.touch_activity();
                     // Track submitted shares
                     metrics.shares_submitted.inc();
 
@@ -2630,6 +2774,7 @@ impl StratumGateway {
                 // mining.extranonce.subscribe
                 // -------------------------------------------------------------
                 "mining.extranonce.subscribe" => {
+                    session.touch_activity();
                     session.set_extranonce_subscribed(true);
                     metrics.extranonce_subscriptions.inc();
                     debug!(
@@ -2646,6 +2791,7 @@ impl StratumGateway {
                 // mining.suggest_difficulty / mining.suggest_target
                 // -------------------------------------------------------------
                 "mining.suggest_difficulty" => {
+                    session.touch_activity();
                     if let Some(diff) = req
                         .params
                         .as_array()
@@ -2679,6 +2825,8 @@ impl StratumGateway {
                 // mining.ping
                 // -------------------------------------------------------------
                 "mining.ping" => {
+                    session.touch_activity();
+                    metrics.pings.inc();
                     let _ = outbound_tx
                         .send(StratumResponse::ok(req_id, json!("pong")).to_wire_line())
                         .await;
@@ -2830,6 +2978,8 @@ mod tests {
         metrics.ip_bans.inc();
         metrics.banned_ips_active.set(1);
         metrics.extranonce_subscriptions.inc();
+        metrics.pings.inc();
+        metrics.idle_evictions.inc();
         metrics
             .shares_by_difficulty_bucket
             .get_or_create(&DifficultyBucketLabel { bucket: "1" })
@@ -2876,6 +3026,8 @@ mod tests {
         assert!(encoded.contains("stratum_ip_bans_total 1"));
         assert!(encoded.contains("stratum_banned_ips_active 1"));
         assert!(encoded.contains("stratum_extranonce_subscriptions_total 1"));
+        assert!(encoded.contains("stratum_pings_total 1"));
+        assert!(encoded.contains("stratum_idle_evictions_total 1"));
         assert!(encoded.contains("stratum_shares_by_difficulty_bucket_total{bucket=\"1\"} 1"));
         assert!(encoded.contains("stratum_worker_hashrate{worker=\"rig1\"} 4200"));
         assert!(encoded.contains("stratum_rpc_getwork_latency_seconds_count 1"));
@@ -3152,8 +3304,53 @@ mod tests {
         assert_eq!(snap.workers[1].shares_rejected, 2);
 
         let json_str = serde_json::to_string(&snap).expect("serialize workers response");
+        assert!(json_str.contains(r#""idle_secs":"#));
         assert!(!json_str.contains("super_secret_rpc_token_do_not_leak"));
         assert!(!json_str.contains(&addr_str));
         assert!(!json_str.contains("127.0.0.1"));
+    }
+
+    #[test]
+    fn test_gateway_evict_idle_sessions_updates_registry_and_metrics() {
+        let gateway = StratumGateway::new(StratumConfig::default()).expect("gateway creation");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let idle_sess = gateway.session_registry().create_session(1.0);
+        idle_sess.touch_activity_at(now.saturating_sub(700));
+
+        let active_sess = gateway.session_registry().create_session(2.0);
+        active_sess.touch_activity_at(now.saturating_sub(100));
+
+        {
+            let mut active = gateway.active_sessions.write();
+            active.insert(idle_sess.session_id.clone(), Arc::clone(&idle_sess));
+            active.insert(active_sess.session_id.clone(), Arc::clone(&active_sess));
+        }
+
+        assert_eq!(gateway.workers_snapshot().active_workers, 2);
+        assert_eq!(gateway.metrics().idle_evictions.get(), 0);
+
+        // Disabled timeout (0) evicts nothing
+        assert_eq!(gateway.evict_idle_sessions(0), 0);
+        assert_eq!(gateway.workers_snapshot().active_workers, 2);
+
+        // Evict sessions idle >= 600s -> evicts idle_sess, preserves active_sess
+        let evicted = gateway.evict_idle_sessions(600);
+        assert_eq!(evicted, 1);
+        assert!(idle_sess.is_evicted());
+        assert!(!active_sess.is_evicted());
+        assert_eq!(gateway.metrics().idle_evictions.get(), 1);
+
+        let snap = gateway.workers_snapshot();
+        assert_eq!(snap.active_workers, 1);
+        assert_eq!(snap.workers[0].session_id, active_sess.numeric_session_id);
+        assert!(snap.workers[0].idle_secs >= 100);
+
+        // Calling evict_idle_sessions again does not double-count already-evicted session
+        assert_eq!(gateway.evict_idle_sessions(600), 0);
+        assert_eq!(gateway.metrics().idle_evictions.get(), 1);
     }
 }

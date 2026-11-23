@@ -44,6 +44,10 @@ pub const DEFAULT_VARDIFF_VARIANCE_PERCENT: f64 = 30.0;
 pub const DEFAULT_BAN_THRESHOLD_INVALID_SHARES: u32 = 25;
 /// Default duration (in seconds) of a temporary IP ban after crossing the invalid-share threshold (15 minutes).
 pub const DEFAULT_BAN_DURATION_SECS: u64 = 900;
+/// Default idle timeout (in seconds) before evicting an inactive worker session (10 minutes; 0 disables idle timeout).
+pub const DEFAULT_SESSION_IDLE_TIMEOUT_SECS: u64 = 600;
+/// Maximum allowed worker session idle timeout in seconds (24 hours).
+pub const MAX_SESSION_IDLE_TIMEOUT_SECS: u64 = 86_400;
 /// Valid canonical PRO-21 burn address used when the operator does not supply a payout.
 ///
 /// This replaces the previous invalid placeholder, which made `kovanica_getWork` fail on every
@@ -160,6 +164,10 @@ pub struct StratumArgs {
     /// Duration in seconds of a temporary per-IP ban after exceeding the invalid-share threshold.
     #[arg(long, default_value_t = DEFAULT_BAN_DURATION_SECS)]
     pub ban_duration_secs: u64,
+
+    /// Idle timeout in seconds before evicting an inactive worker session (0 disables idle timeout).
+    #[arg(long, default_value_t = DEFAULT_SESSION_IDLE_TIMEOUT_SECS)]
+    pub session_idle_timeout_secs: u64,
 }
 
 /// Bounded per-worker Variable Difficulty (VarDiff) settings.
@@ -245,6 +253,8 @@ pub struct StratumConfig {
     pub ban_threshold_invalid_shares: u32,
     /// Duration in seconds of a temporary per-IP ban after exceeding the invalid-share threshold.
     pub ban_duration_secs: u64,
+    /// Idle timeout in seconds before evicting an inactive worker session (0 disables idle timeout).
+    pub session_idle_timeout_secs: u64,
 }
 
 /// Resolve the bearer token for node write RPC calls from the environment.
@@ -294,6 +304,7 @@ impl Default for StratumConfig {
             vardiff_variance_percent: DEFAULT_VARDIFF_VARIANCE_PERCENT,
             ban_threshold_invalid_shares: DEFAULT_BAN_THRESHOLD_INVALID_SHARES,
             ban_duration_secs: DEFAULT_BAN_DURATION_SECS,
+            session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
         }
     }
 }
@@ -355,6 +366,12 @@ impl StratumConfig {
         }
         if self.ban_threshold_invalid_shares > 0 && self.ban_duration_secs == 0 {
             bail!("ban_duration_secs must be > 0 when ban_threshold_invalid_shares > 0");
+        }
+        if self.session_idle_timeout_secs > MAX_SESSION_IDLE_TIMEOUT_SECS {
+            bail!(
+                "session_idle_timeout_secs ({}) must be <= {MAX_SESSION_IDLE_TIMEOUT_SECS} (or 0 to disable)",
+                self.session_idle_timeout_secs
+            );
         }
         if self.log_format != "json" && self.log_format != "pretty" {
             bail!(
@@ -423,6 +440,7 @@ impl From<StratumArgs> for StratumConfig {
             vardiff_variance_percent: args.vardiff_variance_percent,
             ban_threshold_invalid_shares: args.ban_threshold_invalid_shares,
             ban_duration_secs: args.ban_duration_secs,
+            session_idle_timeout_secs: args.session_idle_timeout_secs,
         }
     }
 }
@@ -684,6 +702,37 @@ mod tests {
         let cfg = StratumConfig::from(parsed);
         assert_eq!(cfg.ban_threshold_invalid_shares, 10);
         assert_eq!(cfg.ban_duration_secs, 300);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn session_idle_timeout_config_defaults_and_validation() {
+        let default_cfg = StratumConfig::default();
+        assert_eq!(
+            default_cfg.session_idle_timeout_secs,
+            DEFAULT_SESSION_IDLE_TIMEOUT_SECS
+        );
+        assert!(default_cfg.validate().is_ok());
+
+        // 0 disables idle timeout and is valid
+        let disabled = StratumConfig {
+            session_idle_timeout_secs: 0,
+            ..Default::default()
+        };
+        assert!(disabled.validate().is_ok());
+
+        // Exceeding MAX_SESSION_IDLE_TIMEOUT_SECS fails validation
+        let excessive = StratumConfig {
+            session_idle_timeout_secs: MAX_SESSION_IDLE_TIMEOUT_SECS + 1,
+            ..Default::default()
+        };
+        assert!(excessive.validate().is_err());
+
+        let parsed =
+            StratumArgs::try_parse_from(["kovanica-stratum", "--session-idle-timeout-secs", "120"])
+                .expect("valid --session-idle-timeout-secs CLI flag must parse");
+        let cfg = StratumConfig::from(parsed);
+        assert_eq!(cfg.session_idle_timeout_secs, 120);
         assert!(cfg.validate().is_ok());
     }
 }

@@ -1,12 +1,13 @@
 //! Miner session and authorization management.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 use kovanica_types::Address;
 
@@ -114,6 +115,8 @@ pub struct WorkerSessionSummary {
     pub shares_rejected: u64,
     /// Elapsed connection duration in seconds.
     pub connected_secs: u64,
+    /// Seconds elapsed since the worker's last Stratum activity.
+    pub idle_secs: u64,
 }
 
 /// Sanitized response payload for `GET /workers` on the Stratum observability HTTP server.
@@ -180,18 +183,35 @@ pub struct WorkerSession {
     last_retarget: Mutex<Option<u64>>,
     /// Session creation timestamp (Unix seconds).
     created_at: u64,
+    /// Unix timestamp (in seconds) of the most recent Stratum activity on this session.
+    pub last_activity_secs: AtomicU64,
+    /// Monotonic instant of the most recent Stratum activity for sub-second-accurate idle tracking.
+    last_activity_instant: Mutex<Instant>,
+    /// Whether `idle_secs()` uses monotonic `last_activity_instant` (`true` for real-time sessions)
+    /// or synthetic `last_activity_secs` (`false` when constructed/touched with explicit `_at` timestamps).
+    use_monotonic_idle: AtomicBool,
+    /// Whether this session has been evicted for exceeding the idle timeout.
+    evicted: AtomicBool,
+    /// Notification fired when the session is evicted by an idle sweep.
+    evict_notify: Notify,
     /// Monotonic connection instant for elapsed connection time calculation.
     pub connected_at: Instant,
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 impl WorkerSession {
     /// Create a new session with initial difficulty and assigned `extranonce1`.
     pub fn new(session_id: String, extranonce1: String, initial_difficulty: f64) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self::new_at(session_id, extranonce1, initial_difficulty, now)
+        let now = current_unix_secs();
+        let sess = Self::new_at(session_id, extranonce1, initial_difficulty, now);
+        sess.use_monotonic_idle.store(true, Ordering::Relaxed);
+        sess
     }
 
     /// Create a new session with an explicit creation timestamp (Unix seconds).
@@ -203,6 +223,7 @@ impl WorkerSession {
     ) -> Self {
         let numeric_session_id = parse_numeric_session_id(&session_id);
         let extranonce1_state = RwLock::new(extranonce1.clone());
+        let now_instant = Instant::now();
         Self {
             session_id,
             numeric_session_id,
@@ -220,8 +241,80 @@ impl WorkerSession {
             share_timestamps: Mutex::new(Vec::new()),
             last_retarget: Mutex::new(None),
             created_at,
-            connected_at: Instant::now(),
+            last_activity_secs: AtomicU64::new(created_at),
+            last_activity_instant: Mutex::new(now_instant),
+            use_monotonic_idle: AtomicBool::new(false),
+            evicted: AtomicBool::new(false),
+            evict_notify: Notify::new(),
+            connected_at: now_instant,
         }
+    }
+
+    /// Return the Unix timestamp (seconds) of the last recorded activity on this session.
+    pub fn last_activity_secs(&self) -> u64 {
+        self.last_activity_secs.load(Ordering::Relaxed)
+    }
+
+    /// Record Stratum activity on this session at the current wall-clock and monotonic time.
+    pub fn touch_activity(&self) {
+        self.last_activity_secs
+            .store(current_unix_secs(), Ordering::Relaxed);
+        *self.last_activity_instant.lock() = Instant::now();
+        self.use_monotonic_idle.store(true, Ordering::Relaxed);
+    }
+
+    /// Record Stratum activity on this session at an explicit Unix timestamp (in seconds).
+    pub fn touch_activity_at(&self, timestamp_secs: u64) {
+        self.last_activity_secs
+            .store(timestamp_secs, Ordering::Relaxed);
+        self.use_monotonic_idle.store(false, Ordering::Relaxed);
+    }
+
+    /// Return the number of seconds this session has been idle since its last activity.
+    pub fn idle_secs(&self) -> u64 {
+        if self.use_monotonic_idle.load(Ordering::Relaxed) {
+            self.last_activity_instant.lock().elapsed().as_secs()
+        } else {
+            self.idle_secs_at(current_unix_secs())
+        }
+    }
+
+    /// Return the number of seconds this session has been idle relative to `now_secs`.
+    pub fn idle_secs_at(&self, now_secs: u64) -> u64 {
+        now_secs.saturating_sub(self.last_activity_secs())
+    }
+
+    /// Check whether this session has exceeded `max_idle_secs` of inactivity (`0` disables timeout).
+    pub fn is_idle(&self, max_idle_secs: u64) -> bool {
+        max_idle_secs > 0 && self.idle_secs() >= max_idle_secs
+    }
+
+    /// Check whether this session has exceeded `max_idle_secs` of inactivity at `now_secs` (`0` disables timeout).
+    pub fn is_idle_at(&self, max_idle_secs: u64, now_secs: u64) -> bool {
+        max_idle_secs > 0 && self.idle_secs_at(now_secs) >= max_idle_secs
+    }
+
+    /// Atomically mark this session as evicted for inactivity and wake any connection reader task.
+    ///
+    /// Returns `true` if this call transitioned the session into the evicted state, or `false`
+    /// if the session was already marked evicted.
+    pub fn mark_evicted(&self) -> bool {
+        let first = !self.evicted.swap(true, Ordering::SeqCst);
+        self.evict_notify.notify_waiters();
+        first
+    }
+
+    /// Return whether this session has been marked as evicted.
+    pub fn is_evicted(&self) -> bool {
+        self.evicted.load(Ordering::SeqCst)
+    }
+
+    /// Wait until this session is marked as evicted.
+    pub async fn evicted_notified(&self) {
+        if self.is_evicted() {
+            return;
+        }
+        self.evict_notify.notified().await;
     }
 
     /// Return the total count of accepted shares for this session.
@@ -263,6 +356,7 @@ impl WorkerSession {
             shares_accepted: self.shares_accepted(),
             shares_rejected: self.shares_rejected(),
             connected_secs: self.connected_secs(),
+            idle_secs: self.idle_secs(),
         }
     }
 
@@ -586,12 +680,14 @@ impl WorkerSession {
 #[derive(Debug, Default)]
 pub struct SessionRegistry {
     counter: AtomicU64,
+    sessions: RwLock<HashMap<String, Arc<WorkerSession>>>,
 }
 
 impl SessionRegistry {
     pub fn new() -> Self {
         Self {
             counter: AtomicU64::new(1),
+            sessions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -601,11 +697,99 @@ impl SessionRegistry {
         let session_id = format!("sess_{:08x}", id_val);
         // 4 bytes / 8 hex characters extranonce1
         let extranonce1 = format!("{:08x}", id_val as u32);
-        Arc::new(WorkerSession::new(
-            session_id,
+        let session = Arc::new(WorkerSession::new(
+            session_id.clone(),
             extranonce1,
             initial_difficulty,
-        ))
+        ));
+        self.sessions
+            .write()
+            .insert(session_id, Arc::clone(&session));
+        session
+    }
+
+    /// Generate a new session at an explicit Unix creation timestamp (in seconds).
+    pub fn create_session_at(
+        &self,
+        initial_difficulty: f64,
+        created_at: u64,
+    ) -> Arc<WorkerSession> {
+        let id_val = self.counter.fetch_add(1, Ordering::SeqCst);
+        let session_id = format!("sess_{:08x}", id_val);
+        let extranonce1 = format!("{:08x}", id_val as u32);
+        let session = Arc::new(WorkerSession::new_at(
+            session_id.clone(),
+            extranonce1,
+            initial_difficulty,
+            created_at,
+        ));
+        self.sessions
+            .write()
+            .insert(session_id, Arc::clone(&session));
+        session
+    }
+
+    /// Remove a session from the registry by `session_id`.
+    pub fn remove_session(&self, session_id: &str) -> Option<Arc<WorkerSession>> {
+        self.sessions.write().remove(session_id)
+    }
+
+    /// Look up a tracked session by `session_id`.
+    pub fn get_session(&self, session_id: &str) -> Option<Arc<WorkerSession>> {
+        self.sessions.read().get(session_id).cloned()
+    }
+
+    /// Return the count of sessions currently tracked in the registry.
+    pub fn active_session_count(&self) -> usize {
+        self.sessions.read().len()
+    }
+
+    /// Evict and return all sessions whose idle time has reached or exceeded `max_idle_secs`.
+    ///
+    /// When `max_idle_secs == 0`, idle eviction is disabled and no sessions are evicted.
+    pub fn evict_idle_sessions(&self, max_idle_secs: u64) -> Vec<Arc<WorkerSession>> {
+        if max_idle_secs == 0 {
+            return Vec::new();
+        }
+        let mut sessions = self.sessions.write();
+        let idle_ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, sess)| sess.is_idle(max_idle_secs))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut evicted = Vec::with_capacity(idle_ids.len());
+        for id in idle_ids {
+            if let Some(sess) = sessions.remove(&id) {
+                evicted.push(sess);
+            }
+        }
+        evicted
+    }
+
+    /// Evict and return all sessions whose idle time at `now_secs` has reached or exceeded `max_idle_secs`.
+    ///
+    /// When `max_idle_secs == 0`, idle eviction is disabled and no sessions are evicted.
+    pub fn evict_idle_sessions_at(
+        &self,
+        max_idle_secs: u64,
+        now_secs: u64,
+    ) -> Vec<Arc<WorkerSession>> {
+        if max_idle_secs == 0 {
+            return Vec::new();
+        }
+        let mut sessions = self.sessions.write();
+        let idle_ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, sess)| sess.is_idle_at(max_idle_secs, now_secs))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut evicted = Vec::with_capacity(idle_ids.len());
+        for id in idle_ids {
+            if let Some(sess) = sessions.remove(&id) {
+                evicted.push(sess);
+            }
+        }
+        evicted
     }
 
     /// Allocate the next unique 8-character hex `extranonce1` value for dynamic extranonce rotation.
@@ -958,5 +1142,34 @@ mod tests {
         assert_eq!(notif.id, serde_json::Value::Null);
         assert_eq!(notif.method, "mining.set_extranonce");
         assert_eq!(notif.params, serde_json::json!(["000000aa", 4]));
+    }
+
+    #[test]
+    fn test_worker_session_activity_tracking_and_registry_idle_eviction() {
+        let registry = SessionRegistry::new();
+        let s1 = registry.create_session_at(1.0, 1_000);
+        let s2 = registry.create_session_at(1.0, 1_000);
+        assert_eq!(registry.active_session_count(), 2);
+        assert_eq!(s1.last_activity_secs(), 1_000);
+        assert_eq!(s1.idle_secs_at(1_500), 500);
+        assert!(!s1.is_idle_at(600, 1_500));
+
+        // Update s2 activity at t = 1_400 (e.g. mining.ping)
+        s2.touch_activity_at(1_400);
+        assert_eq!(s2.last_activity_secs(), 1_400);
+        assert_eq!(s2.idle_secs_at(1_650), 250);
+        assert_eq!(s1.idle_secs_at(1_650), 650);
+
+        // Disabled idle timeout (max_idle_secs = 0) must not evict anything
+        assert!(registry.evict_idle_sessions_at(0, 1_650).is_empty());
+        assert_eq!(registry.active_session_count(), 2);
+
+        // At t = 1_650 with max_idle_secs = 600, s1 (idle 650s) is evicted while s2 (idle 250s) remains
+        let evicted = registry.evict_idle_sessions_at(600, 1_650);
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].session_id, s1.session_id);
+        assert_eq!(registry.active_session_count(), 1);
+        assert!(registry.get_session(&s1.session_id).is_none());
+        assert!(registry.get_session(&s2.session_id).is_some());
     }
 }

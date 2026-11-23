@@ -21,7 +21,10 @@ pub mod protocol;
 pub mod rpc;
 pub mod session;
 
-pub use config::{StratumArgs, StratumConfig, VarDiffConfig};
+pub use config::{
+    StratumArgs, StratumConfig, VarDiffConfig, DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
+    MAX_SESSION_IDLE_TIMEOUT_SECS,
+};
 pub use difficulty::{
     check_network_solution, check_share_hash_meets_difficulty, check_share_hash_meets_target,
     target_from_difficulty, DIFFICULTY_1_TARGET_BITS,

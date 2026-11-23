@@ -1657,6 +1657,7 @@ async fn test_observability_workers_endpoint_e2e() {
     assert_eq!(w0["shares_accepted"], 0);
     assert_eq!(w0["shares_rejected"], 0);
     assert!(w0["connected_secs"].as_u64().is_some());
+    assert!(w0["idle_secs"].as_u64().is_some());
 
     // 3. Submit 2 valid shares and 1 duplicate share + 1 stale share
     client1
@@ -1845,6 +1846,170 @@ async fn test_extranonce_subscribe_and_set_extranonce_e2e() {
     assert_eq!(client_rotated["params"], rotated_notif.params);
     assert_eq!(client_rotated["params"][0], "00000002");
     assert_eq!(client_rotated["params"][1], 4);
+
+    gateway.shutdown();
+}
+
+#[tokio::test]
+async fn test_mining_ping_keepalive_and_idle_session_timeout_eviction_e2e() {
+    init_test_logging();
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral listener");
+    let stratum_addr = listener.local_addr().expect("stratum local addr");
+
+    // Configure gateway with a 2-second session idle timeout for deterministic E2E testing
+    let config = StratumConfig {
+        listen_addr: stratum_addr,
+        difficulty: 0.0,
+        chain_id: HYBRID_TESTNET,
+        rpc_url: "http://127.0.0.1:1/rpc".to_string(),
+        poll_interval: Duration::from_secs(3600),
+        session_idle_timeout_secs: 2,
+        ..Default::default()
+    };
+    config
+        .validate()
+        .expect("idle timeout config must validate");
+
+    let gateway = Arc::new(StratumGateway::new(config).expect("gateway creation failed"));
+    let gw_clone = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = gw_clone.run_with_listener(listener).await;
+    });
+
+    // Start observability HTTP server on ephemeral port
+    let obs_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind observability listener");
+    let obs_addr = obs_listener.local_addr().expect("observability local addr");
+    let obs_gateway = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = obs_gateway.serve_observability(obs_listener).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    let http = reqwest::Client::new();
+    let mut client = TestClient::connect(stratum_addr).await;
+
+    // 1. Subscribe and authorize worker
+    client
+        .send_line(
+            &json!({"id": 1, "method": "mining.subscribe", "params": ["ping-test/1.0"]})
+                .to_string(),
+        )
+        .await;
+    let sub_resp = client.read_json().await;
+    assert_eq!(sub_resp["id"], 1);
+    assert!(sub_resp["error"].is_null());
+
+    let (_sk, pk) = generate_keypair();
+    let username = format!("{}.ping_rig", Address(pk.0).encode());
+    client
+        .send_line(
+            &json!({"id": 2, "method": "mining.authorize", "params": [username, "x"]}).to_string(),
+        )
+        .await;
+    let auth_resp = client.read_json().await;
+    assert_eq!(auth_resp["id"], 2);
+    assert_eq!(auth_resp["result"], true);
+    let _ = client.read_json().await; // mining.set_difficulty
+
+    // 2. Wait ~1.1s (less than 2s timeout) so idle_secs advances to >= 1
+    tokio::time::sleep(Duration::from_millis(1_150)).await;
+    let workers_idle: Value = http
+        .get(format!("http://{obs_addr}/workers"))
+        .send()
+        .await
+        .expect("GET /workers while idle")
+        .json()
+        .await
+        .expect("parse /workers JSON");
+    assert_eq!(workers_idle["active_workers"], 1);
+    let idle_before_ping = workers_idle["workers"][0]["idle_secs"]
+        .as_u64()
+        .expect("idle_secs u64");
+    assert!(
+        idle_before_ping >= 1,
+        "expected idle_secs >= 1 before ping, got {idle_before_ping}"
+    );
+
+    // 3. Send mining.ping -> must reply with result: "pong", error: null, reset idle_secs to 0,
+    // and increment stratum_pings_total
+    client
+        .send_line(&json!({"id": 3, "method": "mining.ping", "params": []}).to_string())
+        .await;
+    let ping_resp = client.read_json().await;
+    assert_eq!(ping_resp["id"], 3);
+    assert_eq!(ping_resp["result"], "pong");
+    assert!(ping_resp["error"].is_null());
+
+    let workers_after_ping: Value = http
+        .get(format!("http://{obs_addr}/workers"))
+        .send()
+        .await
+        .expect("GET /workers after ping")
+        .json()
+        .await
+        .expect("parse /workers JSON after ping");
+    assert_eq!(workers_after_ping["active_workers"], 1);
+    assert_eq!(
+        workers_after_ping["workers"][0]["idle_secs"], 0,
+        "mining.ping must reset worker idle_secs to 0"
+    );
+    assert_eq!(gateway.metrics().pings.get(), 1);
+    assert_eq!(gateway.metrics().idle_evictions.get(), 0);
+
+    // 4. Stop sending messages and wait for the 2-second idle timeout to evict the session
+    let mut eof_buf = String::new();
+    let eof_res = timeout(
+        Duration::from_secs(4),
+        client.reader.read_line(&mut eof_buf),
+    )
+    .await
+    .expect("idle worker connection must be closed after session_idle_timeout_secs");
+    assert!(
+        matches!(eof_res, Ok(0) | Err(_)),
+        "expected EOF on evicted idle connection, got {eof_res:?} ({eof_buf:?})"
+    );
+
+    // 5. Verify /workers drops to 0 active workers and /metrics increments stratum_idle_evictions_total
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let snap: Value = http
+                .get(format!("http://{obs_addr}/workers"))
+                .send()
+                .await
+                .expect("GET /workers after eviction")
+                .json()
+                .await
+                .expect("parse /workers JSON");
+            if snap["active_workers"] == 0 && gateway.metrics().idle_evictions.get() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("evicted idle worker must be removed from /workers and increment idle_evictions");
+
+    let metrics_body = http
+        .get(format!("http://{obs_addr}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics")
+        .text()
+        .await
+        .expect("read /metrics body");
+    assert!(
+        metrics_body.contains("stratum_pings_total 1"),
+        "expected stratum_pings_total 1 in:\n{metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("stratum_idle_evictions_total 1"),
+        "expected stratum_idle_evictions_total 1 in:\n{metrics_body}"
+    );
 
     gateway.shutdown();
 }
