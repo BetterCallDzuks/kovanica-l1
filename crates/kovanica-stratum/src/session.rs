@@ -1,12 +1,33 @@
 //! Miner session and authorization management.
 
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 use kovanica_types::Address;
+
+use crate::config::VarDiffConfig;
+use crate::protocol::StratumNotification;
+
+/// Maximum length of a worker identifier suffix (e.g. `rig_01`).
+pub const MAX_WORKER_NAME_LEN: usize = 32;
+/// Maximum number of submitted share keys retained per session for duplicate detection.
+pub const MAX_SUBMITTED_SHARES_PER_SESSION: usize = 4_096;
+/// Maximum number of share timestamps retained per session for VarDiff and hashrate estimation.
+pub const MAX_SHARE_TIMESTAMPS_PER_SESSION: usize = 4_096;
+/// Minimum allowed share difficulty.
+pub const MIN_SHARE_DIFFICULTY: f64 = 0.01;
+/// Maximum allowed share difficulty.
+pub const MAX_SHARE_DIFFICULTY: f64 = 1_000_000.0;
+/// Maximum upward difficulty multiplier per VarDiff retarget step (smooth ramp-up).
+pub const MAX_VARDIFF_UP_FACTOR: f64 = 4.0;
+/// Minimum downward difficulty multiplier per VarDiff retarget step (smooth ramp-down).
+pub const MAX_VARDIFF_DOWN_FACTOR: f64 = 0.25;
 
 /// Validated worker authorization record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +56,22 @@ pub fn parse_and_validate_username(username: &str) -> Result<AuthorizedWorker, S
         (username, "default")
     };
 
+    if worker_name.is_empty() || worker_name.len() > MAX_WORKER_NAME_LEN {
+        return Err(format!(
+            "Invalid worker name length ({}): must be 1..={MAX_WORKER_NAME_LEN} characters",
+            worker_name.len()
+        ));
+    }
+    if !worker_name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(
+            "Invalid worker name: only ASCII alphanumeric, '_', and '-' characters are allowed"
+                .to_string(),
+        );
+    }
+
     // PRO-21 canonical address validation:
     let addr = Address::decode(addr_str).map_err(|e| {
         format!(
@@ -49,43 +86,313 @@ pub fn parse_and_validate_username(username: &str) -> Result<AuthorizedWorker, S
     })
 }
 
+/// Target time window for share submission rate (seconds).
+/// Used for variable difficulty retargeting.
+const SHARE_RATE_WINDOW_SECS: u64 = 60;
+/// Target shares per window for difficulty adjustment.
+const TARGET_SHARES_PER_WINDOW: f64 = 18.0; // ~1 share per 3.33 seconds at diff 1
+/// Minimum shares required before first retarget is allowed.
+const MIN_SHARES_FOR_RETARGET: usize = 5;
+
+/// Sanitized per-worker session summary returned by `GET /workers`.
+///
+/// Intentionally excludes client IP addresses, payout addresses, and secrets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkerSessionSummary {
+    /// Numeric connection session identifier.
+    pub session_id: u64,
+    /// Authorized worker name suffix (or `"unauthorized"` prior to authorization).
+    pub worker_name: String,
+    /// Whether the worker has completed `mining.authorize`.
+    pub authorized: bool,
+    /// Whether the worker has subscribed to dynamic extranonce updates via `mining.extranonce.subscribe`.
+    pub extranonce_subscribed: bool,
+    /// Current assigned share difficulty.
+    pub difficulty: f64,
+    /// Count of shares accepted in this session.
+    pub shares_accepted: u64,
+    /// Count of shares rejected in this session.
+    pub shares_rejected: u64,
+    /// Elapsed connection duration in seconds.
+    pub connected_secs: u64,
+    /// Seconds elapsed since the worker's last Stratum activity.
+    pub idle_secs: u64,
+}
+
+/// Sanitized response payload for `GET /workers` on the Stratum observability HTTP server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkersResponse {
+    /// Count of currently active worker sessions.
+    pub active_workers: usize,
+    /// Whether variable difficulty (`VarDiff`) retargeting is enabled on this gateway.
+    pub vardiff_enabled: bool,
+    /// Active worker session summaries sorted by `session_id`.
+    pub workers: Vec<WorkerSessionSummary>,
+    /// Response generation timestamp (Unix seconds).
+    pub timestamp: u64,
+}
+
+/// Parse a numeric session ID from a session identifier string (e.g. `"sess_00000001"` or `"s1"`).
+pub fn parse_numeric_session_id(session_id: &str) -> u64 {
+    if let Some(hex_part) = session_id.strip_prefix("sess_") {
+        if let Ok(id) = u64::from_str_radix(hex_part, 16) {
+            return id;
+        }
+    }
+    let digits = session_id.trim_start_matches(|c: char| !c.is_ascii_digit());
+    if !digits.is_empty() {
+        if let Ok(id) = digits.parse::<u64>() {
+            return id;
+        }
+    }
+    0
+}
+
 /// Active connection session for a single Stratum client.
 #[derive(Debug)]
 pub struct WorkerSession {
     /// Unique connection session ID.
     pub session_id: String,
+    /// Numeric session identifier used in observability summaries.
+    pub numeric_session_id: u64,
     /// Unique allocated `extranonce1` hex string (e.g. 8 hex characters).
     pub extranonce1: String,
+    /// Current dynamic `extranonce1` value (updated on `mining.set_extranonce` rotation).
+    extranonce1_state: RwLock<String>,
     /// Size of `extranonce2` in bytes (4).
     pub extranonce2_size: usize,
+    /// Whether the client subscribed to `mining.extranonce.subscribe` (NiceHash/proxy support).
+    pub extranonce_subscribed: AtomicBool,
     /// Authorized worker info (set upon `mining.authorize`).
     pub authorized_worker: RwLock<Option<AuthorizedWorker>>,
     /// Current assigned share difficulty.
     pub difficulty: RwLock<f64>,
     /// Set of submitted `(job_id, extranonce2, nonce)` to reject duplicates.
     submitted_shares: Mutex<HashSet<(String, String, u64)>>,
+    /// Insertion order for bounded FIFO eviction of `submitted_shares`.
+    submitted_shares_order: Mutex<VecDeque<(String, String, u64)>>,
     /// Stats: count of accepted shares.
     pub accepted_shares: AtomicU64,
     /// Stats: count of rejected shares.
     pub rejected_shares: AtomicU64,
     /// Stats: count of valid network blocks found.
     pub blocks_found: AtomicU64,
+    /// Timestamps of recent accepted shares (Unix seconds) for hashrate estimation.
+    share_timestamps: Mutex<Vec<u64>>,
+    /// Last difficulty retarget time.
+    last_retarget: Mutex<Option<u64>>,
+    /// Session creation timestamp (Unix seconds).
+    created_at: u64,
+    /// Unix timestamp (in seconds) of the most recent Stratum activity on this session.
+    pub last_activity_secs: AtomicU64,
+    /// Monotonic instant of the most recent Stratum activity for sub-second-accurate idle tracking.
+    last_activity_instant: Mutex<Instant>,
+    /// Whether `idle_secs()` uses monotonic `last_activity_instant` (`true` for real-time sessions)
+    /// or synthetic `last_activity_secs` (`false` when constructed/touched with explicit `_at` timestamps).
+    use_monotonic_idle: AtomicBool,
+    /// Whether this session has been evicted for exceeding the idle timeout.
+    evicted: AtomicBool,
+    /// Notification fired when the session is evicted by an idle sweep.
+    evict_notify: Notify,
+    /// Monotonic connection instant for elapsed connection time calculation.
+    pub connected_at: Instant,
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 impl WorkerSession {
     /// Create a new session with initial difficulty and assigned `extranonce1`.
     pub fn new(session_id: String, extranonce1: String, initial_difficulty: f64) -> Self {
+        let now = current_unix_secs();
+        let sess = Self::new_at(session_id, extranonce1, initial_difficulty, now);
+        sess.use_monotonic_idle.store(true, Ordering::Relaxed);
+        sess
+    }
+
+    /// Create a new session with an explicit creation timestamp (Unix seconds).
+    pub fn new_at(
+        session_id: String,
+        extranonce1: String,
+        initial_difficulty: f64,
+        created_at: u64,
+    ) -> Self {
+        let numeric_session_id = parse_numeric_session_id(&session_id);
+        let extranonce1_state = RwLock::new(extranonce1.clone());
+        let now_instant = Instant::now();
         Self {
             session_id,
+            numeric_session_id,
             extranonce1,
+            extranonce1_state,
             extranonce2_size: 4,
+            extranonce_subscribed: AtomicBool::new(false),
             authorized_worker: RwLock::new(None),
             difficulty: RwLock::new(initial_difficulty),
             submitted_shares: Mutex::new(HashSet::new()),
+            submitted_shares_order: Mutex::new(VecDeque::new()),
             accepted_shares: AtomicU64::new(0),
             rejected_shares: AtomicU64::new(0),
             blocks_found: AtomicU64::new(0),
+            share_timestamps: Mutex::new(Vec::new()),
+            last_retarget: Mutex::new(None),
+            created_at,
+            last_activity_secs: AtomicU64::new(created_at),
+            last_activity_instant: Mutex::new(now_instant),
+            use_monotonic_idle: AtomicBool::new(false),
+            evicted: AtomicBool::new(false),
+            evict_notify: Notify::new(),
+            connected_at: now_instant,
         }
+    }
+
+    /// Return the Unix timestamp (seconds) of the last recorded activity on this session.
+    pub fn last_activity_secs(&self) -> u64 {
+        self.last_activity_secs.load(Ordering::Relaxed)
+    }
+
+    /// Record Stratum activity on this session at the current wall-clock and monotonic time.
+    pub fn touch_activity(&self) {
+        self.last_activity_secs
+            .store(current_unix_secs(), Ordering::Relaxed);
+        *self.last_activity_instant.lock() = Instant::now();
+        self.use_monotonic_idle.store(true, Ordering::Relaxed);
+    }
+
+    /// Record Stratum activity on this session at an explicit Unix timestamp (in seconds).
+    pub fn touch_activity_at(&self, timestamp_secs: u64) {
+        self.last_activity_secs
+            .store(timestamp_secs, Ordering::Relaxed);
+        self.use_monotonic_idle.store(false, Ordering::Relaxed);
+    }
+
+    /// Return the number of seconds this session has been idle since its last activity.
+    pub fn idle_secs(&self) -> u64 {
+        if self.use_monotonic_idle.load(Ordering::Relaxed) {
+            self.last_activity_instant.lock().elapsed().as_secs()
+        } else {
+            self.idle_secs_at(current_unix_secs())
+        }
+    }
+
+    /// Return the number of seconds this session has been idle relative to `now_secs`.
+    pub fn idle_secs_at(&self, now_secs: u64) -> u64 {
+        now_secs.saturating_sub(self.last_activity_secs())
+    }
+
+    /// Check whether this session has exceeded `max_idle_secs` of inactivity (`0` disables timeout).
+    pub fn is_idle(&self, max_idle_secs: u64) -> bool {
+        max_idle_secs > 0 && self.idle_secs() >= max_idle_secs
+    }
+
+    /// Check whether this session has exceeded `max_idle_secs` of inactivity at `now_secs` (`0` disables timeout).
+    pub fn is_idle_at(&self, max_idle_secs: u64, now_secs: u64) -> bool {
+        max_idle_secs > 0 && self.idle_secs_at(now_secs) >= max_idle_secs
+    }
+
+    /// Atomically mark this session as evicted for inactivity and wake any connection reader task.
+    ///
+    /// Returns `true` if this call transitioned the session into the evicted state, or `false`
+    /// if the session was already marked evicted.
+    pub fn mark_evicted(&self) -> bool {
+        let first = !self.evicted.swap(true, Ordering::SeqCst);
+        self.evict_notify.notify_waiters();
+        first
+    }
+
+    /// Return whether this session has been marked as evicted.
+    pub fn is_evicted(&self) -> bool {
+        self.evicted.load(Ordering::SeqCst)
+    }
+
+    /// Wait until this session is marked as evicted.
+    pub async fn evicted_notified(&self) {
+        if self.is_evicted() {
+            return;
+        }
+        self.evict_notify.notified().await;
+    }
+
+    /// Return the total count of accepted shares for this session.
+    pub fn shares_accepted(&self) -> u64 {
+        self.accepted_shares.load(Ordering::Relaxed)
+    }
+
+    /// Return the total count of rejected shares for this session.
+    pub fn shares_rejected(&self) -> u64 {
+        self.rejected_shares.load(Ordering::Relaxed)
+    }
+
+    /// Return the elapsed connection duration in seconds.
+    pub fn connected_secs(&self) -> u64 {
+        self.connected_at.elapsed().as_secs()
+    }
+
+    /// Return the authorized worker name (or `"unauthorized"` if not yet authorized).
+    pub fn worker_name(&self) -> String {
+        self.authorized_worker
+            .read()
+            .as_ref()
+            .map(|w| w.worker_name.clone())
+            .unwrap_or_else(|| "unauthorized".to_string())
+    }
+
+    /// Build a sanitized [`WorkerSessionSummary`] for the `GET /workers` observability endpoint.
+    pub fn summary(&self) -> WorkerSessionSummary {
+        let (authorized, worker_name) = match self.authorized_worker.read().as_ref() {
+            Some(w) => (true, w.worker_name.clone()),
+            None => (false, "unauthorized".to_string()),
+        };
+        WorkerSessionSummary {
+            session_id: self.numeric_session_id,
+            worker_name,
+            authorized,
+            extranonce_subscribed: self.is_extranonce_subscribed(),
+            difficulty: self.get_difficulty(),
+            shares_accepted: self.shares_accepted(),
+            shares_rejected: self.shares_rejected(),
+            connected_secs: self.connected_secs(),
+            idle_secs: self.idle_secs(),
+        }
+    }
+
+    /// Check whether this session has subscribed to `mining.extranonce.subscribe`.
+    pub fn is_extranonce_subscribed(&self) -> bool {
+        self.extranonce_subscribed.load(Ordering::Relaxed)
+    }
+
+    /// Update whether this session is subscribed to `mining.extranonce.subscribe`.
+    pub fn set_extranonce_subscribed(&self, subscribed: bool) {
+        self.extranonce_subscribed
+            .store(subscribed, Ordering::Relaxed);
+    }
+
+    /// Return the session's current `extranonce1` hex string.
+    pub fn current_extranonce1(&self) -> String {
+        self.extranonce1_state.read().clone()
+    }
+
+    /// Rotate or update this session's `extranonce1` and build a `mining.set_extranonce`
+    /// JSON-RPC notification if `is_extranonce_subscribed()` is `true`.
+    ///
+    /// Returns `None` if the session has not subscribed via `mining.extranonce.subscribe`.
+    pub fn update_extranonce1(
+        &self,
+        new_extranonce1: impl Into<String>,
+    ) -> Option<StratumNotification> {
+        if !self.is_extranonce_subscribed() {
+            return None;
+        }
+        let next = new_extranonce1.into();
+        *self.extranonce1_state.write() = next.clone();
+        Some(StratumNotification::set_extranonce(
+            &next,
+            self.extranonce2_size,
+        ))
     }
 
     /// Check if this session is authorized.
@@ -108,20 +415,49 @@ impl WorkerSession {
 
     /// Check whether a share was already submitted in this session (duplicate check).
     /// If not duplicate, records it and returns `false`. If duplicate, returns `true`.
+    /// Bounds memory to [`MAX_SUBMITTED_SHARES_PER_SESSION`] entries per session via FIFO eviction.
     pub fn check_and_record_share(&self, job_id: &str, extranonce2: &str, nonce: u64) -> bool {
         let key = (job_id.to_string(), extranonce2.to_string(), nonce);
         let mut guard = self.submitted_shares.lock();
         if guard.contains(&key) {
             true
         } else {
+            let mut order = self.submitted_shares_order.lock();
+            while guard.len() >= MAX_SUBMITTED_SHARES_PER_SESSION {
+                if let Some(oldest) = order.pop_front() {
+                    guard.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+            order.push_back(key.clone());
             guard.insert(key);
             false
         }
     }
 
-    /// Update assigned share difficulty.
+    /// Update assigned share difficulty (clamped to safe finite bounds; 0.0 allowed only for test mode).
     pub fn set_difficulty(&self, diff: f64) {
-        *self.difficulty.write() = diff;
+        if !diff.is_finite() || diff < 0.0 {
+            return;
+        }
+        let clamped = if diff == 0.0 {
+            0.0
+        } else {
+            diff.clamp(MIN_SHARE_DIFFICULTY, MAX_SHARE_DIFFICULTY)
+        };
+        *self.difficulty.write() = clamped;
+    }
+
+    /// Update assigned share difficulty clamped to explicit `[min_diff, max_diff]` bounds.
+    /// Returns the applied difficulty if `diff` was finite and positive.
+    pub fn set_difficulty_bounded(&self, diff: f64, min_diff: f64, max_diff: f64) -> Option<f64> {
+        if !diff.is_finite() || diff <= 0.0 || min_diff > max_diff {
+            return None;
+        }
+        let clamped = diff.clamp(min_diff, max_diff);
+        *self.difficulty.write() = clamped;
+        Some(clamped)
     }
 
     /// Retrieve current share difficulty.
@@ -143,18 +479,215 @@ impl WorkerSession {
     pub fn record_block_found(&self) {
         self.blocks_found.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// Record an accepted share timestamp for hashrate estimation and difficulty retargeting.
+    pub fn record_share_timestamp(&self, timestamp: u64) {
+        self.record_share_timestamp_with_window(timestamp, SHARE_RATE_WINDOW_SECS);
+    }
+
+    /// Record an accepted share timestamp and retain a bounded sliding window of `window_secs`.
+    pub fn record_share_timestamp_with_window(&self, timestamp: u64, window_secs: u64) {
+        let mut timestamps = self.share_timestamps.lock();
+        timestamps.push(timestamp);
+        let cutoff = timestamp.saturating_sub(window_secs.max(SHARE_RATE_WINDOW_SECS));
+        timestamps.retain(|&ts| ts >= cutoff);
+        if timestamps.len() > MAX_SHARE_TIMESTAMPS_PER_SESSION {
+            let excess = timestamps.len() - MAX_SHARE_TIMESTAMPS_PER_SESSION;
+            timestamps.drain(..excess);
+        }
+    }
+
+    /// Calculate estimated hashrate based on recent shares and current difficulty.
+    /// Returns hashrate in H/s (hashes per second).
+    pub fn estimated_hashrate(&self) -> f64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let timestamps = self.share_timestamps.lock();
+        if timestamps.is_empty() {
+            return 0.0;
+        }
+
+        let window_start = now.saturating_sub(SHARE_RATE_WINDOW_SECS);
+        let recent_shares: Vec<u64> = timestamps
+            .iter()
+            .filter(|&&ts| ts >= window_start)
+            .copied()
+            .collect();
+
+        if recent_shares.len() < 2 {
+            return 0.0;
+        }
+
+        let time_span = recent_shares.last().unwrap() - recent_shares.first().unwrap();
+        if time_span == 0 {
+            return 0.0;
+        }
+
+        let share_rate = recent_shares.len() as f64 / time_span as f64;
+        let current_diff = *self.difficulty.read();
+
+        // Hashrate = share_rate * difficulty * 2^32 (for Stratum difficulty scaling)
+        share_rate * current_diff * 4294967296.0
+    }
+
+    /// Check if difficulty should be retargeted and perform retarget if needed.
+    /// Returns the new difficulty if retargeted, None otherwise.
+    pub fn maybe_retarget_difficulty(&self) -> Option<f64> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut last_retarget = self.last_retarget.lock();
+        let should_retarget = match *last_retarget {
+            Some(last) => now.saturating_sub(last) >= SHARE_RATE_WINDOW_SECS,
+            None => true, // First retarget after initial window
+        };
+
+        if !should_retarget {
+            return None;
+        }
+
+        let timestamps = self.share_timestamps.lock();
+        if timestamps.is_empty() {
+            *last_retarget = Some(now);
+            return None;
+        }
+
+        // Require minimum shares before first retarget
+        if last_retarget.is_none() && timestamps.len() < MIN_SHARES_FOR_RETARGET {
+            return None;
+        }
+
+        let window_start = now.saturating_sub(SHARE_RATE_WINDOW_SECS);
+        let recent_count = timestamps.iter().filter(|&&ts| ts >= window_start).count() as f64;
+
+        if recent_count == 0.0 {
+            *last_retarget = Some(now);
+            return None;
+        }
+
+        let current_diff = *self.difficulty.read();
+        // Retarget formula: new_diff = current_diff * (actual_shares / target_shares)
+        let new_diff = current_diff * (recent_count / TARGET_SHARES_PER_WINDOW);
+
+        // Clamp difficulty to reasonable bounds
+        let new_diff = new_diff.clamp(0.01, 1_000_000.0);
+
+        if (new_diff - current_diff).abs() / current_diff > 0.05 {
+            // >5% change
+            *last_retarget = Some(now);
+            drop(timestamps); // Release lock before updating difficulty
+            *self.difficulty.write() = new_diff;
+            Some(new_diff)
+        } else {
+            *last_retarget = Some(now);
+            None
+        }
+    }
+
+    /// Check if difficulty should be retargeted under the given [`VarDiffConfig`] at Unix time `now`.
+    ///
+    /// Applies deadband tolerance (`variance_percent`), smooth per-step damping
+    /// (`[MAX_VARDIFF_DOWN_FACTOR, MAX_VARDIFF_UP_FACTOR]`), and strict clamping to
+    /// `[min_difficulty, max_difficulty]`. Returns `Some(new_difficulty)` only when
+    /// the difficulty actually changes.
+    pub fn maybe_retarget_difficulty_with_config(
+        &self,
+        cfg: &VarDiffConfig,
+        now: u64,
+    ) -> Option<f64> {
+        if !cfg.enabled
+            || cfg.retarget_interval_secs == 0
+            || !cfg.target_share_secs.is_finite()
+            || cfg.target_share_secs <= 0.0
+            || !cfg.min_difficulty.is_finite()
+            || !cfg.max_difficulty.is_finite()
+            || cfg.min_difficulty <= 0.0
+            || cfg.min_difficulty > cfg.max_difficulty
+        {
+            return None;
+        }
+
+        let mut last_retarget = self.last_retarget.lock();
+        if let Some(last) = *last_retarget {
+            if now.saturating_sub(last) < cfg.retarget_interval_secs {
+                return None;
+            }
+        }
+
+        let timestamps = self.share_timestamps.lock();
+        let window_start = now.saturating_sub(cfg.retarget_interval_secs);
+        let recent_count = timestamps.iter().filter(|&&ts| ts >= window_start).count();
+
+        if last_retarget.is_none()
+            && recent_count < MIN_SHARES_FOR_RETARGET
+            && now.saturating_sub(self.created_at) < cfg.retarget_interval_secs
+        {
+            return None;
+        }
+
+        if recent_count == 0 {
+            *last_retarget = Some(now);
+            return None;
+        }
+
+        let window_secs = cfg.retarget_interval_secs as f64;
+        let actual_share_secs = window_secs / recent_count as f64;
+
+        // Deadband check: avoid oscillation when within ±variance_percent of target_share_secs
+        let variance_ratio = (cfg.variance_percent / 100.0).clamp(0.0, 0.99);
+        let min_target_secs = cfg.target_share_secs * (1.0 - variance_ratio);
+        let max_target_secs = cfg.target_share_secs * (1.0 + variance_ratio);
+        if actual_share_secs >= min_target_secs && actual_share_secs <= max_target_secs {
+            *last_retarget = Some(now);
+            return None;
+        }
+
+        let current_diff = *self.difficulty.read();
+        let base_diff = if current_diff.is_finite() && current_diff > 0.0 {
+            current_diff
+        } else {
+            cfg.min_difficulty
+        };
+
+        // Smooth bounded adjustment factor per retarget step
+        let raw_ratio = cfg.target_share_secs / actual_share_secs;
+        let bounded_ratio = raw_ratio.clamp(MAX_VARDIFF_DOWN_FACTOR, MAX_VARDIFF_UP_FACTOR);
+        let new_diff = (base_diff * bounded_ratio).clamp(cfg.min_difficulty, cfg.max_difficulty);
+
+        *last_retarget = Some(now);
+        drop(timestamps);
+
+        if (new_diff - current_diff).abs() <= f64::EPSILON * current_diff.max(1.0) {
+            return None;
+        }
+
+        *self.difficulty.write() = new_diff;
+        Some(new_diff)
+    }
+
+    /// Get the last retarget time (for testing).
+    pub fn last_retarget_time(&self) -> Option<u64> {
+        *self.last_retarget.lock()
+    }
 }
 
 /// Thread-safe session registry.
 #[derive(Debug, Default)]
 pub struct SessionRegistry {
     counter: AtomicU64,
+    sessions: RwLock<HashMap<String, Arc<WorkerSession>>>,
 }
 
 impl SessionRegistry {
     pub fn new() -> Self {
         Self {
             counter: AtomicU64::new(1),
+            sessions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -164,11 +697,105 @@ impl SessionRegistry {
         let session_id = format!("sess_{:08x}", id_val);
         // 4 bytes / 8 hex characters extranonce1
         let extranonce1 = format!("{:08x}", id_val as u32);
-        Arc::new(WorkerSession::new(
-            session_id,
+        let session = Arc::new(WorkerSession::new(
+            session_id.clone(),
             extranonce1,
             initial_difficulty,
-        ))
+        ));
+        self.sessions
+            .write()
+            .insert(session_id, Arc::clone(&session));
+        session
+    }
+
+    /// Generate a new session at an explicit Unix creation timestamp (in seconds).
+    pub fn create_session_at(
+        &self,
+        initial_difficulty: f64,
+        created_at: u64,
+    ) -> Arc<WorkerSession> {
+        let id_val = self.counter.fetch_add(1, Ordering::SeqCst);
+        let session_id = format!("sess_{:08x}", id_val);
+        let extranonce1 = format!("{:08x}", id_val as u32);
+        let session = Arc::new(WorkerSession::new_at(
+            session_id.clone(),
+            extranonce1,
+            initial_difficulty,
+            created_at,
+        ));
+        self.sessions
+            .write()
+            .insert(session_id, Arc::clone(&session));
+        session
+    }
+
+    /// Remove a session from the registry by `session_id`.
+    pub fn remove_session(&self, session_id: &str) -> Option<Arc<WorkerSession>> {
+        self.sessions.write().remove(session_id)
+    }
+
+    /// Look up a tracked session by `session_id`.
+    pub fn get_session(&self, session_id: &str) -> Option<Arc<WorkerSession>> {
+        self.sessions.read().get(session_id).cloned()
+    }
+
+    /// Return the count of sessions currently tracked in the registry.
+    pub fn active_session_count(&self) -> usize {
+        self.sessions.read().len()
+    }
+
+    /// Evict and return all sessions whose idle time has reached or exceeded `max_idle_secs`.
+    ///
+    /// When `max_idle_secs == 0`, idle eviction is disabled and no sessions are evicted.
+    pub fn evict_idle_sessions(&self, max_idle_secs: u64) -> Vec<Arc<WorkerSession>> {
+        if max_idle_secs == 0 {
+            return Vec::new();
+        }
+        let mut sessions = self.sessions.write();
+        let idle_ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, sess)| sess.is_idle(max_idle_secs))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut evicted = Vec::with_capacity(idle_ids.len());
+        for id in idle_ids {
+            if let Some(sess) = sessions.remove(&id) {
+                evicted.push(sess);
+            }
+        }
+        evicted
+    }
+
+    /// Evict and return all sessions whose idle time at `now_secs` has reached or exceeded `max_idle_secs`.
+    ///
+    /// When `max_idle_secs == 0`, idle eviction is disabled and no sessions are evicted.
+    pub fn evict_idle_sessions_at(
+        &self,
+        max_idle_secs: u64,
+        now_secs: u64,
+    ) -> Vec<Arc<WorkerSession>> {
+        if max_idle_secs == 0 {
+            return Vec::new();
+        }
+        let mut sessions = self.sessions.write();
+        let idle_ids: Vec<String> = sessions
+            .iter()
+            .filter(|(_, sess)| sess.is_idle_at(max_idle_secs, now_secs))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut evicted = Vec::with_capacity(idle_ids.len());
+        for id in idle_ids {
+            if let Some(sess) = sessions.remove(&id) {
+                evicted.push(sess);
+            }
+        }
+        evicted
+    }
+
+    /// Allocate the next unique 8-character hex `extranonce1` value for dynamic extranonce rotation.
+    pub fn allocate_extranonce1(&self) -> String {
+        let id_val = self.counter.fetch_add(1, Ordering::SeqCst);
+        format!("{:08x}", id_val as u32)
     }
 }
 
@@ -220,5 +847,329 @@ mod tests {
         assert!(session.check_and_record_share("job_1", "00000001", 42));
         // Different nonce is not duplicate
         assert!(!session.check_and_record_share("job_1", "00000001", 43));
+    }
+
+    #[test]
+    fn test_hashrate_estimation_empty() {
+        let session = WorkerSession::new("s1".into(), "00000001".into(), 1.0);
+        assert_eq!(session.estimated_hashrate(), 0.0);
+    }
+
+    #[test]
+    fn test_hashrate_estimation_single_share() {
+        let session = WorkerSession::new("s1".into(), "00000001".into(), 1.0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        session.record_share_timestamp(now);
+        // Need at least 2 shares for rate calculation
+        assert_eq!(session.estimated_hashrate(), 0.0);
+    }
+
+    #[test]
+    fn test_difficulty_retarget_no_shares() {
+        let session = WorkerSession::new("s1".into(), "00000001".into(), 1.0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // First retarget should set last_retarget time
+        let result = session.maybe_retarget_difficulty();
+        assert!(result.is_none());
+        assert_eq!(session.last_retarget_time(), Some(now));
+    }
+
+    #[test]
+    fn test_difficulty_retarget_increase() {
+        let session = WorkerSession::new("s1".into(), "00000001".into(), 1.0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Submit many shares (more than target) to trigger difficulty increase
+        // Use timestamps within the window relative to current time
+        for i in 0..40 {
+            session.record_share_timestamp(now - 30 + i);
+        }
+
+        let new_diff = session.maybe_retarget_difficulty();
+        assert!(new_diff.is_some());
+        assert!(new_diff.unwrap() > 1.0);
+    }
+
+    #[test]
+    fn test_difficulty_retarget_decrease() {
+        let session = WorkerSession::new("s1".into(), "00000001".into(), 10.0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Submit very few shares to trigger difficulty decrease (need MIN_SHARES_FOR_RETARGET)
+        // Use timestamps within the window relative to current time
+        for i in 0..6 {
+            session.record_share_timestamp(now - 30 + i * 5);
+        }
+
+        let new_diff = session.maybe_retarget_difficulty();
+        eprintln!(
+            "test_difficulty_retarget_decrease: new_diff={:?}, current_diff={}, timestamps={:?}",
+            new_diff,
+            *session.difficulty.read(),
+            *session.share_timestamps.lock()
+        );
+        assert!(new_diff.is_some());
+        assert!(new_diff.unwrap() < 10.0);
+    }
+
+    #[test]
+    fn test_difficulty_retarget_clamp_bounds() {
+        let session = WorkerSession::new("s1".into(), "00000001".into(), 1.0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Submit extreme number of shares - should clamp to max
+        // Use timestamps within the window relative to current time
+        for i in 0..10000 {
+            session.record_share_timestamp(now - 30 + i);
+        }
+
+        let new_diff = session.maybe_retarget_difficulty();
+        assert!(new_diff.is_some());
+        assert!(new_diff.unwrap() <= 1_000_000.0);
+    }
+
+    fn test_vardiff_cfg() -> VarDiffConfig {
+        VarDiffConfig {
+            enabled: true,
+            min_difficulty: 0.5,
+            max_difficulty: 100.0,
+            target_share_secs: 15.0,
+            retarget_interval_secs: 60,
+            variance_percent: 30.0,
+        }
+    }
+
+    #[test]
+    fn test_vardiff_disabled_returns_none() {
+        let mut cfg = test_vardiff_cfg();
+        cfg.enabled = false;
+        let session = WorkerSession::new_at("s1".into(), "00000001".into(), 1.0, 1_000);
+        for i in 0..20 {
+            session.record_share_timestamp_with_window(1_000 + i, cfg.retarget_interval_secs);
+        }
+        assert_eq!(
+            session.maybe_retarget_difficulty_with_config(&cfg, 1_060),
+            None
+        );
+        assert_eq!(session.get_difficulty(), 1.0);
+    }
+
+    #[test]
+    fn test_vardiff_ramp_up_smooth_and_bounded() {
+        let cfg = test_vardiff_cfg();
+        // target = 15s in 60s window => 4 expected shares
+        let session = WorkerSession::new_at("s1".into(), "00000001".into(), 1.0, 1_000);
+
+        // Submit 32 shares (8x faster than target); single step must be capped at 4x
+        for i in 0..32 {
+            session.record_share_timestamp_with_window(1_000 + i, cfg.retarget_interval_secs);
+        }
+        let d1 = session
+            .maybe_retarget_difficulty_with_config(&cfg, 1_035)
+            .expect("must ramp up");
+        assert!(
+            (d1 - 4.0).abs() < 1e-6,
+            "expected smooth 4x cap (4.0), got {d1}"
+        );
+
+        // Calling again before retarget_interval_secs must not retarget
+        assert_eq!(
+            session.maybe_retarget_difficulty_with_config(&cfg, 1_050),
+            None
+        );
+
+        // After another interval with sustained high share rate, ramps up further
+        for i in 0..32 {
+            session.record_share_timestamp_with_window(1_065 + i, cfg.retarget_interval_secs);
+        }
+        let d2 = session
+            .maybe_retarget_difficulty_with_config(&cfg, 1_096)
+            .expect("must ramp up again");
+        assert!((d2 - 16.0).abs() < 1e-6, "expected 16.0, got {d2}");
+    }
+
+    #[test]
+    fn test_vardiff_ramp_down_smooth() {
+        let cfg = test_vardiff_cfg();
+        // Start at diff 20.0; submit only 1 share in 60s (actual = 60s/share vs target 15s => ratio 0.25)
+        let session = WorkerSession::new_at("s1".into(), "00000001".into(), 20.0, 1_000);
+        session.record_share_timestamp_with_window(1_055, cfg.retarget_interval_secs);
+
+        let d1 = session
+            .maybe_retarget_difficulty_with_config(&cfg, 1_060)
+            .expect("must ramp down after interval elapsed");
+        assert!((d1 - 5.0).abs() < 1e-6, "expected 5.0, got {d1}");
+    }
+
+    #[test]
+    fn test_vardiff_deadband_tolerance_skips_retarget() {
+        let cfg = test_vardiff_cfg();
+        // target = 15s, variance = 30% => deadband [10.5s, 19.5s]
+        // 4 shares in 60s => actual = 15.0s/share (exact target)
+        // 5 shares in 60s => actual = 12.0s/share (inside [10.5, 19.5])
+        let session = WorkerSession::new_at("s1".into(), "00000001".into(), 10.0, 1_000);
+        for i in 0..5 {
+            session.record_share_timestamp_with_window(1_005 + i * 10, cfg.retarget_interval_secs);
+        }
+        assert_eq!(
+            session.maybe_retarget_difficulty_with_config(&cfg, 1_060),
+            None
+        );
+        assert_eq!(session.get_difficulty(), 10.0);
+    }
+
+    #[test]
+    fn test_vardiff_clamps_to_min_and_max() {
+        let cfg = test_vardiff_cfg();
+
+        // Clamp to max (100.0)
+        let high_session = WorkerSession::new_at("s_hi".into(), "00000001".into(), 60.0, 1_000);
+        for i in 0..40 {
+            high_session.record_share_timestamp_with_window(1_000 + i, cfg.retarget_interval_secs);
+        }
+        let clamped_max = high_session
+            .maybe_retarget_difficulty_with_config(&cfg, 1_045)
+            .expect("must clamp to max");
+        assert!((clamped_max - 100.0).abs() < 1e-6);
+
+        // Already at max -> subsequent retarget returns None (no redundant notification)
+        for i in 0..40 {
+            high_session.record_share_timestamp_with_window(1_065 + i, cfg.retarget_interval_secs);
+        }
+        assert_eq!(
+            high_session.maybe_retarget_difficulty_with_config(&cfg, 1_106),
+            None
+        );
+
+        // Clamp to min (0.5)
+        let low_session = WorkerSession::new_at("s_lo".into(), "00000002".into(), 0.8, 1_000);
+        low_session.record_share_timestamp_with_window(1_050, cfg.retarget_interval_secs);
+        let clamped_min = low_session
+            .maybe_retarget_difficulty_with_config(&cfg, 1_060)
+            .expect("must clamp to min");
+        assert!((clamped_min - 0.5).abs() < 1e-6);
+
+        // Already at min -> subsequent retarget returns None
+        low_session.record_share_timestamp_with_window(1_115, cfg.retarget_interval_secs);
+        assert_eq!(
+            low_session.maybe_retarget_difficulty_with_config(&cfg, 1_120),
+            None
+        );
+    }
+
+    #[test]
+    fn test_worker_session_summary_tracks_counters_and_omits_sensitive_fields() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_session(2.5);
+        assert_eq!(session.numeric_session_id, 1);
+
+        // Unauthorized initial state
+        let initial_summary = session.summary();
+        assert_eq!(initial_summary.session_id, 1);
+        assert_eq!(initial_summary.worker_name, "unauthorized");
+        assert!(!initial_summary.authorized);
+        assert!(!initial_summary.extranonce_subscribed);
+        assert!((initial_summary.difficulty - 2.5).abs() < 1e-9);
+        assert_eq!(initial_summary.shares_accepted, 0);
+        assert_eq!(initial_summary.shares_rejected, 0);
+
+        // Authorize worker, subscribe extranonce, and record accepted/rejected shares
+        let (_sk, pk) = kovanica_crypto::generate_keypair();
+        let addr = Address(pk.0);
+        let addr_str = addr.encode();
+        let username = format!("{addr_str}.rig_alpha");
+        let auth = parse_and_validate_username(&username).expect("valid username");
+        session.authorize(auth);
+        session.set_extranonce_subscribed(true);
+        session.record_accepted_share();
+        session.record_accepted_share();
+        session.record_rejected_share();
+
+        let summary = session.summary();
+        assert_eq!(summary.session_id, 1);
+        assert_eq!(summary.worker_name, "rig_alpha");
+        assert!(summary.authorized);
+        assert!(summary.extranonce_subscribed);
+        assert!((summary.difficulty - 2.5).abs() < 1e-9);
+        assert_eq!(summary.shares_accepted, 2);
+        assert_eq!(summary.shares_rejected, 1);
+
+        let serialized = serde_json::to_string(&summary).expect("serialize summary");
+        assert!(
+            serialized.contains(r#""extranonce_subscribed":true"#),
+            "summary JSON must include extranonce_subscribed: {serialized}"
+        );
+        assert!(
+            !serialized.contains(&addr_str),
+            "summary must not expose payout address: {serialized}"
+        );
+    }
+
+    #[test]
+    fn test_worker_session_extranonce_subscribe_and_rotation() {
+        let session = WorkerSession::new("sess_00000001".into(), "00000001".into(), 1.0);
+        assert!(!session.is_extranonce_subscribed());
+        assert_eq!(session.current_extranonce1(), "00000001");
+
+        // When not subscribed, update_extranonce1 must be a no-op and return None
+        assert!(session.update_extranonce1("00000002").is_none());
+        assert_eq!(session.current_extranonce1(), "00000001");
+
+        // Subscribe to extranonce updates
+        session.set_extranonce_subscribed(true);
+        assert!(session.is_extranonce_subscribed());
+
+        // Rotating extranonce1 now updates session state and produces mining.set_extranonce
+        let notif = session
+            .update_extranonce1("000000aa")
+            .expect("must return set_extranonce notification when subscribed");
+        assert_eq!(session.current_extranonce1(), "000000aa");
+        assert_eq!(notif.id, serde_json::Value::Null);
+        assert_eq!(notif.method, "mining.set_extranonce");
+        assert_eq!(notif.params, serde_json::json!(["000000aa", 4]));
+    }
+
+    #[test]
+    fn test_worker_session_activity_tracking_and_registry_idle_eviction() {
+        let registry = SessionRegistry::new();
+        let s1 = registry.create_session_at(1.0, 1_000);
+        let s2 = registry.create_session_at(1.0, 1_000);
+        assert_eq!(registry.active_session_count(), 2);
+        assert_eq!(s1.last_activity_secs(), 1_000);
+        assert_eq!(s1.idle_secs_at(1_500), 500);
+        assert!(!s1.is_idle_at(600, 1_500));
+
+        // Update s2 activity at t = 1_400 (e.g. mining.ping)
+        s2.touch_activity_at(1_400);
+        assert_eq!(s2.last_activity_secs(), 1_400);
+        assert_eq!(s2.idle_secs_at(1_650), 250);
+        assert_eq!(s1.idle_secs_at(1_650), 650);
+
+        // Disabled idle timeout (max_idle_secs = 0) must not evict anything
+        assert!(registry.evict_idle_sessions_at(0, 1_650).is_empty());
+        assert_eq!(registry.active_session_count(), 2);
+
+        // At t = 1_650 with max_idle_secs = 600, s1 (idle 650s) is evicted while s2 (idle 250s) remains
+        let evicted = registry.evict_idle_sessions_at(600, 1_650);
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].session_id, s1.session_id);
+        assert_eq!(registry.active_session_count(), 1);
+        assert!(registry.get_session(&s1.session_id).is_none());
+        assert!(registry.get_session(&s2.session_id).is_some());
     }
 }

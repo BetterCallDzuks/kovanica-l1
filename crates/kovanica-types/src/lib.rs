@@ -299,7 +299,10 @@ pub fn slashing_active_from(round: Round) -> bool {
 /// disagrees about every header from the activation round on.
 ///
 /// Do not change this value on a running chain without the owner's approval.
-pub use kovanica_params::STATE_COMMITMENT_ACTIVE_FROM_ROUND;
+pub use kovanica_params::{
+    state_commitment_active_from_for_chain, state_commitment_active_from_round_for_chain,
+    STATE_COMMITMENT_ACTIVE_FROM_ROUND,
+};
 
 /// Whether the leader header at `round` commits to the full state.
 ///

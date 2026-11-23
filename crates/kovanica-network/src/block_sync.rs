@@ -206,7 +206,7 @@ impl libp2p::request_response::Codec for BlockSyncCodec {
         T: AsyncReadExt + Unpin + Send,
     {
         let buf = read_bounded(io, MAX_REQUEST_SIZE).await?;
-        bincode::deserialize(&buf)
+        crate::bincode_deserialize_bounded(&buf)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
@@ -219,7 +219,7 @@ impl libp2p::request_response::Codec for BlockSyncCodec {
         T: AsyncReadExt + Unpin + Send,
     {
         let buf = read_bounded(io, MAX_RESPONSE_SIZE).await?;
-        bincode::deserialize(&buf)
+        crate::bincode_deserialize_bounded(&buf)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 

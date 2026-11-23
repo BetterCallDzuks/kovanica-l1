@@ -43,6 +43,23 @@ pub use peer_scorer::{
     extract_ip, extract_socket_addr, BannedPeerError, InboundGate, PeerReputation, PeerScorer,
     PeerScorerConfig, PenaltyReason, BAN_SCORE_THRESHOLD, DEFAULT_BAN_DURATION,
 };
+
+/// Deserialize a bincode payload with a byte allocation budget bounded to `bytes.len()`.
+///
+/// Uses the exact same wire format as `bincode::serialize` / `bincode::deserialize`
+/// (`with_fixint_encoding().allow_trailing_bytes()`), but prevents a malicious peer
+/// from sending a tiny packet with a forged huge `Vec` length prefix to trigger
+/// multi-gigabyte `Vec::with_capacity` OOM allocations.
+pub(crate) fn bincode_deserialize_bounded<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<T, bincode::Error> {
+    use bincode::Options as _;
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .with_limit(bytes.len() as u64)
+        .deserialize(bytes)
+}
 pub use scoring::PeerScoringConfig;
 pub use seeder::{
     filter_healthy_seeds, generate_zone_file, DnsSeedCrawler, DnsSeedCrawlerConfig, DnsSeedEntry,
@@ -234,5 +251,22 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn bincode_deserialize_bounded_rejects_forged_length_prefix_oom() {
+        // Craft a 16-byte payload whose u64 LE length prefix claims 1 billion bytes.
+        // Raw bincode::deserialize would attempt a 1 GiB Vec::with_capacity allocation;
+        // bounded deserialization must reject it immediately without allocating.
+        let mut forged = Vec::new();
+        forged.extend_from_slice(&0x0000_0000_4000_0000u64.to_le_bytes());
+        forged.extend_from_slice(&[0u8; 8]);
+        let err = bincode_deserialize_bounded::<Vec<u8>>(&forged)
+            .expect_err("forged length prefix exceeding payload length must fail");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("size limit") || msg.contains("end of file") || msg.contains("eof"),
+            "unexpected error: {err}"
+        );
     }
 }

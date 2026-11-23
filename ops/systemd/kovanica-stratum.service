@@ -1,0 +1,57 @@
+[Unit]
+Description=Kovanica Stratum V1 Mining Gateway
+Documentation=https://github.com/KovanicaDAG/kovanica-l1
+After=network-online.target kovanica-node.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=kovanica
+Group=kovanica
+UMask=0027
+WorkingDirectory=/var/lib/kovanica
+StateDirectory=kovanica
+ConfigurationDirectory=kovanica
+
+# Load environment configuration overrides (e.g. KOVANICA_RPC_WRITE_TOKEN)
+EnvironmentFile=-/etc/kovanica/kovanica-stratum.env
+
+ExecStart=/usr/local/bin/kovanica-stratum --listen 0.0.0.0:3333 --metrics-addr 127.0.0.1:9090
+
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+# Resource budget conforming to 2-4 GB VPS footprint
+MemoryMax=512M
+MemoryAccounting=yes
+
+# Sandboxing and security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/kovanica
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

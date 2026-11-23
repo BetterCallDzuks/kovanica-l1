@@ -5,6 +5,7 @@
 
 pub mod amount;
 pub mod comms;
+pub mod contract_inspect;
 pub mod contracts;
 pub mod miner;
 pub mod mining;

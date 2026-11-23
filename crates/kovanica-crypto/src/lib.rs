@@ -27,7 +27,7 @@ use std::sync::RwLock;
 static VALIDATOR_KEYS: RwLock<Vec<VerifyingKey>> = RwLock::new(Vec::new());
 
 pub fn set_validator_keys(keys: Vec<VerifyingKey>) {
-    *VALIDATOR_KEYS.write().unwrap() = keys;
+    *VALIDATOR_KEYS.write().unwrap_or_else(|e| e.into_inner()) = keys;
 }
 
 /// Set validator keys from `kovanica_types::crypto::PublicKey` (converts to dalek VerifyingKey).
@@ -36,11 +36,11 @@ pub fn set_validator_keys_from_public(keys: Vec<PublicKey>) {
         .into_iter()
         .map(|pk| VerifyingKey::from_bytes(&pk.0).expect("invalid validator public key"))
         .collect();
-    *VALIDATOR_KEYS.write().unwrap() = verifying_keys;
+    *VALIDATOR_KEYS.write().unwrap_or_else(|e| e.into_inner()) = verifying_keys;
 }
 
 fn get_validator_key(author: u16) -> Option<VerifyingKey> {
-    let keys = VALIDATOR_KEYS.read().unwrap();
+    let keys = VALIDATOR_KEYS.read().unwrap_or_else(|e| e.into_inner());
     keys.get(author as usize).cloned()
 }
 

@@ -3,9 +3,10 @@
 //! Small, typed wrapper so the CLI / desktop client never hand-builds URLs or
 //! re-parses §4 error bodies.
 
+use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 
-use crate::Envelope;
+use crate::{ack_signing_bytes, Envelope, SubmissionWrapper};
 
 /// Errors raised by [`RelayClient`].
 #[derive(Debug, thiserror::Error)]
@@ -84,6 +85,25 @@ impl RelayClient {
         }
     }
 
+    /// `POST /v1/envelope` with a [`SubmissionWrapper`] (e.g. carrying a PoW proof);
+    /// returns the stored envelope `id`.
+    pub async fn post_submission(
+        &self,
+        submission: &SubmissionWrapper,
+    ) -> Result<String, ClientError> {
+        let body = serde_json::to_vec(submission)?;
+        let response = self
+            .http
+            .post(format!("{}/v1/envelope", self.base))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await?;
+        let response = check_status(response).await?;
+        let parsed: PostEnvelopeResponse = response.json().await?;
+        Ok(parsed.id)
+    }
+
     /// `POST /v1/envelope`; returns the stored envelope `id`.
     pub async fn post_envelope(&self, envelope: &Envelope) -> Result<String, ClientError> {
         let body = envelope.to_json_bytes().map_err(|e| ClientError::Status {
@@ -126,7 +146,49 @@ impl RelayClient {
         Ok(parsed.envelopes)
     }
 
-    /// `POST /v1/ack`; returns the number of deleted envelopes.
+    /// `POST /v1/ack` signed by the recipient's Ed25519 key; returns the number of deleted envelopes.
+    pub async fn ack_signed(
+        &self,
+        signing_key: &SigningKey,
+        to: &str,
+        ids: &[String],
+    ) -> Result<usize, ClientError> {
+        #[derive(Serialize)]
+        struct SignedAckBody<'a> {
+            to: &'a str,
+            ids: &'a [String],
+            pubkey: String,
+            signature: String,
+        }
+        let pubkey = hex::encode(signing_key.verifying_key().to_bytes());
+        let msg = ack_signing_bytes(to, ids);
+        let signature = hex::encode(signing_key.sign(&msg).to_bytes());
+        let body = serde_json::to_vec(&SignedAckBody {
+            to,
+            ids,
+            pubkey,
+            signature,
+        })?;
+        let response = self
+            .http
+            .post(format!("{}/v1/ack", self.base))
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await?;
+        let response = check_status(response).await?;
+        let parsed: AckResponse = response.json().await?;
+        if !parsed.ok {
+            return Err(ClientError::Status {
+                status: 200,
+                code: "internal".to_string(),
+                message: "relay ack returned ok:false".to_string(),
+            });
+        }
+        Ok(parsed.deleted)
+    }
+
+    /// Unsigned `POST /v1/ack` (rejected by hardened relays with `401 Unauthorized`).
     pub async fn ack(&self, to: &str, ids: &[String]) -> Result<usize, ClientError> {
         #[derive(Serialize)]
         struct AckBody<'a> {

@@ -116,7 +116,7 @@ impl TxPreview {
         };
 
         // Wire broadcast encoding matching packages/signer/src/tx.ts
-        let raw_hex = encode_broadcast_tx(&tx, &sighash);
+        let raw_hex = encode_broadcast_tx(&tx, &sighash)?;
         Ok((tx, raw_hex))
     }
 }
@@ -128,30 +128,82 @@ pub fn format_atoms_kvnc(atoms: u64) -> String {
     format!("{}.{:09} KVNC", whole, fraction)
 }
 
-/// Encode transaction for broadcast over RPC kovanica_sendRawTransaction.
-/// Matches the binary wire layout in packages/signer/src/tx.ts:
-/// - sender: 32 bytes
-/// - nonce: 8 bytes LE
-/// - wire kind: Transfer tag 0, recipient 32 bytes, amount 8 bytes LE
-/// - fee: 8 bytes LE
-/// - signature length: 8 bytes LE (value = 64)
-/// - signature: 64 bytes
-/// - hash: 32 bytes
-pub fn encode_broadcast_tx(tx: &Transaction, hash: &Hash) -> String {
-    let mut buf = Vec::with_capacity(32 + 8 + 1 + 32 + 8 + 8 + 8 + 64 + 32);
+/// Encode a signed transaction for broadcast over RPC `kovanica_sendRawTransaction`.
+///
+/// Produces the canonical `bincode 1.x` little-endian fixint binary wire layout
+/// decoded by `kovanica-rpc`:
+/// - `sender`: 32 bytes
+/// - `nonce`: 8 bytes LE (`u64`)
+/// - `kind`: 4-byte `u32` LE enum discriminant (matching `TransactionKind` variant
+///   order in `kovanica-types`) followed by the variant's fields in declaration order:
+///   - `Transfer` (`0`): `to` (32 bytes), `amount` (`u64` LE)
+///   - `Deploy` (`5`): `code.len()` (`u64` LE), `code` bytes
+///   - `Call` (`6`): `contract` (32 bytes), `value` (`u64` LE), `method.len()` (`u64` LE),
+///     `method` UTF-8 bytes, `args.len()` (`u64` LE), `args` bytes, `gas_limit` (`u64` LE)
+///   - `RegisterLightNode` (`7`): `vrf_public_key` (32 bytes), `stake` (`u64` LE)
+///   - `ExitLightNode` (`8`): no payload bytes
+/// - `fee`: 8 bytes LE (`u64`)
+/// - `signature`: 8-byte LE length (`64u64`) + 64 signature bytes
+/// - `hash`: 32 bytes
+pub fn encode_broadcast_tx(tx: &Transaction, hash: &Hash) -> Result<String, WalletError> {
+    let payload_cap = match &tx.kind {
+        TransactionKind::Transfer { .. } => 32 + 8,
+        TransactionKind::Deploy { code } => 8 + code.len(),
+        TransactionKind::Call { method, args, .. } => {
+            32 + 8 + 8 + method.len() + 8 + args.len() + 8
+        }
+        TransactionKind::RegisterLightNode { .. } => 32 + 8,
+        TransactionKind::ExitLightNode => 0,
+        other => {
+            return Err(WalletError::Signing(format!(
+                "encode_broadcast_tx does not support transaction kind {other:?}"
+            )));
+        }
+    };
+
+    let mut buf = Vec::with_capacity(32 + 8 + 4 + payload_cap + 8 + 8 + 64 + 32);
     buf.extend_from_slice(&tx.sender.0);
     buf.extend_from_slice(&tx.nonce.to_le_bytes());
 
     match &tx.kind {
         TransactionKind::Transfer { to, amount } => {
-            buf.push(0); // Wire tag for Transfer is 0
+            buf.extend_from_slice(&0u32.to_le_bytes());
             buf.extend_from_slice(&to.0);
             buf.extend_from_slice(&amount.to_le_bytes());
         }
-        _ => {
-            // For other kinds in future expansions
-            unimplemented!("only Transfer wire encoding in Phase 1");
+        TransactionKind::Deploy { code } => {
+            buf.extend_from_slice(&5u32.to_le_bytes());
+            buf.extend_from_slice(&(code.len() as u64).to_le_bytes());
+            buf.extend_from_slice(code);
         }
+        TransactionKind::Call {
+            contract,
+            value,
+            method,
+            args,
+            gas_limit,
+        } => {
+            buf.extend_from_slice(&6u32.to_le_bytes());
+            buf.extend_from_slice(&contract.0);
+            buf.extend_from_slice(&value.to_le_bytes());
+            buf.extend_from_slice(&(method.len() as u64).to_le_bytes());
+            buf.extend_from_slice(method.as_bytes());
+            buf.extend_from_slice(&(args.len() as u64).to_le_bytes());
+            buf.extend_from_slice(args);
+            buf.extend_from_slice(&gas_limit.to_le_bytes());
+        }
+        TransactionKind::RegisterLightNode {
+            vrf_public_key,
+            stake,
+        } => {
+            buf.extend_from_slice(&7u32.to_le_bytes());
+            buf.extend_from_slice(&vrf_public_key.0);
+            buf.extend_from_slice(&stake.to_le_bytes());
+        }
+        TransactionKind::ExitLightNode => {
+            buf.extend_from_slice(&8u32.to_le_bytes());
+        }
+        _ => unreachable!("unsupported kinds rejected above"),
     }
 
     buf.extend_from_slice(&tx.fee.to_le_bytes());
@@ -160,12 +212,58 @@ pub fn encode_broadcast_tx(tx: &Transaction, hash: &Hash) -> String {
     buf.extend_from_slice(&tx.signature.0);
     buf.extend_from_slice(&hash.0);
 
-    hex::encode(buf)
+    Ok(hex::encode(buf))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bincode::Options as _;
+    use kovanica_types::signing::SigningContext;
+    use kovanica_types::Signature;
+
+    fn assert_canonical_broadcast_roundtrip(tx: &Transaction) {
+        let raw_hex = encode_broadcast_tx(tx, &tx.hash).expect("encoding must succeed");
+        assert!(!raw_hex.starts_with("0x"));
+        let bytes = hex::decode(&raw_hex).expect("valid lowercase hex");
+
+        // 1. Byte-for-byte identity with bincode::serialize (fixint LE).
+        let expected = bincode::serialize(tx).expect("bincode serialize succeeds");
+        assert_eq!(bytes, expected, "wire bytes must match bincode::serialize");
+
+        // 2. Round-trip with standard bincode::deserialize.
+        let decoded: Transaction =
+            bincode::deserialize(&bytes).expect("bincode::deserialize must succeed");
+        assert_eq!(&decoded, tx);
+
+        // 3. Round-trip with the exact bounded options used by kovanica-rpc.
+        let rpc_decoded: Transaction = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .allow_trailing_bytes()
+            .with_limit(bytes.len() as u64)
+            .deserialize(&bytes)
+            .expect("RPC bounded bincode deserialize must succeed");
+        assert_eq!(&rpc_decoded, tx);
+    }
+
+    fn sign_test_tx(kind: TransactionKind, nonce: u64, fee: u64) -> Transaction {
+        let sk = SigningKey::from_bytes(&[0x07u8; 32]);
+        let sender = Address(sk.verifying_key().to_bytes());
+        let mut tx = Transaction {
+            sender,
+            nonce,
+            kind,
+            fee,
+            signature: Signature([0u8; 64]),
+            hash: Hash::zero(),
+        };
+        let ctx = SigningContext::new(2);
+        let sighash = tx.signing_hash(&ctx);
+        tx.signature = kovanica_crypto::sign(&sk, &sighash.0);
+        tx.hash = sighash;
+        assert!(tx.verify_signature(&ctx));
+        tx
+    }
 
     #[test]
     fn format_atoms_tests() {
@@ -198,7 +296,112 @@ mod tests {
         );
 
         let (tx, raw_hex) = preview.sign(&sk).expect("signing succeeds");
-        assert!(tx.verify_signature(&kovanica_types::signing::SigningContext::new(2)));
+        assert!(tx.verify_signature(&SigningContext::new(2)));
         assert!(!raw_hex.starts_with("0x"));
+        assert_eq!(
+            hex::decode(&raw_hex).expect("valid hex"),
+            bincode::serialize(&tx).expect("bincode serialize")
+        );
+    }
+
+    #[test]
+    fn encode_broadcast_tx_transfer_roundtrips() {
+        let tx = sign_test_tx(
+            TransactionKind::Transfer {
+                to: Address([0x22u8; 32]),
+                amount: 1_000_000,
+            },
+            5,
+            1_000,
+        );
+        assert_canonical_broadcast_roundtrip(&tx);
+    }
+
+    #[test]
+    fn encode_broadcast_tx_call_roundtrips() {
+        let tx_with_value = sign_test_tx(
+            TransactionKind::Call {
+                contract: Address([0x33u8; 32]),
+                value: 500,
+                method: "transfer".to_string(),
+                args: vec![1, 2, 3, 4],
+                gas_limit: 100_000,
+            },
+            6,
+            10,
+        );
+        assert_canonical_broadcast_roundtrip(&tx_with_value);
+
+        let tx_empty = sign_test_tx(
+            TransactionKind::Call {
+                contract: Address([0x44u8; 32]),
+                value: 0,
+                method: String::new(),
+                args: Vec::new(),
+                gas_limit: 50_000,
+            },
+            7,
+            25,
+        );
+        assert_canonical_broadcast_roundtrip(&tx_empty);
+    }
+
+    #[test]
+    fn encode_broadcast_tx_deploy_roundtrips() {
+        let tx = sign_test_tx(
+            TransactionKind::Deploy {
+                code: vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+            },
+            8,
+            5_000,
+        );
+        assert_canonical_broadcast_roundtrip(&tx);
+
+        let tx_empty = sign_test_tx(TransactionKind::Deploy { code: Vec::new() }, 9, 1_000);
+        assert_canonical_broadcast_roundtrip(&tx_empty);
+    }
+
+    #[test]
+    fn encode_broadcast_tx_register_light_node_roundtrips() {
+        let tx = sign_test_tx(
+            TransactionKind::RegisterLightNode {
+                vrf_public_key: PublicKey([0x55u8; 32]),
+                stake: 10_000_000_000,
+            },
+            10,
+            1_000,
+        );
+        assert_canonical_broadcast_roundtrip(&tx);
+    }
+
+    #[test]
+    fn encode_broadcast_tx_exit_light_node_roundtrips() {
+        let tx = sign_test_tx(TransactionKind::ExitLightNode, 11, 1_000);
+        assert_canonical_broadcast_roundtrip(&tx);
+    }
+
+    #[test]
+    fn encode_broadcast_tx_rejects_unsupported_variants_without_panicking() {
+        let unsupported = [
+            TransactionKind::Stake { amount: 1_000 },
+            TransactionKind::Unstake { amount: 500 },
+            TransactionKind::ClaimTreasury { amount: 42 },
+        ];
+        for kind in unsupported {
+            let tx = Transaction {
+                sender: Address([0x11u8; 32]),
+                nonce: 1,
+                kind,
+                fee: 1_000,
+                signature: Signature([0u8; 64]),
+                hash: Hash([0u8; 32]),
+            };
+            let err = encode_broadcast_tx(&tx, &tx.hash)
+                .expect_err("unsupported kind must return Err instead of panicking");
+            assert!(
+                err.to_string().contains("does not support"),
+                "unexpected error message: {err}"
+            );
+        }
     }
 }

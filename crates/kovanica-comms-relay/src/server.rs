@@ -6,11 +6,11 @@
 //! |---|---|---|---|
 //! | POST | `/v1/envelope` | `201 {"ok":true,"id":"<hex>"}` | `400`,`413`,`429` |
 //! | GET  | `/v1/inbox/{comms_id}` | `200 {"envelopes":[…]}` | `400` |
-//! | POST | `/v1/ack` | `200 {"ok":true,"deleted":<n>}` | `400` |
+//! | POST | `/v1/ack` | `200 {"ok":true,"deleted":<n>}` | `400`,`401` |
 //! | GET  | `/v1/health` | `200 {"ok":true,"version":…,"envelopes":<n>}` | — |
 //!
 //! Errors are `{"error":{"code":"<slug>","message":"…"}}` with slugs
-//! `bad_request`, `too_large`, `not_found`, `rate_limited`, `internal`.
+//! `bad_request`, `unauthorized`, `too_large`, `not_found`, `rate_limited`, `internal`.
 //! **GET never deletes** — deletion is only via `/v1/ack`.
 
 use std::net::SocketAddr;
@@ -23,6 +23,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use ed25519_dalek::{Signature, VerifyingKey};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -33,7 +34,9 @@ use tracing::{error, info, warn};
 
 use crate::envelope::{Envelope, MAX_CT, MAX_ENVELOPE_JSON};
 use crate::store::{Store, StoreError, DEFAULT_INBOX_LIMIT, MAX_INBOX_LIMIT};
-use crate::{comms_id_from_hex, now_ms, pow_verify, SubmissionWrapper};
+use crate::{
+    ack_signing_bytes, comms_id_bytes, comms_id_from_hex, now_ms, pow_verify, SubmissionWrapper,
+};
 
 /// How often the background task sweeps expired envelopes.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
@@ -41,6 +44,7 @@ pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 /// Error slugs (`error.code`) used by §4.
 pub mod slug {
     pub const BAD_REQUEST: &str = "bad_request";
+    pub const UNAUTHORIZED: &str = "unauthorized";
     pub const TOO_LARGE: &str = "too_large";
     pub const NOT_FOUND: &str = "not_found";
     pub const RATE_LIMITED: &str = "rate_limited";
@@ -73,6 +77,10 @@ fn error_response(status: StatusCode, code: &'static str, message: impl Into<Str
 
 fn bad_request(message: impl Into<String>) -> Response {
     error_response(StatusCode::BAD_REQUEST, slug::BAD_REQUEST, message)
+}
+
+fn unauthorized(message: impl Into<String>) -> Response {
+    error_response(StatusCode::UNAUTHORIZED, slug::UNAUTHORIZED, message)
 }
 
 fn too_large(message: impl Into<String>) -> Response {
@@ -132,11 +140,7 @@ fn allow_unpaid() -> bool {
                 _ => None,
             }
         })
-        .unwrap_or(true)
-}
-
-fn relay_claimer_addr() -> Option<String> {
-    std::env::var("KOVANICA_RELAY_CLAIMER_ADDR").ok()
+        .unwrap_or(false)
 }
 
 fn now_ms_u64() -> u64 {
@@ -216,74 +220,17 @@ async fn post_envelope(State(state): State<AppState>, body: Bytes) -> Response {
         }
     }
 
-    // Payment handling
-    if !admitted {
-        if let Some(ref pay) = payment_opt {
-            let preimg_bytes = crate::b64_decode(&pay.preimage).unwrap_or_default();
-            let hash_lock = kovanica_common::hash(&preimg_bytes);
-            if let Some(req_claimer) = relay_claimer_addr() {
-                if pay.claimer_addr != req_claimer {
-                    return bad_request("invalid claimer");
-                }
-            }
-            if pay.expiry <= now + 1000 {
-                return bad_request("payment expired");
-            }
-            let min_fee = std::env::var("KOVANICA_RELAY_MIN_FEE_ATOMS")
-                .ok()
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(1000);
-            if pay.amount_atoms < min_fee {
-                return bad_request("insufficient payment amount");
-            }
-            // recompute htlc id
-            let sender_bytes = if let Some(ref s) = pay.sender_addr {
-                if let Ok(b) = hex::decode(s) {
-                    let mut v = [0u8; 32];
-                    let take = b.len().min(32);
-                    v[0..take].copy_from_slice(&b[0..take]);
-                    v
-                } else {
-                    [0u8; 32]
-                }
-            } else {
-                [0u8; 32]
-            };
-            let claimer_bytes = if let Ok(b) = hex::decode(&pay.claimer_addr) {
-                let mut v = [0u8; 32];
-                let take = b.len().min(32);
-                v[0..take].copy_from_slice(&b[0..take]);
-                v
-            } else {
-                [0u8; 32]
-            };
-            let mut htlc_input = Vec::with_capacity(6 + 32 + 32 + 16 + 32 + 8);
-            htlc_input.extend_from_slice(b"htlc/id");
-            htlc_input.extend_from_slice(&sender_bytes);
-            htlc_input.extend_from_slice(&claimer_bytes);
-            htlc_input.extend_from_slice(&pay.amount_atoms.to_le_bytes());
-            htlc_input.extend_from_slice(&hash_lock);
-            htlc_input.extend_from_slice(&pay.expiry.to_le_bytes());
-            let htlc_id_comp = hex::encode(kovanica_common::hash(&htlc_input));
-            if htlc_id_comp != pay.htlc_id {
-                return bad_request("invalid htlc id");
-            }
-            let _ = state.store.credit_add(&envelope.to, pay.amount_atoms, now);
-            if state.store.credit_deduct(&envelope.to, 1, now) {
-                admitted = true;
-            } else {
-                return bad_request("insufficient credit");
-            }
-        }
+    // Payment handling — unverified off-chain HTLC credit minting is disabled
+    // until on-chain RPC verification is enabled.
+    if payment_opt.is_some() {
+        return bad_request(
+            "unverified off-chain HTLC payment disabled until on-chain RPC verification is enabled",
+        );
     }
 
-    // If no wrapper/pow/payment provided, check allow_unpaid
-    if !admitted {
-        if !allow_unpaid() {
-            return rate_limited();
-        }
-        // bare envelope allowed (M1 back-compat)
-        let _ = admitted; // already true
+    // If no PoW provided, check allow_unpaid (defaults to false).
+    if !admitted && !allow_unpaid() {
+        return rate_limited();
     }
 
     let id_res = envelope.id.clone();
@@ -332,6 +279,10 @@ async fn get_inbox(
 struct AckRequest {
     to: String,
     ids: Vec<String>,
+    #[serde(default)]
+    pubkey: Option<String>,
+    #[serde(default)]
+    signature: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -340,16 +291,44 @@ struct AckResponse {
     deleted: usize,
 }
 
-/// `POST /v1/ack` — the only delete path.
+/// `POST /v1/ack` — the only delete path. Requires a valid Ed25519 recipient
+/// signature over `ack_signing_bytes(to, ids)` from the public key matching `to`.
 async fn post_ack(State(state): State<AppState>, Json(req): Json<AckRequest>) -> Response {
-    if comms_id_from_hex(&req.to).is_err() {
-        return bad_request("invalid comms id");
-    }
+    let to_bytes = match comms_id_from_hex(&req.to) {
+        Ok(b) => b,
+        Err(_) => return bad_request("invalid comms id"),
+    };
     for id in &req.ids {
         if !is_lower_hex64(id) {
             return bad_request("invalid envelope id");
         }
     }
+
+    let (Some(pubkey_hex), Some(sig_hex)) = (&req.pubkey, &req.signature) else {
+        return unauthorized("missing ack pubkey or signature");
+    };
+    let pubkey_bytes: [u8; 32] = match hex::decode(pubkey_hex).ok().and_then(|v| v.try_into().ok())
+    {
+        Some(b) => b,
+        None => return unauthorized("invalid ack pubkey"),
+    };
+    if comms_id_bytes(&pubkey_bytes) != to_bytes {
+        return unauthorized("ack pubkey does not match recipient comms id");
+    }
+    let sig_bytes: [u8; 64] = match hex::decode(sig_hex).ok().and_then(|v| v.try_into().ok()) {
+        Some(b) => b,
+        None => return unauthorized("invalid ack signature"),
+    };
+    let verifying_key = match VerifyingKey::from_bytes(&pubkey_bytes) {
+        Ok(k) => k,
+        Err(_) => return unauthorized("invalid ack pubkey"),
+    };
+    let signature = Signature::from_bytes(&sig_bytes);
+    let msg = ack_signing_bytes(&req.to, &req.ids);
+    if verifying_key.verify_strict(&msg, &signature).is_err() {
+        return unauthorized("invalid ack signature");
+    }
+
     let deleted = state.store.ack(&req.to, &req.ids);
     (StatusCode::OK, Json(AckResponse { ok: true, deleted })).into_response()
 }

@@ -4,11 +4,31 @@ use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer, SigningKey};
 use kovanica_comms_crypto::{E2eCipher, PublicKey, SecretSeed, X25519Cipher};
 use kovanica_comms_relay::{
-    comms_id_hex, pad_payload, trim_payload, Envelope, RelayClient, Store, ALG_V1,
+    ack_signing_bytes, comms_id_hex, pad_payload, pow_verify, trim_payload, ClientError, Envelope,
+    PaymentProof, PowProof, RelayClient, Store, SubmissionWrapper, ALG_V1,
 };
+
+/// Serialises tests that read or mutate `KOVANICA_RELAY_ALLOW_UNPAID`.
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn solve_pow_from(id_hex: &str, bits: u8, mut nonce: u64) -> (PowProof, u64) {
+    loop {
+        let nonce_hex = hex::encode(nonce.to_le_bytes());
+        if pow_verify(id_hex, &nonce_hex, bits) {
+            return (
+                PowProof {
+                    nonce: nonce_hex,
+                    bits,
+                },
+                nonce + 1,
+            );
+        }
+        nonce += 1;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Pinned KAT inputs (§5) and the expected cross-language outputs.
@@ -248,8 +268,12 @@ async fn spawn_relay() -> (Arc<Store>, String) {
 
 #[tokio::test]
 async fn http_post_get_ack_get_round_trip() {
+    let _guard = ENV_LOCK.lock().await;
+    std::env::remove_var("KOVANICA_RELAY_ALLOW_UNPAID");
+
     let (_store, base) = spawn_relay().await;
     let client = RelayClient::new(base.clone());
+    let recipient_key = SigningKey::from_bytes(&RECIPIENT_SEED);
     let recipient_id = comms_id_hex(&kovanica_comms_relay::comms_id_bytes(&recipient_pub()));
 
     // Health starts empty.
@@ -257,7 +281,7 @@ async fn http_post_get_ack_get_round_trip() {
     assert!(health.ok);
     assert_eq!(health.envelopes, 0);
 
-    // A seals → POSTs for B (fresh TTL — the KAT timestamps are in the past).
+    // A seals → POSTs for B with valid PoW (fresh TTL — the KAT timestamps are in the past).
     let now = kovanica_comms_relay::now_ms();
     let envelope = kovanica_comms_relay::envelope::seal_and_sign(
         &SENDER_SEED,
@@ -267,10 +291,29 @@ async fn http_post_get_ack_get_round_trip() {
         now + 24 * 60 * 60 * 1000,
     )
     .unwrap();
-    let id = client.post_envelope(&envelope).await.expect("post");
+    let (pow1, next_nonce) = solve_pow_from(&envelope.id, 20, 0);
+    let id = client
+        .post_submission(&SubmissionWrapper {
+            envelope: envelope.clone(),
+            pow: Some(pow1),
+            payment: None,
+        })
+        .await
+        .expect("post with pow");
     assert_eq!(id, envelope.id);
-    // Idempotent re-POST.
-    assert_eq!(client.post_envelope(&envelope).await.expect("re-post"), id);
+    // Idempotent re-POST (with a fresh PoW nonce so replay protection allows it).
+    let (pow2, _) = solve_pow_from(&envelope.id, 20, next_nonce);
+    assert_eq!(
+        client
+            .post_submission(&SubmissionWrapper {
+                envelope: envelope.clone(),
+                pow: Some(pow2),
+                payment: None,
+            })
+            .await
+            .expect("re-post with fresh pow"),
+        id
+    );
 
     // GET returns it (but does not delete). Check the raw wire bytes too.
     let raw = reqwest::get(format!("{base}/v1/inbox/{recipient_id}"))
@@ -317,9 +360,13 @@ async fn http_post_get_ack_get_round_trip() {
         1
     );
 
-    // ack removes it.
+    // Signed ack removes it.
     let deleted = client
-        .ack(&recipient_id, std::slice::from_ref(&envelope.id))
+        .ack_signed(
+            &recipient_key,
+            &recipient_id,
+            std::slice::from_ref(&envelope.id),
+        )
         .await
         .unwrap();
     assert_eq!(deleted, 1);
@@ -329,6 +376,221 @@ async fn http_post_get_ack_get_round_trip() {
         .unwrap()
         .is_empty());
     assert_eq!(client.health().await.unwrap().envelopes, 0);
+}
+
+#[tokio::test]
+async fn http_rejects_unpaid_envelope_by_default_and_allows_when_enabled() {
+    let _guard = ENV_LOCK.lock().await;
+    std::env::remove_var("KOVANICA_RELAY_ALLOW_UNPAID");
+
+    let (_store, base) = spawn_relay().await;
+    let client = RelayClient::new(base);
+    let now = kovanica_comms_relay::now_ms();
+    let envelope = kovanica_comms_relay::envelope::seal_and_sign(
+        &SENDER_SEED,
+        &recipient_pub(),
+        KAT_PAYLOAD,
+        now,
+        now + 60_000,
+    )
+    .unwrap();
+
+    // Default (unset): bare unpaid envelope is rejected with 429 rate_limited.
+    let err = client
+        .post_envelope(&envelope)
+        .await
+        .expect_err("unpaid envelope must be rejected by default");
+    match err {
+        ClientError::Status { status, code, .. } => {
+            assert_eq!(status, 429);
+            assert_eq!(code, "rate_limited");
+        }
+        other => panic!("expected 429 status error, got {other:?}"),
+    }
+
+    // Explicit opt-in for dev/test: KOVANICA_RELAY_ALLOW_UNPAID=true permits bare envelope.
+    std::env::set_var("KOVANICA_RELAY_ALLOW_UNPAID", "true");
+    let res = client.post_envelope(&envelope).await;
+    std::env::remove_var("KOVANICA_RELAY_ALLOW_UNPAID");
+    assert_eq!(res.expect("allowed when explicitly enabled"), envelope.id);
+}
+
+#[tokio::test]
+async fn http_rejects_unverified_htlc_payment() {
+    let _guard = ENV_LOCK.lock().await;
+    std::env::remove_var("KOVANICA_RELAY_ALLOW_UNPAID");
+
+    let (_store, base) = spawn_relay().await;
+    let client = RelayClient::new(base);
+    let now = kovanica_comms_relay::now_ms();
+    let envelope = kovanica_comms_relay::envelope::seal_and_sign(
+        &SENDER_SEED,
+        &recipient_pub(),
+        KAT_PAYLOAD,
+        now,
+        now + 60_000,
+    )
+    .unwrap();
+
+    let fake_payment = PaymentProof {
+        htlc_id: "00".repeat(32),
+        preimage: STANDARD.encode(b"fake-preimage"),
+        amount_atoms: 1_000_000,
+        expiry: now + 600_000,
+        sender_addr: Some("11".repeat(32)),
+        claimer_addr: "22".repeat(32),
+    };
+
+    let err = client
+        .post_submission(&SubmissionWrapper {
+            envelope,
+            pow: None,
+            payment: Some(fake_payment),
+        })
+        .await
+        .expect_err("unverified off-chain HTLC payment must be rejected");
+    match err {
+        ClientError::Status {
+            status,
+            code,
+            message,
+        } => {
+            assert_eq!(status, 400);
+            assert_eq!(code, "bad_request");
+            assert!(
+                message.contains("unverified off-chain HTLC payment disabled"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("expected 400 status error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn http_ack_requires_valid_recipient_signature() {
+    let _guard = ENV_LOCK.lock().await;
+    std::env::remove_var("KOVANICA_RELAY_ALLOW_UNPAID");
+
+    let (_store, base) = spawn_relay().await;
+    let client = RelayClient::new(base.clone());
+    let sender_key = SigningKey::from_bytes(&SENDER_SEED);
+    let recipient_key = SigningKey::from_bytes(&RECIPIENT_SEED);
+    let recipient_id = comms_id_hex(&kovanica_comms_relay::comms_id_bytes(&recipient_pub()));
+
+    let now = kovanica_comms_relay::now_ms();
+    let envelope = kovanica_comms_relay::envelope::seal_and_sign(
+        &SENDER_SEED,
+        &recipient_pub(),
+        KAT_PAYLOAD,
+        now,
+        now + 60_000,
+    )
+    .unwrap();
+    let (pow, _) = solve_pow_from(&envelope.id, 20, 0);
+    client
+        .post_submission(&SubmissionWrapper {
+            envelope: envelope.clone(),
+            pow: Some(pow),
+            payment: None,
+        })
+        .await
+        .expect("post with pow");
+
+    // 1. Unsigned /v1/ack → 401 unauthorized.
+    let err = client
+        .ack(&recipient_id, std::slice::from_ref(&envelope.id))
+        .await
+        .expect_err("unsigned ack must fail");
+    match err {
+        ClientError::Status { status, code, .. } => {
+            assert_eq!(status, 401);
+            assert_eq!(code, "unauthorized");
+        }
+        other => panic!("expected 401, got {other:?}"),
+    }
+
+    // 2. Signed by wrong key (sender trying to delete recipient's inbox) → 401 unauthorized.
+    let err = client
+        .ack_signed(
+            &sender_key,
+            &recipient_id,
+            std::slice::from_ref(&envelope.id),
+        )
+        .await
+        .expect_err("wrong-key ack must fail");
+    match err {
+        ClientError::Status { status, code, .. } => {
+            assert_eq!(status, 401);
+            assert_eq!(code, "unauthorized");
+        }
+        other => panic!("expected 401, got {other:?}"),
+    }
+
+    // 3. Correct recipient pubkey, but forged/corrupted signature → 401 unauthorized.
+    let msg = ack_signing_bytes(&recipient_id, std::slice::from_ref(&envelope.id));
+    let mut forged_sig = recipient_key.sign(&msg).to_bytes();
+    forged_sig[0] ^= 0xff;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/ack"))
+        .json(&serde_json::json!({
+            "to": recipient_id,
+            "ids": [envelope.id],
+            "pubkey": hex::encode(recipient_pub()),
+            "signature": hex::encode(forged_sig),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "unauthorized");
+
+    // 4. Valid signature over a different id list → 401 unauthorized.
+    let other_id = "aa".repeat(32);
+    let other_sig = recipient_key
+        .sign(&ack_signing_bytes(
+            &recipient_id,
+            std::slice::from_ref(&other_id),
+        ))
+        .to_bytes();
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/ack"))
+        .json(&serde_json::json!({
+            "to": recipient_id,
+            "ids": [envelope.id],
+            "pubkey": hex::encode(recipient_pub()),
+            "signature": hex::encode(other_sig),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+
+    // Envelope must still be present after all failed ack attempts.
+    assert_eq!(
+        client
+            .get_inbox(&recipient_id, None, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // 5. Properly signed ack by recipient succeeds and deletes the envelope.
+    let deleted = client
+        .ack_signed(
+            &recipient_key,
+            &recipient_id,
+            std::slice::from_ref(&envelope.id),
+        )
+        .await
+        .expect("signed ack must succeed");
+    assert_eq!(deleted, 1);
+    assert!(client
+        .get_inbox(&recipient_id, None, None)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

@@ -1108,6 +1108,10 @@ pub struct WasmCall<'a> {
 /// [`ContractRunner::execute_contract_call`] for the native path and
 /// [`ContractRunner::execute_wasm_call`] for the wasm path — there is no
 /// automatic fallback, so a wasm bug cannot silently change ledger behavior.
+/// Maximum number of compiled WASM modules kept in `ContractRunner::modules`
+/// to bound memory consumption on 2–4 GB VPS nodes.
+const MAX_CACHED_MODULES: usize = 128;
+
 pub struct ContractRunner {
     runtime: Runtime,
     /// Compiled modules keyed by `blake3(wasm)`.
@@ -1117,6 +1121,8 @@ pub struct ContractRunner {
     /// and recompile, which gives no benefit over the host OS page cache. Revisit
     /// if compile time becomes a bottleneck.
     modules: HashMap<[u8; 32], kovanica_runtime::Module>,
+    /// FIFO insertion order for bounded cache eviction.
+    module_order: std::collections::VecDeque<[u8; 32]>,
 }
 
 impl ContractRunner {
@@ -1124,7 +1130,28 @@ impl ContractRunner {
         Self {
             runtime: Runtime::new(),
             modules: HashMap::new(),
+            module_order: std::collections::VecDeque::new(),
         }
+    }
+
+    fn get_or_compile_module(
+        &mut self,
+        wasm: &[u8],
+    ) -> Result<&kovanica_runtime::Module, kovanica_runtime::RuntimeError> {
+        let key = kovanica_common::hash(wasm);
+        if !self.modules.contains_key(&key) {
+            let module = self.runtime.compile(wasm)?;
+            while self.modules.len() >= MAX_CACHED_MODULES {
+                if let Some(evict_key) = self.module_order.pop_front() {
+                    self.modules.remove(&evict_key);
+                } else {
+                    break;
+                }
+            }
+            self.modules.insert(key, module);
+            self.module_order.push_back(key);
+        }
+        Ok(&self.modules[&key])
     }
 
     /// Native dispatch — thin wrapper over [`execute_contract_call`]
@@ -1192,11 +1219,8 @@ impl ContractRunner {
         call: WasmCall<'_>,
         gas_used: &mut u64,
     ) -> Result<(Vec<u8>, Vec<ContractEvent>), ExecutionError> {
+        let _ = self.get_or_compile_module(call.wasm)?;
         let key = kovanica_common::hash(call.wasm);
-        if !self.modules.contains_key(&key) {
-            let module = self.runtime.compile(call.wasm)?;
-            self.modules.insert(key, module);
-        }
         let module = &self.modules[&key];
 
         let mut host = match call.txn {
@@ -1241,11 +1265,8 @@ impl ContractRunner {
         call: WasmCall<'_>,
         gas_used: &mut u64,
     ) -> Result<Vec<u8>, ExecutionError> {
+        let _ = self.get_or_compile_module(call.wasm)?;
         let key = kovanica_common::hash(call.wasm);
-        if !self.modules.contains_key(&key) {
-            let module = self.runtime.compile(call.wasm)?;
-            self.modules.insert(key, module);
-        }
         let module = &self.modules[&key];
 
         let mut host = ContractHost::new(

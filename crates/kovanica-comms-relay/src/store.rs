@@ -96,6 +96,10 @@ impl Store {
             return Ok(InsertOutcome::Duplicate);
         }
         let to = envelope.to.clone();
+        const MAX_TOTAL_ENVELOPES: usize = 50_000;
+        if inner.by_id.len() >= MAX_TOTAL_ENVELOPES {
+            return Err(StoreError::RateLimited);
+        }
         if inner.queues.get(&to).map(Vec::len).unwrap_or(0) >= MAX_PER_RECIPIENT {
             return Err(StoreError::RateLimited);
         }

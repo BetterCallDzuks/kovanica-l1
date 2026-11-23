@@ -4,6 +4,15 @@
 //! Kovanica full node JSON-RPC endpoint (`kovanica_getWork` / `kovanica_submitWork`), per
 //! `docs/MINING.md` Section 5.
 
+/// PoW algorithm required by the Kovanica Stratum V1 job profile.
+pub const KOVANICA_STRATUM_ALGORITHM: &str = "kovanicahash";
+
+/// Capability token advertised during `mining.subscribe` for the Kovanica job profile.
+///
+/// A miner must be able to evaluate KovanicaHash and reconstruct the canonical DAG-aware
+/// preimage before it can produce shares that the gateway can convert into valid blocks.
+pub const KOVANICA_STRATUM_CAPABILITY: &str = "kovanicahash-v1";
+
 pub mod config;
 pub mod difficulty;
 pub mod gateway;
@@ -12,13 +21,23 @@ pub mod protocol;
 pub mod rpc;
 pub mod session;
 
-pub use config::{StratumArgs, StratumConfig};
+pub use config::{
+    StratumArgs, StratumConfig, VarDiffConfig, DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
+    MAX_SESSION_IDLE_TIMEOUT_SECS,
+};
 pub use difficulty::{
     check_network_solution, check_share_hash_meets_difficulty, check_share_hash_meets_target,
     target_from_difficulty, DIFFICULTY_1_TARGET_BITS,
 };
-pub use gateway::StratumGateway;
+pub use gateway::{
+    validate_extranonce2, validate_ntime, GatewayMetrics, IpBanScorer, IpPenaltyRecord,
+    ShareRejectReason, StratumGateway, MAX_BAN_SCORER_IPS, MAX_NTIME_DRIFT_MS,
+    MAX_NTIME_DRIFT_SECS,
+};
 pub use job::{Job, JobManager};
 pub use protocol::{StratumNotification, StratumRequest, StratumResponse};
 pub use rpc::{NodeRpcClient, WorkTemplate};
-pub use session::{parse_and_validate_username, AuthorizedWorker, SessionRegistry, WorkerSession};
+pub use session::{
+    parse_and_validate_username, parse_numeric_session_id, AuthorizedWorker, SessionRegistry,
+    WorkerSession, WorkerSessionSummary, WorkersResponse,
+};

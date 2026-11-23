@@ -24,8 +24,8 @@ COPY crates/ ./crates/
 # target/ is kept (we copy the binary out below).
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    cargo build --release --locked -p kovanica-node -p kovanica-faucet -p kovanica-cli \
-    && strip target/release/kovanica-node target/release/kovanica-faucet target/release/kovanica
+    cargo build --release --locked -p kovanica-node -p kovanica-faucet -p kovanica-cli -p kovanica-stratum \
+    && strip target/release/kovanica-node target/release/kovanica-faucet target/release/kovanica target/release/kovanica-stratum
 
 # ---------------------------------------------------------------------------
 
@@ -44,6 +44,7 @@ RUN apt-get update \
 COPY --from=builder /src/target/release/kovanica-node /usr/local/bin/kovanica-node
 COPY --from=builder /src/target/release/kovanica-faucet /usr/local/bin/kovanica-faucet
 COPY --from=builder /src/target/release/kovanica /usr/local/bin/kovanica
+COPY --from=builder /src/target/release/kovanica-stratum /usr/local/bin/kovanica-stratum
 COPY ops/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

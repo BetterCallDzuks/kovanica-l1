@@ -166,3 +166,31 @@ pub fn now_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+/// Domain separation prefix for `POST /v1/ack` recipient signatures.
+pub const ACK_SIG_DOMAIN: &[u8] = b"KVNC-RELAY-ACK-v1";
+
+/// Build the canonical domain-separated byte message signed by the recipient
+/// for `POST /v1/ack`:
+///
+/// ```text
+/// b"KVNC-RELAY-ACK-v1"
+///   ‖ 0x00
+///   ‖ to_utf8 ‖ 0x00
+///   ‖ (ids.len() as u32 LE)
+///   ‖ for id in ids: id_utf8 ‖ 0x00
+/// ```
+pub fn ack_signing_bytes(to: &str, ids: &[String]) -> Vec<u8> {
+    let ids_len: usize = ids.iter().map(|s| s.len() + 1).sum();
+    let mut out = Vec::with_capacity(ACK_SIG_DOMAIN.len() + 1 + to.len() + 1 + 4 + ids_len);
+    out.extend_from_slice(ACK_SIG_DOMAIN);
+    out.push(0);
+    out.extend_from_slice(to.as_bytes());
+    out.push(0);
+    out.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+    for id in ids {
+        out.extend_from_slice(id.as_bytes());
+        out.push(0);
+    }
+    out
+}

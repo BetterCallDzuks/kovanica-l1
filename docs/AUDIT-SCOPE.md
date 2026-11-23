@@ -1,10 +1,10 @@
 # Kovanica External Security Audit — Scope Document
 
 **Version:** 2.0  
-**Date:** 2026-11-17  
+**Date:** 2026-11-21  
 **Codebase:** `kovanica` (Hybrid PoW + GHOSTDAG, account-based, Wasmi execution)  
 **Repository:** `https://github.com/KovanicaDAG/kovanica-l1`  
-**Pinned Commit (`main`):** `91701aed142a514d455d36cfae8bf6605a968fd9`  
+**Pinned Commit (`main`):** `e72d8e1ab224df7e6c7b11c5af3b7d4715cbb5c0`  
 **License:** GPL-3.0-or-later  
 **Native Coin:** **KVNC** (9 decimals; `ONE_KVNC = 10^9`)  
 
@@ -118,11 +118,12 @@ $$\text{TOTAL\_SUPPLY} = \text{PREMINE } (0.2\text{M}) + \text{TREASURY } (8\tex
 
 ---
 
-### 2.7 RPC Interface — `kovanica-rpc` (MEDIUM)
+### 2.7 RPC Interface & Stratum V1 Mining Gateway — `kovanica-rpc`, `kovanica-stratum` (MEDIUM)
 
 | Endpoint Group | Risk | Description |
 |---|---|---|
 | Mining Interface | **High** | `kovanica_getWork`, `kovanica_submitWork`, `kovanica_getMiningInfo`, `kovanica_getDagTips`. Concurrency control, rate limiting, and input sanitization on submitted work. |
+| Stratum V1 Mining Pool Gateway | **Medium** | `kovanica-stratum` (`#319`–`#322`) and CLI Stratum miner (`kovanica-cli/src/stratum_client.rs`, `#318`). Line-delimited JSON-RPC TCP gateway (`MAX_STRATUM_LINE_BYTES = 4 KiB`), PRO-21 64-char `kvnc...dag` payout address validation on `mining.authorize`, `kovanicahash-v1` capability profile, canonical header preimage reconstruction, duplicate share filtering, and upstream `kovanica_submitWork` forwarding. |
 | Standard Client RPC | **Medium** | `kovanica_sendRawTransaction`, `kovanica_getBlockByNumber`, `kovanica_getBlockHeaderByNumber`, `kovanica_getTransactionReceipt`, `kovanica_syncStatus`, `kovanica_call` (WASM state simulation). |
 | Hybrid Legacy RPC Refusal | **Medium** | `kovanica_getValidators`, `kovanica_getStake`, and `kovanica_getLeaderSchedule` are explicitly rejected (`RpcError::InvalidRequest`) on hybrid chains (`chain_id::is_hybrid`, i.e., `kovanica-mainnet` chain ID 1 and `kovanica-testnet` chain ID 2). |
 | Security Middleware | **Medium** | Per-IP token-bucket rate limiting, Bearer token authentication support, CORS configuration, request body size limits, 10s request execution timeout. |
@@ -173,19 +174,20 @@ $$\text{TOTAL\_SUPPLY} = \text{PREMINE } (0.2\text{M}) + \text{TREASURY } (8\tex
 ## 6. Repository & Build Pinning
 
 - **Repository:** `https://github.com/KovanicaDAG/kovanica-l1`
-- **Branch / Pinned Commit:** `main` @ `6bcca8630f97d7c9e599fe51b70c4d29a2766d8b` (post-`#288`, where `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0`)
-- **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee`, network tag `2-24cdb5fadd98b207`)
+- **Branch / Pinned Commit:** `main` @ `e72d8e1ab224df7e6c7b11c5af3b7d4715cbb5c0` (post-`#308`–`#322`, where `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0`)
+- **Automated Auditor Dossier Packager:** `bash scripts/package-audit-dossier.sh` (`#315`, produces `target/audit-package/kovanica-audit-dossier-<sha>.tar.gz` with embedded `scripts/auditor-reproduce.sh`)
+- **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`/`#308`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee` / refreshed release bundle `sha256: 5857c83e1eb911bf30f890079e18370c5dc74986580303795fd2d173c2296377`, network tag `2-24cdb5fadd98b207`)
 - **Build Instructions:**
   ```bash
   cargo build --workspace --release
   cargo test --workspace
   ```
 - **Key Pinned Dependencies:**
-  - `wasmi = "0.40.0"`
-  - `ed25519-dalek = "2.1.0"`
-  - `blake3 = "1.5.1"`
-  - `libp2p = "0.57.0"`
-  - `redb = "2.1.0"`
+  - `wasmi = "0.40"`
+  - `ed25519-dalek = "2.1"`
+  - `blake3 = "=1.5.1"`
+  - `libp2p = "0.54"`
+  - `redb = "2.1"`
   - `argon2 = "0.5"`
   - `chacha20poly1305 = "0.10"`
 

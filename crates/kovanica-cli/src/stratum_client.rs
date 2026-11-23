@@ -6,21 +6,82 @@
 //! - Spawns multithreaded CPU workers utilizing pre-allocated 2 MiB `KovanicaHasher` contexts.
 //! - Submits shares satisfying pool share difficulty via `mining.submit`.
 
+use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Context as AnyhowContext;
+use anyhow::Result;
 use kovanica_crypto::KovanicaHasher;
 use kovanica_types::block::compact_to_target;
 use kovanica_types::Hash;
+use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::RootCertStore;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio_rustls::client::TlsStream;
+use tokio_rustls::{rustls::ClientConfig, TlsConnector};
 use tracing::{error, info, warn};
 
-use crate::miner::{format_hashrate, MiningStats};
+use crate::miner::{format_hashrate, format_summary, MinerSessionSummary, MiningStats};
+
+/// Wrapper for both TLS and non-TLS streams.
+enum MaybeTlsStream {
+    Plain(TcpStream),
+    Tls(Box<TlsStream<TcpStream>>),
+}
+
+impl AsyncRead for MaybeTlsStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for MaybeTlsStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_flush(cx),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTlsStream::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            MaybeTlsStream::Tls(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+impl Unpin for MaybeTlsStream {}
+
+/// PoW algorithm required by the Kovanica Stratum V1 job profile.
+const KOVANICA_STRATUM_ALGORITHM: &str = "kovanicahash";
+/// Capability token advertised by Kovanica-compatible gateways during `mining.subscribe`.
+const KOVANICA_STRATUM_CAPABILITY: &str = "kovanicahash-v1";
 
 /// Stratum share submission message sent from worker threads.
 #[derive(Debug, Clone)]
@@ -56,6 +117,12 @@ pub struct StratumMiner {
     stats: Arc<MiningStats>,
     shutdown: Arc<AtomicBool>,
     shutdown_notify: Arc<tokio::sync::Notify>,
+    /// Enable TLS for Stratum connection.
+    tls: bool,
+    /// Optional server name for TLS verification (defaults to host from endpoint).
+    tls_server_name: Option<String>,
+    /// Optional PEM CA/server certificate file to trust for TLS verification.
+    tls_ca_cert: Option<PathBuf>,
 }
 
 impl StratumMiner {
@@ -86,7 +153,29 @@ impl StratumMiner {
             stats: Arc::new(MiningStats::new()),
             shutdown: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            tls: false,
+            tls_server_name: None,
+            tls_ca_cert: None,
         }
+    }
+
+    /// Enable TLS for the Stratum connection.
+    pub fn with_tls(mut self, tls: bool, server_name: Option<String>) -> Self {
+        self.tls = tls;
+        self.tls_server_name = server_name;
+        self
+    }
+
+    /// Provide an optional PEM CA/server certificate file to trust for TLS connections.
+    pub fn with_tls_ca_cert(mut self, ca_cert: Option<PathBuf>) -> Self {
+        self.tls_ca_cert = ca_cert;
+        self
+    }
+
+    /// Return `true` if the endpoint URL scheme explicitly requests TLS (`stratum+tls://` or `stratum+ssl://`).
+    pub fn endpoint_uses_tls_scheme(endpoint: &str) -> bool {
+        let trimmed = endpoint.trim();
+        trimmed.starts_with("stratum+tls://") || trimmed.starts_with("stratum+ssl://")
     }
 
     /// Access mining stats.
@@ -105,13 +194,53 @@ impl StratumMiner {
         self.shutdown_notify.notify_waiters();
     }
 
+    /// Build a structured [`MinerSessionSummary`] snapshot for this Stratum miner session.
+    pub fn session_summary(&self, elapsed_secs: f64) -> MinerSessionSummary {
+        let use_tls = self.tls || Self::endpoint_uses_tls_scheme(&self.endpoint);
+        let target_endpoint = Self::clean_endpoint(&self.endpoint);
+        MinerSessionSummary::new(
+            "stratum",
+            target_endpoint,
+            &self.address,
+            Some(self.worker.clone()),
+            self.chain_id,
+            self.threads,
+            use_tls,
+            self.stats.total_hashes(),
+            self.stats.blocks_found(),
+            self.stats.blocks_accepted(),
+            self.stats.blocks_rejected(),
+            elapsed_secs,
+        )
+    }
+
     /// Clean endpoint string by stripping URL schemes.
     fn clean_endpoint(endpoint: &str) -> &str {
-        endpoint
-            .trim()
-            .strip_prefix("stratum+tcp://")
-            .or_else(|| endpoint.trim().strip_prefix("tcp://"))
-            .unwrap_or(endpoint.trim())
+        let trimmed = endpoint.trim();
+        trimmed
+            .strip_prefix("stratum+tls://")
+            .or_else(|| trimmed.strip_prefix("stratum+ssl://"))
+            .or_else(|| trimmed.strip_prefix("stratum+tcp://"))
+            .or_else(|| trimmed.strip_prefix("tcp://"))
+            .unwrap_or(trimmed)
+    }
+
+    /// Parse host and port from endpoint string (supports IPv4, hostname, and `[IPv6]:port`).
+    fn parse_host_port(endpoint: &str) -> Result<(String, u16)> {
+        let (raw_host, port_str) = endpoint
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("invalid endpoint format, expected host:port"))?;
+        let host = raw_host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(raw_host);
+        if host.is_empty() {
+            anyhow::bail!("invalid endpoint format: empty host");
+        }
+        let port = port_str
+            .parse::<u16>()
+            .with_context(|| format!("invalid port: {port_str}"))?;
+        Ok((host.to_string(), port))
     }
 
     /// Connect, subscribe, authorize, and run the Stratum client mining loop.
@@ -125,21 +254,92 @@ impl StratumMiner {
             worker = self.worker,
             threads = self.threads,
             chain_id = self.chain_id,
+            tls = self.tls,
             "connecting to Stratum V1 mining pool"
         );
 
-        let stream = TcpStream::connect(target_endpoint)
-            .await
-            .with_context(|| format!("failed to connect to Stratum pool at {target_endpoint}"))?;
+        // Parse host and port from endpoint
+        let (host, _port) = Self::parse_host_port(target_endpoint)?;
 
-        let (read_half, mut write_half) = stream.into_split();
+        // Connect with optional TLS (enabled via `--tls` or `stratum+tls://` / `stratum+ssl://`)
+        let use_tls = self.tls || Self::endpoint_uses_tls_scheme(&self.endpoint);
+        let stream = if use_tls {
+            // Build TLS connector with standard root certificates plus optional custom CA cert
+            let mut root_store = RootCertStore::empty();
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+            if let Some(ca_path) = &self.tls_ca_cert {
+                let ca_data = std::fs::read(ca_path).with_context(|| {
+                    format!("failed to read TLS CA certificate: {}", ca_path.display())
+                })?;
+                let pems = pem::parse_many(&ca_data).with_context(|| {
+                    format!(
+                        "failed to parse PEM certificates from {}",
+                        ca_path.display()
+                    )
+                })?;
+                let mut added = 0usize;
+                for block in pems {
+                    if block.tag == "CERTIFICATE" {
+                        root_store
+                            .add(CertificateDer::from(block.contents))
+                            .with_context(|| {
+                                format!("invalid X.509 certificate in {}", ca_path.display())
+                            })?;
+                        added += 1;
+                    }
+                }
+                if added == 0 {
+                    anyhow::bail!(
+                        "no CERTIFICATE blocks found in TLS CA file {}",
+                        ca_path.display()
+                    );
+                }
+            }
+
+            let mut client_config = ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+            client_config.alpn_protocols = vec![b"stratum".to_vec()];
+
+            let connector = TlsConnector::from(Arc::new(client_config));
+
+            // Determine server name for SNI
+            let server_name = if let Some(name) = &self.tls_server_name {
+                name.clone()
+            } else {
+                host.clone()
+            };
+
+            let tcp_stream = TcpStream::connect(target_endpoint).await.with_context(|| {
+                format!("failed to connect to Stratum pool at {target_endpoint}")
+            })?;
+
+            let dns_name = ServerName::try_from(server_name.as_str())
+                .map_err(|e| anyhow::anyhow!("invalid SNI server name: {}", e))?
+                .to_owned();
+
+            let tls_stream = connector
+                .connect(dns_name, tcp_stream)
+                .await
+                .with_context(|| format!("TLS handshake failed with {target_endpoint}"))?;
+
+            MaybeTlsStream::Tls(Box::new(tls_stream))
+        } else {
+            let tcp_stream = TcpStream::connect(target_endpoint).await.with_context(|| {
+                format!("failed to connect to Stratum pool at {target_endpoint}")
+            })?;
+            MaybeTlsStream::Plain(tcp_stream)
+        };
+
+        let (read_half, mut write_half) = tokio::io::split(stream);
         let mut reader = BufReader::new(read_half);
 
         // 1. Subscribe
         let subscribe_req = json!({
             "id": 1,
             "method": "mining.subscribe",
-            "params": ["kovanica-miner/0.3.0"]
+            "params": ["kovanica-miner/0.4.0", KOVANICA_STRATUM_CAPABILITY]
         });
         write_half
             .write_all(format!("{}\n", subscribe_req).as_bytes())
@@ -158,6 +358,7 @@ impl StratumMiner {
         if !sub_resp.get("error").is_none_or(|v| v.is_null()) {
             anyhow::bail!("Stratum pool rejected subscribe: {:?}", sub_resp["error"]);
         }
+        Self::verify_subscribe_capability(&sub_resp)?;
 
         let mut extranonce1 = String::new();
         let mut extranonce2_size = 4usize;
@@ -456,16 +657,52 @@ impl StratumMiner {
         }
 
         let elapsed = start_time.elapsed().as_secs_f64();
-        let total = self.stats.total_hashes();
+        let summary = self.session_summary(elapsed);
+        println!("\n{}", format_summary(&summary));
         info!(
-            elapsed_secs = elapsed,
-            total_hashes = total,
-            shares_accepted = self.stats.blocks_accepted(),
-            shares_rejected = self.stats.blocks_rejected(),
+            elapsed_secs = summary.elapsed_secs,
+            total_hashes = summary.total_hashes,
+            shares_submitted = summary.submitted,
+            shares_accepted = summary.accepted,
+            shares_rejected = summary.rejected,
+            average_hashrate = %summary.average_hashrate,
             "Stratum miner stopped"
         );
 
         Ok(())
+    }
+
+    /// Verify that the gateway advertises the KovanicaHash job profile.
+    ///
+    /// Legacy gateways that omit the capability field are accepted with a warning so that
+    /// miners from the built-in-profile release remain compatible.
+    fn verify_subscribe_capability(resp: &Value) -> Result<()> {
+        let Some(result) = resp.get("result").and_then(Value::as_array) else {
+            return Ok(());
+        };
+        let Some(capability) = result.get(3) else {
+            warn!(
+                "gateway did not advertise a Stratum capability; assuming legacy Kovanica profile"
+            );
+            return Ok(());
+        };
+
+        let algorithm = capability
+            .get("algorithm")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let profile = capability
+            .get("profile")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        if algorithm == KOVANICA_STRATUM_ALGORITHM && profile == KOVANICA_STRATUM_CAPABILITY {
+            return Ok(());
+        }
+
+        anyhow::bail!(
+            "Stratum gateway does not support the required {KOVANICA_STRATUM_CAPABILITY} profile (algorithm={algorithm}, profile={profile})"
+        )
     }
 
     /// Convert Stratum difficulty factor into a 256-bit big-endian target array.
@@ -628,5 +865,106 @@ mod tests {
         assert_eq!(&job.preimage[prefix.len()..], &[0u8; 8]);
         assert_eq!(job.ntime, 0x673a5f20);
         assert_eq!(job.network_target, network_target);
+    }
+
+    #[test]
+    fn subscribe_capability_accepts_kovanica_profile() {
+        let resp = json!({
+            "id": 1,
+            "result": [
+                [],
+                "00000001",
+                4,
+                {
+                    "algorithm": "kovanicahash",
+                    "profile": "kovanicahash-v1",
+                    "version": 1
+                }
+            ],
+            "error": null
+        });
+        assert!(StratumMiner::verify_subscribe_capability(&resp).is_ok());
+    }
+
+    #[test]
+    fn subscribe_capability_rejects_incompatible_profile() {
+        let resp = json!({
+            "id": 1,
+            "result": [
+                [],
+                "00000001",
+                4,
+                {
+                    "algorithm": "sha256d",
+                    "profile": "bitcoin-v1",
+                    "version": 1
+                }
+            ],
+            "error": null
+        });
+        assert!(StratumMiner::verify_subscribe_capability(&resp).is_err());
+    }
+
+    #[test]
+    fn subscribe_capability_allows_legacy_gateway() {
+        let resp = json!({
+            "id": 1,
+            "result": [[], "00000001", 4],
+            "error": null
+        });
+        assert!(StratumMiner::verify_subscribe_capability(&resp).is_ok());
+    }
+
+    #[test]
+    fn endpoint_tls_scheme_detection_and_cleaning() {
+        assert!(StratumMiner::endpoint_uses_tls_scheme(
+            "stratum+tls://pool.kovanica.online:3333"
+        ));
+        assert!(StratumMiner::endpoint_uses_tls_scheme(
+            "stratum+ssl://pool.kovanica.online:3333"
+        ));
+        assert!(!StratumMiner::endpoint_uses_tls_scheme(
+            "stratum+tcp://pool.kovanica.online:3333"
+        ));
+        assert!(!StratumMiner::endpoint_uses_tls_scheme("127.0.0.1:3333"));
+
+        assert_eq!(
+            StratumMiner::clean_endpoint("stratum+tls://pool.kovanica.online:3333"),
+            "pool.kovanica.online:3333"
+        );
+        assert_eq!(
+            StratumMiner::clean_endpoint("stratum+ssl://pool.kovanica.online:3333"),
+            "pool.kovanica.online:3333"
+        );
+        assert_eq!(
+            StratumMiner::clean_endpoint("stratum+tcp://127.0.0.1:3333"),
+            "127.0.0.1:3333"
+        );
+    }
+
+    #[test]
+    fn stratum_miner_session_summary_captures_tls_and_share_counters() {
+        let miner = StratumMiner::new(
+            "stratum+tls://pool.kovanica.online:3333".to_string(),
+            "kvnc111111111111111111111111111111111111111111111111111111111dag".to_string(),
+            "rig_tls".to_string(),
+            "x".to_string(),
+            2,
+            4,
+        );
+        miner.stats().total_hashes.store(50_000, Ordering::Relaxed);
+        miner.stats().blocks_found.store(10, Ordering::Relaxed);
+        miner.stats().blocks_accepted.store(9, Ordering::Relaxed);
+        miner.stats().blocks_rejected.store(1, Ordering::Relaxed);
+
+        let summary = miner.session_summary(20.0);
+        assert_eq!(summary.mode, "stratum");
+        assert_eq!(summary.endpoint, "pool.kovanica.online:3333");
+        assert!(summary.tls_enabled);
+        assert_eq!(summary.worker.as_deref(), Some("rig_tls"));
+        assert_eq!(summary.submitted, 10);
+        assert_eq!(summary.accepted, 9);
+        assert_eq!(summary.rejected, 1);
+        assert_eq!(summary.average_hashrate, "2.50 kH/s");
     }
 }

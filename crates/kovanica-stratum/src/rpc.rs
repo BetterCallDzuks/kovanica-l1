@@ -127,11 +127,17 @@ impl WorkTemplate {
 pub struct NodeRpcClient {
     client: reqwest::Client,
     rpc_url: String,
+    rpc_token: Option<String>,
 }
 
 impl NodeRpcClient {
     /// Create a new RPC client for `rpc_url`.
     pub fn new(rpc_url: impl Into<String>) -> Self {
+        Self::with_token(rpc_url, crate::config::resolve_rpc_token_from_env())
+    }
+
+    /// Create a new RPC client for `rpc_url` with an optional bearer token.
+    pub fn with_token(rpc_url: impl Into<String>, rpc_token: Option<String>) -> Self {
         let mut url = rpc_url.into();
         if !url.ends_with("/rpc") && !url.ends_with('/') {
             url = format!("{url}/rpc");
@@ -142,6 +148,7 @@ impl NodeRpcClient {
                 .build()
                 .unwrap_or_default(),
             rpc_url: url,
+            rpc_token: rpc_token.filter(|t| !t.is_empty()),
         }
     }
 
@@ -154,10 +161,12 @@ impl NodeRpcClient {
             "params": params,
         });
 
-        let resp = self
-            .client
-            .post(&self.rpc_url)
-            .json(&req)
+        let mut builder = self.client.post(&self.rpc_url).json(&req);
+        if let Some(ref token) = self.rpc_token {
+            builder = builder.bearer_auth(token);
+        }
+
+        let resp = builder
             .send()
             .await
             .with_context(|| format!("failed to send RPC request to {}", self.rpc_url))?;

@@ -97,16 +97,17 @@ A change to `calculate_next_target_bits`, reward math, header format, or commit 
 | Sekretar | Linear / Notion | Code, merges |
 | Any agent | Read AGENT-RULES + STATE + this plan | Invent new tokenomics or consensus params |
 
-## 7. PR discipline
+## 7. PR discipline (HARD RULE across all 5 repos)
 
+- **Hard rule for all 5 repos (`kovanica-l1`, `kovanica-web`, `kovanica-sdk`, `kovanica-apps`, `kovanica-playground`)**: NEVER commit directly on `main` and NEVER push directly to `origin/main`. Every change MUST land via a Pull Request from a dedicated branch (`feat/*`, `fix/*`, `docs/*`, `chore/*`, `security/*`, `refactor/*`, `test/*`, `ci/*`, `release/*`) targeting `main`.
 - One PR = one intent.
-- Branch from current main (or the SHA Toni names).
+- Branch from current `origin/main` (or the SHA Toni names).
 - No force-push.
 - No self-merge.
-- Cite the SHA you based on.
+- Cite the SHA you based on and exact verification results (typecheck, lint, tests, build).
 - For consensus changes, state the activation plan.
 - Never print secrets, IPs, keystores, or env contents.
-- `main` is protected on kovanica-l1, kovanica-web, kovanica-sdk, kovanica-apps, kovanica-playground. Changes land only via PR. Force-push and branch deletion are blocked.
+- `main` is protected on `kovanica-l1`, `kovanica-web`, `kovanica-sdk`, `kovanica-apps`, and `kovanica-playground`. `.github/workflows/pr-policy.yml` gates PRs targeting `main`. Force-push and branch deletion are blocked.
 
 ## 8. Progress marking (HARD RULE)
 

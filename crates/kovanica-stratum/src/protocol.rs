@@ -102,6 +102,14 @@ impl StratumNotification {
         Self::new("mining.set_difficulty", json!([difficulty]))
     }
 
+    /// Create `mining.set_extranonce` notification for extranonce-subscribed proxies/miners.
+    pub fn set_extranonce(extranonce1: &str, extranonce2_size: usize) -> Self {
+        Self::new(
+            "mining.set_extranonce",
+            json!([extranonce1, extranonce2_size]),
+        )
+    }
+
     /// Create `mining.notify` notification matching the 9-parameter Stratum V1 format.
     #[allow(clippy::too_many_arguments)]
     pub fn notify(
@@ -197,5 +205,19 @@ mod tests {
         assert!(wire.contains(r#""method":"mining.notify""#));
         assert!(wire.contains(r#""job_1""#));
         assert!(wire.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_serialize_set_extranonce_notification() {
+        let notif = StratumNotification::set_extranonce("0000002a", 4);
+        assert_eq!(notif.id, Value::Null);
+        assert_eq!(notif.method, "mining.set_extranonce");
+        assert_eq!(notif.params, json!(["0000002a", 4]));
+
+        let wire = notif.to_wire_line();
+        assert_eq!(
+            wire,
+            "{\"id\":null,\"method\":\"mining.set_extranonce\",\"params\":[\"0000002a\",4]}\n"
+        );
     }
 }

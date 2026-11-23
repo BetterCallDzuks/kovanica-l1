@@ -268,6 +268,13 @@ impl Connection {
     }
 
     fn subscribe(&mut self, params: Option<Value>, is_eth: bool) -> Result<String, RpcError> {
+        const MAX_SUBSCRIPTIONS_PER_CONN: usize = 32;
+        if self.subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONN {
+            return Err(RpcError::InvalidRequest(format!(
+                "maximum active subscriptions per WebSocket connection ({MAX_SUBSCRIPTIONS_PER_CONN}) reached"
+            )));
+        }
+
         let (name, filter_obj) = parse_subscribe_params(params)?;
 
         let kind = SubscriptionKind::parse(&name)
@@ -790,5 +797,29 @@ mod tests {
             json!({"jsonrpc": "2.0", "id": 2, "method": "eth_unsubscribe", "params": ["0x1"]}),
         );
         assert_eq!(response["result"], json!(true));
+    }
+
+    #[test]
+    fn subscribe_enforces_per_connection_cap() {
+        let mut connection = Connection::new(3);
+        for i in 1..=32 {
+            let resp = request(
+                &mut connection,
+                json!({"jsonrpc": "2.0", "id": i, "method": "subscribe", "params": ["newHeads"]}),
+            );
+            assert!(
+                resp["error"].is_null(),
+                "subscription {i} should succeed: {resp}"
+            );
+        }
+        let overflow = request(
+            &mut connection,
+            json!({"jsonrpc": "2.0", "id": 33, "method": "subscribe", "params": ["newHeads"]}),
+        );
+        assert!(
+            !overflow["error"].is_null(),
+            "33rd subscription must be rejected"
+        );
+        assert_eq!(overflow["error"]["code"], json!(-32600));
     }
 }

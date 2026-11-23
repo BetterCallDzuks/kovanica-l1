@@ -5,6 +5,7 @@
 //! preallocated 2 MiB `KovanicaHasher` contexts, computes KovanicaHash PoW solutions,
 //! and submits solved headers via `kovanica_submitWork`.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, RwLock};
 use std::time::{Duration, Instant};
@@ -40,7 +41,8 @@ pub struct MinerRunArgs {
     #[arg(long, default_value = "1000")]
     pub poll_interval_ms: u64,
 
-    /// Optional Stratum V1 TCP endpoint to mine through (e.g. `127.0.0.1:3333` or `stratum+tcp://pool.kovanica.online:3333`).
+    /// Optional Stratum V1 TCP endpoint to mine through (e.g. `127.0.0.1:3333`,
+    /// `stratum+tcp://pool.kovanica.online:3333`, or `stratum+tls://pool.kovanica.online:3333`).
     /// When specified, connects via the Stratum V1 line protocol instead of polling HTTP JSON-RPC.
     #[arg(long)]
     pub stratum: Option<String>,
@@ -52,6 +54,66 @@ pub struct MinerRunArgs {
     /// Password for Stratum authentication.
     #[arg(long, default_value = "x")]
     pub password: String,
+
+    /// Enable TLS for the Stratum pool connection (also enabled automatically for `stratum+tls://` endpoints).
+    #[arg(long, default_value_t = false, requires = "stratum")]
+    pub tls: bool,
+
+    /// Optional SNI / hostname override for Stratum TLS certificate verification.
+    #[arg(long, requires = "stratum")]
+    pub tls_server_name: Option<String>,
+
+    /// Optional PEM CA/server certificate file to trust for Stratum TLS connections.
+    #[arg(long, requires = "stratum")]
+    pub tls_ca_cert: Option<PathBuf>,
+}
+
+impl MinerRunArgs {
+    /// Return `true` if TLS is enabled either explicitly via `--tls` or via the `--stratum` URL scheme.
+    pub fn effective_tls(&self) -> bool {
+        self.tls
+            || self
+                .stratum
+                .as_deref()
+                .is_some_and(crate::stratum_client::StratumMiner::endpoint_uses_tls_scheme)
+    }
+
+    /// Validate Stratum TLS CLI flags before initiating a network connection.
+    pub fn validate_tls(&self) -> Result<()> {
+        let effective_tls = self.effective_tls();
+        if self.stratum.is_none()
+            && (self.tls || self.tls_server_name.is_some() || self.tls_ca_cert.is_some())
+        {
+            anyhow::bail!(
+                "--tls, --tls-server-name, and --tls-ca-cert require --stratum <ENDPOINT>"
+            );
+        }
+        if !effective_tls && (self.tls_server_name.is_some() || self.tls_ca_cert.is_some()) {
+            anyhow::bail!(
+                "--tls-server-name and --tls-ca-cert require --tls (or a stratum+tls:// endpoint)"
+            );
+        }
+        if let Some(ref server_name) = self.tls_server_name {
+            let trimmed = server_name.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!("--tls-server-name must not be empty");
+            }
+            rustls::pki_types::ServerName::try_from(trimmed)
+                .map_err(|e| anyhow::anyhow!("invalid --tls-server-name '{trimmed}': {e}"))?;
+        }
+        if let Some(ref ca_cert) = self.tls_ca_cert {
+            if !ca_cert.exists() {
+                anyhow::bail!("TLS CA certificate file not found: {}", ca_cert.display());
+            }
+            if !ca_cert.is_file() {
+                anyhow::bail!(
+                    "TLS CA certificate path is not a regular file: {}",
+                    ca_cert.display()
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Arguments for `kovanica miner bench`.
@@ -248,6 +310,143 @@ pub fn format_hashrate(hashes: u64, duration_secs: f64) -> String {
     }
 }
 
+/// Structured end-of-session telemetry summary for a CLI mining run (`solo` or `stratum`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MinerSessionSummary {
+    /// Mining execution mode (`"solo"` or `"stratum"`).
+    pub mode: String,
+    /// Upstream JSON-RPC URL (`solo`) or Stratum pool endpoint (`stratum`).
+    pub endpoint: String,
+    /// Canonical payout address used for mining rewards.
+    pub payout_address: String,
+    /// Optional worker identifier (used in `stratum` mode).
+    pub worker: Option<String>,
+    /// Target chain ID.
+    pub chain_id: u64,
+    /// Number of CPU worker threads used.
+    pub threads: usize,
+    /// Whether TLS transport was enabled for the connection.
+    pub tls_enabled: bool,
+    /// Total KovanicaHash evaluations computed during the session.
+    pub total_hashes: u64,
+    /// Total candidate blocks (`solo`) or shares (`stratum`) submitted.
+    pub submitted: u64,
+    /// Total candidate blocks (`solo`) or shares (`stratum`) accepted.
+    pub accepted: u64,
+    /// Total candidate blocks (`solo`) or shares (`stratum`) rejected.
+    pub rejected: u64,
+    /// Elapsed session duration in seconds.
+    pub elapsed_secs: f64,
+    /// Average session hashrate in raw hashes per second (H/s).
+    pub average_hashrate_hps: f64,
+    /// Human-readable formatted average hashrate (e.g. `"12.50 kH/s"`).
+    pub average_hashrate: String,
+}
+
+impl MinerSessionSummary {
+    /// Construct a new [`MinerSessionSummary`] and compute derived average hashrate fields.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        mode: impl Into<String>,
+        endpoint: impl Into<String>,
+        payout_address: impl Into<String>,
+        worker: Option<String>,
+        chain_id: u64,
+        threads: usize,
+        tls_enabled: bool,
+        total_hashes: u64,
+        submitted: u64,
+        accepted: u64,
+        rejected: u64,
+        elapsed_secs: f64,
+    ) -> Self {
+        let safe_elapsed = if elapsed_secs.is_finite() && elapsed_secs > 0.0 {
+            elapsed_secs
+        } else {
+            0.0
+        };
+        let average_hashrate_hps = if safe_elapsed > 0.0 {
+            (total_hashes as f64) / safe_elapsed
+        } else {
+            0.0
+        };
+        let average_hashrate = format_hashrate(total_hashes, safe_elapsed);
+        Self {
+            mode: mode.into(),
+            endpoint: endpoint.into(),
+            payout_address: payout_address.into(),
+            worker,
+            chain_id,
+            threads,
+            tls_enabled,
+            total_hashes,
+            submitted,
+            accepted,
+            rejected,
+            elapsed_secs: safe_elapsed,
+            average_hashrate_hps,
+            average_hashrate,
+        }
+    }
+
+    /// Format this session summary into a human-readable multi-line report.
+    pub fn format_summary(&self) -> String {
+        format_summary(self)
+    }
+}
+
+/// Format a [`MinerSessionSummary`] into a human-readable operator summary banner.
+pub fn format_summary(summary: &MinerSessionSummary) -> String {
+    let is_stratum = summary.mode.eq_ignore_ascii_case("stratum");
+    let title = if is_stratum {
+        "Kovanica Stratum Miner Final Statistics"
+    } else {
+        "Kovanica Solo Miner Final Statistics"
+    };
+    let unit_label = if is_stratum { "Shares" } else { "Blocks" };
+    let submitted_verb = if is_stratum { "Submitted" } else { "Found" };
+
+    let mut out = String::new();
+    out.push_str("============================================================\n");
+    out.push_str(&format!("             {title}           \n"));
+    out.push_str("============================================================\n");
+    out.push_str(&format!(" Mode:             {}\n", summary.mode));
+    out.push_str(&format!(" Endpoint:         {}\n", summary.endpoint));
+    out.push_str(&format!(" TLS Enabled:      {}\n", summary.tls_enabled));
+    out.push_str(&format!(" Chain ID:         {}\n", summary.chain_id));
+    out.push_str(&format!(" Payout Address:   {}\n", summary.payout_address));
+    if let Some(ref worker) = summary.worker {
+        out.push_str(&format!(" Worker Name:      {}\n", worker));
+    }
+    out.push_str(&format!(" Worker Threads:   {}\n", summary.threads));
+    out.push_str(&format!(
+        " Total Duration:   {:.2} s\n",
+        summary.elapsed_secs
+    ));
+    out.push_str(&format!(" Total Hashes:     {}\n", summary.total_hashes));
+    out.push_str(&format!(
+        " Average Hashrate: {}\n",
+        summary.average_hashrate
+    ));
+    out.push_str(&format!(
+        " {:<17} {}\n",
+        format!("{unit_label} {submitted_verb}:"),
+        summary.submitted
+    ));
+    out.push_str(&format!(
+        " {:<17} {}\n",
+        format!("{unit_label} Accepted:"),
+        summary.accepted
+    ));
+    out.push_str(&format!(
+        " {:<17} {}\n",
+        format!("{unit_label} Rejected:"),
+        summary.rejected
+    ));
+    out.push_str("============================================================");
+    out
+}
+
 /// Active work shared with worker threads.
 struct ActiveWork {
     version: u64,
@@ -313,6 +512,24 @@ impl SoloMiner {
     pub fn stop(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
         self.shutdown_notify.notify_waiters();
+    }
+
+    /// Build a structured [`MinerSessionSummary`] snapshot for this solo miner session.
+    pub fn session_summary(&self, elapsed_secs: f64) -> MinerSessionSummary {
+        MinerSessionSummary::new(
+            "solo",
+            self.client.url(),
+            &self.payout_address,
+            None,
+            self.chain_id,
+            self.threads,
+            false,
+            self.stats.total_hashes(),
+            self.stats.blocks_found(),
+            self.stats.blocks_accepted(),
+            self.stats.blocks_rejected(),
+            elapsed_secs,
+        )
     }
 
     /// Run the solo mining loop until Ctrl-C or external shutdown.
@@ -577,21 +794,8 @@ impl SoloMiner {
         }
 
         let total_duration = start_time.elapsed().as_secs_f64();
-        let total_h = self.stats.total_hashes();
-        let avg_rate = format_hashrate(total_h, total_duration);
-
-        println!("\n============================================================");
-        println!("             Kovanica Solo Miner Final Statistics           ");
-        println!("============================================================");
-        println!(" Payout Address:   {}", self.payout_address);
-        println!(" Worker Threads:   {}", self.threads);
-        println!(" Total Duration:   {:.2} s", total_duration);
-        println!(" Total Hashes:     {}", total_h);
-        println!(" Average Hashrate: {}", avg_rate);
-        println!(" Blocks Found:     {}", self.stats.blocks_found());
-        println!(" Blocks Accepted:  {}", self.stats.blocks_accepted());
-        println!(" Blocks Rejected:  {}", self.stats.blocks_rejected());
-        println!("============================================================");
+        let summary = self.session_summary(total_duration);
+        println!("\n{}", summary.format_summary());
 
         Ok(())
     }
@@ -624,7 +828,10 @@ pub async fn run_miner(
             .unwrap_or(1)
     });
 
+    args.validate_tls()?;
+
     if let Some(stratum_endpoint) = &args.stratum {
+        let effective_tls = args.effective_tls();
         let stratum_miner = crate::stratum_client::StratumMiner::new(
             stratum_endpoint.clone(),
             args.address,
@@ -632,7 +839,9 @@ pub async fn run_miner(
             args.password,
             chain_id,
             threads,
-        );
+        )
+        .with_tls(effective_tls, args.tls_server_name)
+        .with_tls_ca_cert(args.tls_ca_cert);
         return stratum_miner.run().await;
     }
 
@@ -1216,5 +1425,189 @@ mod tests {
         assert_eq!(result.thread_hashes.len(), 2);
         let sum: u64 = result.thread_hashes.iter().sum();
         assert_eq!(sum, result.total_hashes);
+    }
+
+    #[test]
+    fn miner_run_args_tls_cli_parsing_and_validation() {
+        use clap::Parser;
+        #[derive(Parser, Debug)]
+        struct RunWrapper {
+            #[command(flatten)]
+            run: MinerRunArgs,
+        }
+
+        let addr = Address([0x44; 32]).encode();
+
+        // --tls without --stratum is rejected by clap
+        assert!(RunWrapper::try_parse_from(["test", "--address", &addr, "--tls"]).is_err());
+
+        // --tls-ca-cert without --stratum is rejected by clap
+        assert!(RunWrapper::try_parse_from([
+            "test",
+            "--address",
+            &addr,
+            "--tls-ca-cert",
+            "ca.pem"
+        ])
+        .is_err());
+
+        // --tls-server-name without --tls (and tcp endpoint) fails validate_tls
+        let parsed = RunWrapper::try_parse_from([
+            "test",
+            "--address",
+            &addr,
+            "--stratum",
+            "127.0.0.1:3333",
+            "--tls-server-name",
+            "pool.kovanica.online",
+        ])
+        .expect("clap parses args");
+        assert!(!parsed.run.effective_tls());
+        assert!(parsed.run.validate_tls().is_err());
+
+        // --stratum with stratum+tls:// automatically enables TLS
+        let parsed_scheme = RunWrapper::try_parse_from([
+            "test",
+            "--address",
+            &addr,
+            "--stratum",
+            "stratum+tls://pool.kovanica.online:3333",
+            "--tls-server-name",
+            "pool.kovanica.online",
+        ])
+        .expect("clap parses stratum+tls");
+        assert!(parsed_scheme.run.effective_tls());
+        assert!(parsed_scheme.run.validate_tls().is_ok());
+
+        // Missing CA cert file fails validate_tls
+        let missing_ca = RunWrapper::try_parse_from([
+            "test",
+            "--address",
+            &addr,
+            "--stratum",
+            "127.0.0.1:3333",
+            "--tls",
+            "--tls-ca-cert",
+            "/nonexistent/path/ca.pem",
+        ])
+        .expect("clap parses missing ca");
+        assert!(missing_ca.run.validate_tls().is_err());
+
+        // Valid --tls + --tls-server-name + existing --tls-ca-cert succeeds
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ca_path = dir.path().join("ca.pem");
+        std::fs::write(&ca_path, b"dummy pem").expect("write ca");
+
+        let valid = RunWrapper::try_parse_from([
+            "test",
+            "--address",
+            &addr,
+            "--stratum",
+            "127.0.0.1:3333",
+            "--tls",
+            "--tls-server-name",
+            "localhost",
+            "--tls-ca-cert",
+            ca_path.to_str().unwrap(),
+        ])
+        .expect("clap parses valid TLS args");
+        assert!(valid.run.tls);
+        assert!(valid.run.effective_tls());
+        assert_eq!(valid.run.tls_server_name.as_deref(), Some("localhost"));
+        assert_eq!(valid.run.tls_ca_cert.as_deref(), Some(ca_path.as_path()));
+        assert!(valid.run.validate_tls().is_ok());
+    }
+
+    #[test]
+    fn miner_session_summary_formats_solo_and_stratum_modes() {
+        let addr = Address([0x55; 32]).encode();
+
+        let solo_summary = MinerSessionSummary::new(
+            "solo",
+            "http://127.0.0.1:8545",
+            &addr,
+            None,
+            chain_id::HYBRID_TESTNET,
+            4,
+            false,
+            25_000,
+            3,
+            2,
+            1,
+            10.0,
+        );
+        assert_eq!(solo_summary.mode, "solo");
+        assert_eq!(solo_summary.endpoint, "http://127.0.0.1:8545");
+        assert!(!solo_summary.tls_enabled);
+        assert_eq!(solo_summary.submitted, 3);
+        assert_eq!(solo_summary.accepted, 2);
+        assert_eq!(solo_summary.rejected, 1);
+        assert!((solo_summary.elapsed_secs - 10.0).abs() < 1e-9);
+        assert!((solo_summary.average_hashrate_hps - 2_500.0).abs() < 1e-6);
+        assert_eq!(solo_summary.average_hashrate, "2.50 kH/s");
+
+        let solo_text = format_summary(&solo_summary);
+        assert!(solo_text.contains("Kovanica Solo Miner Final Statistics"));
+        assert!(solo_text.contains("Mode:             solo"));
+        assert!(solo_text.contains("Endpoint:         http://127.0.0.1:8545"));
+        assert!(solo_text.contains("TLS Enabled:      false"));
+        assert!(solo_text.contains("Total Duration:   10.00 s"));
+        assert!(solo_text.contains("Average Hashrate: 2.50 kH/s"));
+        assert!(solo_text.contains("Blocks Found:     3"));
+        assert!(solo_text.contains("Blocks Accepted:  2"));
+        assert!(solo_text.contains("Blocks Rejected:  1"));
+
+        let stratum_summary = MinerSessionSummary::new(
+            "stratum",
+            "pool.kovanica.online:3333",
+            &addr,
+            Some("rig_01".to_string()),
+            chain_id::HYBRID_TESTNET,
+            8,
+            true,
+            120_000,
+            15,
+            14,
+            1,
+            30.0,
+        );
+        assert_eq!(stratum_summary.mode, "stratum");
+        assert!(stratum_summary.tls_enabled);
+        assert_eq!(stratum_summary.worker.as_deref(), Some("rig_01"));
+        assert_eq!(stratum_summary.average_hashrate, "4.00 kH/s");
+
+        let stratum_text = stratum_summary.format_summary();
+        assert!(stratum_text.contains("Kovanica Stratum Miner Final Statistics"));
+        assert!(stratum_text.contains("Mode:             stratum"));
+        assert!(stratum_text.contains("Endpoint:         pool.kovanica.online:3333"));
+        assert!(stratum_text.contains("TLS Enabled:      true"));
+        assert!(stratum_text.contains("Worker Name:      rig_01"));
+        assert!(stratum_text.contains("Total Duration:   30.00 s"));
+        assert!(stratum_text.contains("Average Hashrate: 4.00 kH/s"));
+        assert!(stratum_text.contains("Shares Submitted: 15"));
+        assert!(stratum_text.contains("Shares Accepted:  14"));
+        assert!(stratum_text.contains("Shares Rejected:  1"));
+    }
+
+    #[test]
+    fn miner_session_summary_handles_zero_or_negative_elapsed_time() {
+        let addr = Address([0x66; 32]).encode();
+        let summary = MinerSessionSummary::new(
+            "solo",
+            "http://127.0.0.1:8545",
+            &addr,
+            None,
+            chain_id::HYBRID_TESTNET,
+            2,
+            false,
+            100,
+            0,
+            0,
+            0,
+            0.0,
+        );
+        assert_eq!(summary.elapsed_secs, 0.0);
+        assert_eq!(summary.average_hashrate_hps, 0.0);
+        assert_eq!(summary.average_hashrate, "0.00 H/s");
     }
 }

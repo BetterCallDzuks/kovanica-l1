@@ -3,7 +3,7 @@
 #![deny(unsafe_code)]
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -44,14 +44,42 @@ pub use health::{ComponentState, HealthSnapshot, NodeHealth};
 pub use openapi::{generate_openapi_spec, write_openapi_json, write_openapi_yaml};
 pub use rpc_methods::*;
 pub use rpc_middleware::{
-    console_cors, console_origin, rate_limit_middleware, AuthConfig, AuthError, RateLimitConfig,
-    RateLimiterState, CONSOLE_ALLOWED_ORIGINS, WRITE_METHODS,
+    console_cors, console_origin, rate_limit_exceeded_response, rate_limit_middleware, AuthConfig,
+    AuthError, RateLimitConfig, RateLimiterState, ResolvedClientIp, CONSOLE_ALLOWED_ORIGINS,
+    WRITE_METHODS,
 };
 
 /// Upper bound on how long one JSON-RPC call may run. A handler stuck on a
 /// lock or a wedged subsystem returns a timeout error instead of holding the
 /// client connection (and a server task) forever.
 pub const RPC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Maximum number of items permitted in a single JSON-RPC 2.0 batch request.
+///
+/// Batches exceeding this limit are rejected fail-closed with `-32600 Invalid
+/// Request` before any item is executed.
+pub const MAX_JSONRPC_BATCH_SIZE: usize = 32;
+
+/// Process-wide JSON-RPC batch telemetry counters (exported on `/metrics`).
+static RPC_BATCH_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_BATCH_ITEMS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_BATCH_REJECTED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Total accepted JSON-RPC 2.0 batch requests.
+pub fn rpc_batch_requests_total() -> u64 {
+    RPC_BATCH_REQUESTS_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Total JSON-RPC 2.0 items processed across accepted batch requests.
+pub fn rpc_batch_items_total() -> u64 {
+    RPC_BATCH_ITEMS_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Total rejected JSON-RPC 2.0 batch requests (empty, oversized, or
+/// rate-limited).
+pub fn rpc_batch_rejected_total() -> u64 {
+    RPC_BATCH_REJECTED_TOTAL.load(Ordering::Relaxed)
+}
 pub use subscriptions::{EventBus, SubscriptionKind};
 
 #[derive(Error, Debug)]
@@ -603,7 +631,9 @@ async fn ws_handler(
     Extension(activity): Extension<ActivityTracker>,
 ) -> Response {
     activity.touch();
-    ws.on_upgrade(move |socket| subscriptions::serve_connection(socket, state))
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| subscriptions::serve_connection(socket, state))
 }
 
 /// Fixed set of JSON-RPC method names the default server registers.
@@ -681,61 +711,176 @@ fn bounded_method_label(method: &str) -> &'static str {
         .unwrap_or("other")
 }
 
-/// Dispatch a single JSON-RPC request and record its latency / outcome.
+/// Dispatch a single JSON-RPC 2.0 request object or bounded batch array and
+/// record latency / outcome metrics.
 ///
-/// A thin metrics wrapper around [`dispatch_rpc`]: it timestamps the call,
-/// records the request (counter + latency histogram) with a bounded method
-/// label, and records an error under the same label whenever the response is a
-/// JSON-RPC error (bad version, unauthorized, unknown method, handler error or
-/// timeout). The metrics are additive and non-consensus.
+/// * Single objects (`{...}`) preserve the exact existing JSON-RPC response
+///   and HTTP status behaviour.
+/// * Batch arrays (`[{...}, ...]`) enforce `1..=MAX_JSONRPC_BATCH_SIZE`,
+///   charge per-item rate-limit tokens so batching cannot bypass per-IP rate
+///   limits, execute items cleanly in order, and return a JSON array of
+///   responses.
+/// * Empty arrays (`[]`) and oversized batches (`> MAX_JSONRPC_BATCH_SIZE`)
+///   are rejected fail-closed with `-32600 Invalid Request` without executing
+///   any items.
 async fn rpc_handler(
     Extension(methods): Extension<Arc<RwLock<HashMap<String, RpcHandler>>>>,
     Extension(auth): Extension<Arc<AuthConfig>>,
+    Extension(rate_limiter): Extension<Arc<RateLimiterState>>,
     Extension(activity): Extension<ActivityTracker>,
+    resolved_ip: Option<Extension<ResolvedClientIp>>,
     headers: HeaderMap,
-    Json(request): Json<JsonRpcRequest>,
+    Json(payload): Json<Value>,
 ) -> Response {
     activity.touch();
-    let method_label = bounded_method_label(&request.method);
-    let started = std::time::Instant::now();
 
-    let (response, failed) = dispatch_rpc(methods, auth, headers, request).await;
+    match payload {
+        Value::Object(_) => {
+            let request: JsonRpcRequest = match serde_json::from_value(payload) {
+                Ok(req) => req,
+                Err(err) => {
+                    observe_rpc_request("other", 0.0);
+                    record_rpc_error("other");
+                    return build_error_response(
+                        None,
+                        RpcError::InvalidRequest(format!("Invalid JSON-RPC request object: {err}")),
+                    );
+                }
+            };
+            let method_label = bounded_method_label(&request.method);
+            let started = std::time::Instant::now();
 
-    observe_rpc_request(method_label, started.elapsed().as_secs_f64());
-    if failed {
-        record_rpc_error(method_label);
+            let (rpc_response, status, failed) =
+                dispatch_rpc_object(&methods, &auth, &headers, request).await;
+
+            observe_rpc_request(method_label, started.elapsed().as_secs_f64());
+            if failed {
+                record_rpc_error(method_label);
+            }
+            (status, Json(rpc_response)).into_response()
+        }
+        Value::Array(items) => {
+            if items.is_empty() {
+                RPC_BATCH_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                observe_rpc_request("other", 0.0);
+                record_rpc_error("other");
+                return build_error_response(
+                    None,
+                    RpcError::InvalidRequest("Empty JSON-RPC batch request".into()),
+                );
+            }
+
+            if items.len() > MAX_JSONRPC_BATCH_SIZE {
+                RPC_BATCH_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                observe_rpc_request("other", 0.0);
+                record_rpc_error("other");
+                return build_error_response(
+                    None,
+                    RpcError::InvalidRequest(format!(
+                        "JSON-RPC batch size {} exceeds maximum of {}",
+                        items.len(),
+                        MAX_JSONRPC_BATCH_SIZE
+                    )),
+                );
+            }
+
+            // `rate_limit_middleware` already charged 1 token for the HTTP
+            // request. Charge the remaining `items.len() - 1` tokens up front
+            // so batching cannot bypass per-IP rate limits.
+            let extra_tokens = (items.len() - 1) as u32;
+            if extra_tokens > 0 {
+                let client_ip = match resolved_ip {
+                    Some(Extension(ResolvedClientIp(ip))) => ip,
+                    None => {
+                        let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+                        rate_limiter.resolve_client_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED), xff)
+                    }
+                };
+                let (allowed, retry_after) = rate_limiter.check_limit_n(client_ip, extra_tokens);
+                if !allowed {
+                    RPC_BATCH_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+                    return rate_limit_exceeded_response(retry_after);
+                }
+            }
+
+            RPC_BATCH_REQUESTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+            RPC_BATCH_ITEMS_TOTAL.fetch_add(items.len() as u64, Ordering::Relaxed);
+
+            let mut responses = Vec::with_capacity(items.len());
+            for item in items {
+                let fallback_id = item.as_object().and_then(|obj| obj.get("id")).cloned();
+                match serde_json::from_value::<JsonRpcRequest>(item) {
+                    Ok(request) => {
+                        let method_label = bounded_method_label(&request.method);
+                        let started = std::time::Instant::now();
+                        let (rpc_response, _status, failed) =
+                            dispatch_rpc_object(&methods, &auth, &headers, request).await;
+                        observe_rpc_request(method_label, started.elapsed().as_secs_f64());
+                        if failed {
+                            record_rpc_error(method_label);
+                        }
+                        responses.push(rpc_response);
+                    }
+                    Err(err) => {
+                        observe_rpc_request("other", 0.0);
+                        record_rpc_error("other");
+                        responses.push(build_error_object(
+                            fallback_id,
+                            RpcError::InvalidRequest(format!(
+                                "Invalid JSON-RPC request object: {err}"
+                            )),
+                        ));
+                    }
+                }
+            }
+
+            (StatusCode::OK, Json(responses)).into_response()
+        }
+        _ => {
+            observe_rpc_request("other", 0.0);
+            record_rpc_error("other");
+            build_error_response(
+                None,
+                RpcError::InvalidRequest(
+                    "JSON-RPC payload must be a request object or batch array".into(),
+                ),
+            )
+        }
     }
-    response
 }
 
-/// The body of [`rpc_handler`]: validate, authorize, look up the handler and
-/// run it under [`RPC_REQUEST_TIMEOUT`]. Returns the response plus whether it
-/// is a JSON-RPC error, so the caller can update the metrics.
-async fn dispatch_rpc(
-    methods: Arc<RwLock<HashMap<String, RpcHandler>>>,
-    auth: Arc<AuthConfig>,
-    headers: HeaderMap,
+/// Validate, authorize, look up the handler and run a single JSON-RPC request
+/// under [`RPC_REQUEST_TIMEOUT`]. Returns the response payload, the HTTP
+/// status code for single-request calls, and whether the response is a
+/// JSON-RPC error.
+async fn dispatch_rpc_object(
+    methods: &Arc<RwLock<HashMap<String, RpcHandler>>>,
+    auth: &AuthConfig,
+    headers: &HeaderMap,
     request: JsonRpcRequest,
-) -> (Response, bool) {
+) -> (JsonRpcResponse, StatusCode, bool) {
     let id = request.id.clone();
 
     // Validate JSON-RPC version
     if request.jsonrpc != "2.0" {
         return (
-            build_error_response(
+            build_error_object(
                 id,
                 RpcError::InvalidRequest("Invalid JSON-RPC version".into()),
             ),
+            StatusCode::OK,
             true,
         );
     }
 
     // Write authorisation is per JSON-RPC method, checked before dispatch.
-    if let Err(e) = auth.authorize(&request.method, &headers) {
+    if let Err(e) = auth.authorize(&request.method, headers) {
         warn!(method = %request.method, error = %e, "unauthorized RPC write");
-        let mut response = build_error_response(id, RpcError::Unauthorized(e.to_string()));
-        *response.status_mut() = StatusCode::UNAUTHORIZED;
-        return (response, true);
+        return (
+            build_error_object(id, RpcError::Unauthorized(e.to_string())),
+            StatusCode::UNAUTHORIZED,
+            true,
+        );
     }
 
     // Get the method handler
@@ -748,7 +893,8 @@ async fn dispatch_rpc(
         Some(h) => h,
         None => {
             return (
-                build_error_response(id, RpcError::MethodNotFound(request.method)),
+                build_error_object(id, RpcError::MethodNotFound(request.method)),
+                StatusCode::OK,
                 true,
             );
         }
@@ -757,12 +903,13 @@ async fn dispatch_rpc(
     // Execute the handler, bounded in time.
     let params = request.params.unwrap_or(Value::Null);
     match tokio::time::timeout(RPC_REQUEST_TIMEOUT, handler(params)).await {
-        Ok(Ok(result)) => (build_success_response(id, result), false),
-        Ok(Err(e)) => (build_error_response(id, e), true),
+        Ok(Ok(result)) => (build_success_object(id, result), StatusCode::OK, false),
+        Ok(Err(e)) => (build_error_object(id, e), StatusCode::OK, true),
         Err(_) => {
             warn!(method = %request.method, "RPC call timed out");
             (
-                build_error_response(id, RpcError::Timeout(RPC_REQUEST_TIMEOUT)),
+                build_error_object(id, RpcError::Timeout(RPC_REQUEST_TIMEOUT)),
+                StatusCode::OK,
                 true,
             )
         }
@@ -797,23 +944,54 @@ async fn health_check(Extension(state): Extension<RpcState>) -> (StatusCode, Jso
     )
 }
 
-/// Prometheus /metrics endpoint (text format).
-async fn metrics_handler() -> (StatusCode, String) {
-    (StatusCode::OK, metrics_text())
+/// Append RPC batch telemetry counters to the Prometheus exposition text,
+/// preserving any trailing `# EOF\n` marker required by OpenMetrics scrapers.
+fn append_rpc_batch_metrics(mut base: String) -> String {
+    let has_eof = base.ends_with("# EOF\n");
+    if has_eof {
+        base.truncate(base.len() - "# EOF\n".len());
+    }
+    if !base.is_empty() && !base.ends_with('\n') {
+        base.push('\n');
+    }
+    use std::fmt::Write as _;
+    let _ = writeln!(
+        base,
+        "# HELP rpc_batch_requests_total Total number of accepted JSON-RPC 2.0 batch requests.\n\
+         # TYPE rpc_batch_requests_total counter\n\
+         rpc_batch_requests_total {}\n\
+         # HELP rpc_batch_items_total Total number of items processed in JSON-RPC 2.0 batch requests.\n\
+         # TYPE rpc_batch_items_total counter\n\
+         rpc_batch_items_total {}\n\
+         # HELP rpc_batch_rejected_total Total number of rejected JSON-RPC 2.0 batch requests.\n\
+         # TYPE rpc_batch_rejected_total counter\n\
+         rpc_batch_rejected_total {}",
+        rpc_batch_requests_total(),
+        rpc_batch_items_total(),
+        rpc_batch_rejected_total(),
+    );
+    if has_eof {
+        base.push_str("# EOF\n");
+    }
+    base
 }
 
-fn build_success_response(id: Option<Value>, result: Value) -> Response {
-    let response = JsonRpcResponse {
+/// Prometheus /metrics endpoint (text format).
+async fn metrics_handler() -> (StatusCode, String) {
+    (StatusCode::OK, append_rpc_batch_metrics(metrics_text()))
+}
+
+fn build_success_object(id: Option<Value>, result: Value) -> JsonRpcResponse {
+    JsonRpcResponse {
         jsonrpc: "2.0".to_string(),
         result: Some(result),
         error: None,
         id,
-    };
-    (StatusCode::OK, Json(response)).into_response()
+    }
 }
 
-fn build_error_response(id: Option<Value>, error: RpcError) -> Response {
-    let response = JsonRpcResponse {
+fn build_error_object(id: Option<Value>, error: RpcError) -> JsonRpcResponse {
+    JsonRpcResponse {
         jsonrpc: "2.0".to_string(),
         result: None,
         error: Some(JsonRpcErrorObject {
@@ -822,8 +1000,11 @@ fn build_error_response(id: Option<Value>, error: RpcError) -> Response {
             data: None,
         }),
         id,
-    };
-    (StatusCode::OK, Json(response)).into_response()
+    }
+}
+
+fn build_error_response(id: Option<Value>, error: RpcError) -> Response {
+    (StatusCode::OK, Json(build_error_object(id, error))).into_response()
 }
 
 async fn shutdown_signal() {
@@ -1410,5 +1591,251 @@ mod tests {
                 bootstrap_addresses: _,
             } = s;
         };
+    }
+
+    async fn call_raw(router: Router, payload: Value, token: Option<&str>) -> (StatusCode, Value) {
+        let mut req = Request::post("/rpc").header("content-type", "application/json");
+        if let Some(token) = token {
+            req = req.header("authorization", format!("Bearer {token}"));
+        }
+        let response = router
+            .oneshot(req.body(Body::from(payload.to_string())).unwrap())
+            .await
+            .expect("router responds");
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, value)
+    }
+
+    #[tokio::test]
+    async fn batch_valid_requests_return_ordered_json_array_and_update_metrics() {
+        let (_dir, server) = server(unlimited(), open_auth()).await;
+
+        let reqs_before = rpc_batch_requests_total();
+        let items_before = rpc_batch_items_total();
+
+        let batch = json!([
+            {"jsonrpc": "2.0", "id": "a", "method": "kovanica_blockNumber", "params": []},
+            {"jsonrpc": "2.0", "id": 2, "method": "kovanica_getDagTips", "params": []},
+            {"jsonrpc": "2.0", "id": 3, "method": "kovanica_blockNumber", "params": []}
+        ]);
+
+        let (status, body) = call_raw(server.router(), batch, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().expect("batch response must be JSON array");
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0]["id"], "a");
+        assert!(arr[0]["error"].is_null(), "{}", arr[0]);
+        assert!(arr[0]["result"].is_string(), "{}", arr[0]);
+        assert_eq!(arr[1]["id"], 2);
+        assert!(arr[1]["error"].is_null(), "{}", arr[1]);
+        assert_eq!(arr[2]["id"], 3);
+        assert!(arr[2]["error"].is_null(), "{}", arr[2]);
+
+        assert!(rpc_batch_requests_total() > reqs_before);
+        assert!(rpc_batch_items_total() >= items_before + 3);
+
+        // Max boundary: exactly MAX_JSONRPC_BATCH_SIZE (32) items succeeds.
+        let max_batch: Vec<Value> = (0..MAX_JSONRPC_BATCH_SIZE)
+            .map(|i| json!({"jsonrpc": "2.0", "id": i, "method": "kovanica_blockNumber", "params": []}))
+            .collect();
+        let (status, body) = call_raw(server.router(), Value::Array(max_batch), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().expect("max-size batch must succeed");
+        assert_eq!(arr.len(), MAX_JSONRPC_BATCH_SIZE);
+        assert_eq!(
+            arr[MAX_JSONRPC_BATCH_SIZE - 1]["id"],
+            MAX_JSONRPC_BATCH_SIZE - 1
+        );
+
+        // /metrics exposes the batch counters cleanly before any # EOF marker.
+        let metrics_resp = server
+            .router()
+            .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(metrics_resp.status(), StatusCode::OK);
+        let metrics_bytes = metrics_resp.into_body().collect().await.unwrap().to_bytes();
+        let metrics_str = String::from_utf8(metrics_bytes.to_vec()).unwrap();
+        assert!(metrics_str.contains("rpc_batch_requests_total "));
+        assert!(metrics_str.contains("rpc_batch_items_total "));
+        assert!(metrics_str.contains("rpc_batch_rejected_total "));
+        if let Some(eof_pos) = metrics_str.find("# EOF") {
+            assert!(
+                metrics_str.find("rpc_batch_requests_total").unwrap() < eof_pos,
+                "batch metrics must appear before # EOF"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_empty_array_is_rejected_with_invalid_request() {
+        let (_dir, server) = server(unlimited(), open_auth()).await;
+        let rejected_before = rpc_batch_rejected_total();
+
+        let (status, body) = call_raw(server.router(), json!([]), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["jsonrpc"], "2.0");
+        assert_eq!(body["error"]["code"], -32600, "{body}");
+        assert!(rpc_batch_rejected_total() > rejected_before);
+    }
+
+    #[tokio::test]
+    async fn batch_exceeding_max_size_is_rejected_fail_closed_without_executing_items() {
+        let (_dir, mut server) = server(unlimited(), open_auth()).await;
+        let executed = Arc::new(AtomicUsize::new(0));
+        let executed_clone = executed.clone();
+        server
+            .register_method("test_count", move |_params| {
+                let executed = executed_clone.clone();
+                async move {
+                    executed.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!("ok"))
+                }
+            })
+            .await;
+
+        let rejected_before = rpc_batch_rejected_total();
+        let oversized: Vec<Value> = (0..=MAX_JSONRPC_BATCH_SIZE)
+            .map(|i| json!({"jsonrpc": "2.0", "id": i, "method": "test_count", "params": []}))
+            .collect();
+        assert_eq!(oversized.len(), MAX_JSONRPC_BATCH_SIZE + 1);
+
+        let (status, body) = call_raw(server.router(), Value::Array(oversized), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["error"]["code"], -32600, "{body}");
+        assert_eq!(
+            executed.load(Ordering::SeqCst),
+            0,
+            "oversized batch must fail closed without executing any item"
+        );
+        assert!(rpc_batch_rejected_total() > rejected_before);
+    }
+
+    #[tokio::test]
+    async fn batch_mixed_valid_and_invalid_items_returns_per_item_responses() {
+        let auth = AuthConfig {
+            write_tokens: vec!["secret-token".into()],
+            require_auth_for_writes: true,
+        };
+        let (_dir, server) = server(unlimited(), auth).await;
+
+        let batch = json!([
+            {"jsonrpc": "2.0", "id": 1, "method": "kovanica_blockNumber", "params": []},
+            {"jsonrpc": "2.0", "id": 2},
+            42,
+            {"jsonrpc": "1.0", "id": 4, "method": "kovanica_blockNumber", "params": []},
+            {"jsonrpc": "2.0", "id": 5, "method": "does_not_exist", "params": []},
+            {"jsonrpc": "2.0", "id": 6, "method": "kovanica_sendRawTransaction", "params": ["0x00"]}
+        ]);
+
+        let (status, body) = call_raw(server.router(), batch, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().expect("mixed batch must return JSON array");
+        assert_eq!(arr.len(), 6);
+
+        // 0: valid read succeeds
+        assert_eq!(arr[0]["id"], 1);
+        assert!(arr[0]["error"].is_null(), "{}", arr[0]);
+        assert!(arr[0]["result"].is_string(), "{}", arr[0]);
+
+        // 1: malformed object (missing method) -> -32600, preserves id
+        assert_eq!(arr[1]["id"], 2);
+        assert_eq!(arr[1]["error"]["code"], -32600, "{}", arr[1]);
+
+        // 2: non-object item -> -32600, id null
+        assert!(arr[2]["id"].is_null(), "{}", arr[2]);
+        assert_eq!(arr[2]["error"]["code"], -32600, "{}", arr[2]);
+
+        // 3: bad jsonrpc version -> -32600
+        assert_eq!(arr[3]["id"], 4);
+        assert_eq!(arr[3]["error"]["code"], -32600, "{}", arr[3]);
+
+        // 4: unknown method -> -32601
+        assert_eq!(arr[4]["id"], 5);
+        assert_eq!(arr[4]["error"]["code"], -32601, "{}", arr[4]);
+
+        // 5: unauthorized write -> -32001 (without failing the rest of the batch)
+        assert_eq!(arr[5]["id"], 6);
+        assert_eq!(arr[5]["error"]["code"], -32001, "{}", arr[5]);
+    }
+
+    #[tokio::test]
+    async fn batch_charges_per_item_rate_limit_tokens_and_fails_closed() {
+        // Part 1: batching cannot bypass per-IP burst capacity (3 + 2 = 5 exhausts burst=5).
+        let rate = RateLimitConfig {
+            requests_per_minute: 60,
+            burst: 5,
+        };
+        let (_dir, server1) = server(rate, open_auth()).await;
+
+        let batch3 = json!([
+            {"jsonrpc": "2.0", "id": 1, "method": "kovanica_blockNumber", "params": []},
+            {"jsonrpc": "2.0", "id": 2, "method": "kovanica_blockNumber", "params": []},
+            {"jsonrpc": "2.0", "id": 3, "method": "kovanica_blockNumber", "params": []}
+        ]);
+        let (status, body) = call_raw(server1.router(), batch3, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 3);
+
+        let batch2 = json!([
+            {"jsonrpc": "2.0", "id": 4, "method": "kovanica_blockNumber", "params": []},
+            {"jsonrpc": "2.0", "id": 5, "method": "kovanica_blockNumber", "params": []}
+        ]);
+        let (status, body) = call_raw(server1.router(), batch2, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 2);
+
+        // Bucket is now exhausted: even a single request must be rate-limited.
+        let (status, _) = call(server1.router(), "kovanica_blockNumber", Value::Null, None).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+        // Part 2: a batch whose size exceeds available tokens fails closed with
+        // HTTP 429 + Retry-After and executes zero items.
+        let rate_small = RateLimitConfig {
+            requests_per_minute: 60,
+            burst: 3,
+        };
+        let (_dir2, mut server2) = server(rate_small, open_auth()).await;
+        let executed = Arc::new(AtomicUsize::new(0));
+        let executed_clone = executed.clone();
+        server2
+            .register_method("test_rl_count", move |_params| {
+                let executed = executed_clone.clone();
+                async move {
+                    executed.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!("ok"))
+                }
+            })
+            .await;
+
+        let rejected_before = rpc_batch_rejected_total();
+        let batch4 = json!([
+            {"jsonrpc": "2.0", "id": 1, "method": "test_rl_count", "params": []},
+            {"jsonrpc": "2.0", "id": 2, "method": "test_rl_count", "params": []},
+            {"jsonrpc": "2.0", "id": 3, "method": "test_rl_count", "params": []},
+            {"jsonrpc": "2.0", "id": 4, "method": "test_rl_count", "params": []}
+        ]);
+        let req = Request::post("/rpc")
+            .header("content-type", "application/json")
+            .body(Body::from(batch4.to_string()))
+            .unwrap();
+        let resp = server2
+            .router()
+            .oneshot(req)
+            .await
+            .expect("router responds");
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            resp.headers().get("retry-after").is_some(),
+            "rate-limited batch response must include Retry-After header"
+        );
+        assert_eq!(
+            executed.load(Ordering::SeqCst),
+            0,
+            "rate-limited batch must not execute partial items"
+        );
+        assert!(rpc_batch_rejected_total() > rejected_before);
     }
 }

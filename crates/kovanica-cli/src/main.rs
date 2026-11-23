@@ -15,6 +15,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
 use kovanica_cli::amount::{format_kuna_fixed, parse_cli_amount};
+use kovanica_cli::contract_inspect::{self, ContractInspectCommand};
 use kovanica_cli::contracts::{
     ContractCommand, HtlcCommand, MultisigCommand, TokenCommand, VaultCommand,
 };
@@ -119,6 +120,11 @@ enum Commands {
     Deploy(DeployArgs),
     /// Call a contract method
     Call(CallArgs),
+    /// Read-only contract call simulation and storage slot inspection
+    Contract {
+        #[command(subcommand)]
+        command: ContractInspectCommand,
+    },
     /// HTLC atomic swaps (KVP-104)
     Htlc {
         #[command(subcommand)]
@@ -533,6 +539,7 @@ async fn main() -> Result<()> {
         Commands::Vote => governance_unavailable("vote", "kovanica_vote", json),
         Commands::Deploy(args) => cmd_deploy(&client, chain_id, args, json).await,
         Commands::Call(args) => cmd_call(&client, chain_id, args, json).await,
+        Commands::Contract { command } => contract_inspect::run(&client, command, json).await,
         Commands::Htlc { command } => {
             contracts::run(&client, chain_id, ContractCommand::Htlc { command }, json).await
         }
@@ -2157,5 +2164,173 @@ mod wallet_cli_security_tests {
             Commands::Peers => {}
             _ => panic!("expected peers alias"),
         }
+    }
+
+    #[test]
+    fn contract_call_and_storage_subcommands_parse_and_validate_conflicts() {
+        let addr = Address([0x55; 32]).encode();
+        let caller = Address([0x66; 32]).encode();
+        let slot = format!("0x{}", "aa".repeat(32));
+
+        // 1. contract call defaults
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "contract",
+            "call",
+            "--contract",
+            &addr,
+            "--method",
+            "balance_of",
+        ])
+        .unwrap();
+        assert_eq!(cli.rpc_url, "http://127.0.0.1:8545");
+        assert!(!cli.json);
+        match cli.command {
+            Commands::Contract {
+                command: ContractInspectCommand::Call(args),
+            } => {
+                assert_eq!(args.contract, addr);
+                assert_eq!(args.method, "balance_of");
+                assert_eq!(args.data, "0x");
+                assert_eq!(args.from, None);
+                assert_eq!(args.value, 0);
+                assert_eq!(args.gas, contract_inspect::DEFAULT_CALL_GAS);
+            }
+            _ => panic!("expected contract call"),
+        }
+
+        // 2. contract call with all custom flags including trailing --rpc-url and --json
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "contract",
+            "call",
+            "--rpc-url",
+            "http://10.0.0.5:8545",
+            "--contract",
+            &addr,
+            "--method",
+            "resolve",
+            "--data",
+            "0xdeadbeef",
+            "--from",
+            &caller,
+            "--value",
+            "123",
+            "--gas",
+            "500000",
+            "--json",
+        ])
+        .unwrap();
+        assert_eq!(cli.rpc_url, "http://10.0.0.5:8545");
+        assert!(cli.json);
+        match cli.command {
+            Commands::Contract {
+                command: ContractInspectCommand::Call(args),
+            } => {
+                assert_eq!(args.contract, addr);
+                assert_eq!(args.method, "resolve");
+                assert_eq!(args.data, "0xdeadbeef");
+                assert_eq!(args.from.as_deref(), Some(caller.as_str()));
+                assert_eq!(args.value, 123);
+                assert_eq!(args.gas, 500_000);
+            }
+            _ => panic!("expected contract call"),
+        }
+
+        // 3. contract storage with --slot
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "contract",
+            "storage",
+            "--contract",
+            &addr,
+            "--slot",
+            &slot,
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Contract {
+                command: ContractInspectCommand::Storage(args),
+            } => {
+                assert_eq!(args.contract, addr);
+                assert_eq!(args.slot.as_deref(), Some(slot.as_str()));
+                assert!(args.prefix.is_none());
+                assert!(args.key.is_none());
+                assert!(args.preset.is_none());
+            }
+            _ => panic!("expected contract storage"),
+        }
+
+        // 4. contract storage with --prefix + --key
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "contract",
+            "storage",
+            "--contract",
+            &addr,
+            "--prefix",
+            "kvnc/v1/name/",
+            "--key",
+            "alice",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Contract {
+                command: ContractInspectCommand::Storage(args),
+            } => {
+                assert_eq!(args.prefix.as_deref(), Some("kvnc/v1/name/"));
+                assert_eq!(args.key.as_deref(), Some("alice"));
+            }
+            _ => panic!("expected contract storage"),
+        }
+
+        // 5. contract storage with --preset
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "contract",
+            "storage",
+            "--contract",
+            &addr,
+            "--preset",
+            "token:meta",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Contract {
+                command: ContractInspectCommand::Storage(args),
+            } => {
+                assert_eq!(args.preset.as_deref(), Some("token:meta"));
+            }
+            _ => panic!("expected contract storage"),
+        }
+
+        // 6. Conflicting flags & missing required flags are rejected
+        assert!(Cli::try_parse_from([
+            "kovanica",
+            "contract",
+            "storage",
+            "--contract",
+            &addr,
+            "--slot",
+            &slot,
+            "--preset",
+            "token:meta",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "kovanica",
+            "contract",
+            "storage",
+            "--contract",
+            &addr,
+            "--prefix",
+            "kvnc/v1/name/",
+        ])
+        .is_err());
+        assert!(
+            Cli::try_parse_from(["kovanica", "contract", "call", "--contract", &addr,]).is_err()
+        );
     }
 }

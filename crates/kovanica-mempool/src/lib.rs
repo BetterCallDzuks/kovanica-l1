@@ -210,7 +210,7 @@ fn immediate_value(kind: &TransactionKind) -> u64 {
         TransactionKind::Delegate { amount, .. } => *amount,
         TransactionKind::ClaimRewards { .. } => 0,
         TransactionKind::Deploy { .. } => 0,
-        TransactionKind::Call { .. } => 0,
+        TransactionKind::Call { value, .. } => *value,
         TransactionKind::RegisterLightNode { stake, .. } => *stake,
         TransactionKind::ExitLightNode => 0,
         TransactionKind::SubmitLightWitness { .. } => 0,

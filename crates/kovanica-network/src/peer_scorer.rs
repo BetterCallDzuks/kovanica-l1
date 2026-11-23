@@ -379,8 +379,10 @@ impl PeerScorer {
         state.remove(ip);
     }
 
-    /// Purge all expired bans across all tracked peers. Returns count of purged bans.
+    /// Purge all expired bans across all tracked peers and evict stale clean records.
+    /// Returns count of purged bans.
     pub fn purge_expired_bans(&self) -> usize {
+        const IDLE_EVICT: Duration = Duration::from_secs(3600);
         let now = Instant::now();
         let mut purged = 0;
         let mut state = self.state.write();
@@ -395,6 +397,11 @@ impl PeerScorer {
                 }
             }
         }
+        state.retain(|_, rep| {
+            rep.banned_until.is_some()
+                || rep.score > 0
+                || now.duration_since(rep.last_seen) < IDLE_EVICT
+        });
         purged
     }
 

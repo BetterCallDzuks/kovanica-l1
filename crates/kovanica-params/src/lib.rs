@@ -164,6 +164,24 @@ pub fn slashing_active_from(round: u64) -> bool {
 pub fn state_commitment_active_from(round: u64) -> bool {
     round >= STATE_COMMITMENT_ACTIVE_FROM_ROUND
 }
+
+/// Chain-scoped full-state commitment activation round.
+///
+/// Mainnet (chain 1) enforces the full-state commitment from genesis (round 0);
+/// public Testnet (chain 2) retains `STATE_COMMITMENT_ACTIVE_FROM_ROUND` (500_000)
+/// so the live seed1 cluster never forks.
+pub const fn state_commitment_active_from_round_for_chain(chain_id: u64) -> u64 {
+    if chain_id == CHAIN_ID_MAINNET {
+        GENESIS_ROUND
+    } else {
+        STATE_COMMITMENT_ACTIVE_FROM_ROUND
+    }
+}
+
+/// Whether `round` enforces the full-state commitment on `chain_id`.
+pub const fn state_commitment_active_from_for_chain(chain_id: u64, round: u64) -> bool {
+    round >= state_commitment_active_from_round_for_chain(chain_id)
+}
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn size_limits_active_from(round: u64) -> bool {
     round >= SIZE_LIMITS_ACTIVE_FROM_ROUND
@@ -205,8 +223,26 @@ mod tests {
         assert!(contract_hardening_active_from(GENESIS_ROUND));
         assert!(slashing_active_from(GENESIS_ROUND));
         assert!(size_limits_active_from(GENESIS_ROUND));
-        // The state-commitment root keeps its separate, finite activation.
+        // The state-commitment root keeps its separate, finite activation on testnet
+        // while mainnet enforces full-state commitment from genesis (round 0).
         assert_eq!(STATE_COMMITMENT_ACTIVE_FROM_ROUND, 500_000);
+        assert_eq!(
+            state_commitment_active_from_round_for_chain(CHAIN_ID_MAINNET),
+            GENESIS_ROUND
+        );
+        assert!(state_commitment_active_from_for_chain(
+            CHAIN_ID_MAINNET,
+            GENESIS_ROUND
+        ));
+        assert_eq!(
+            state_commitment_active_from_round_for_chain(CHAIN_ID_TESTNET),
+            500_000
+        );
+        assert!(!state_commitment_active_from_for_chain(CHAIN_ID_TESTNET, 0));
+        assert!(state_commitment_active_from_for_chain(
+            CHAIN_ID_TESTNET,
+            500_000
+        ));
     }
 
     #[test]

@@ -32,7 +32,7 @@ impl SyncRequest {
 
     /// Deserialize a request received from the wire.
     pub fn decode(payload: &[u8]) -> Result<Self, NetworkError> {
-        Ok(bincode::deserialize(payload)?)
+        Ok(crate::bincode_deserialize_bounded(payload)?)
     }
 
     /// Whether the requested range is well-formed.
