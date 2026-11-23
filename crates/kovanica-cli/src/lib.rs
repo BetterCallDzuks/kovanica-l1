@@ -13,6 +13,7 @@ pub mod node;
 pub mod node_doctor;
 pub mod output;
 pub mod rpc;
+pub mod snapshot_verify;
 pub mod stake;
 pub mod stratum_client;
 pub mod tui;

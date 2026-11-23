@@ -12,8 +12,12 @@ use std::sync::{
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
-    extract::{ws::WebSocketUpgrade, Extension, Json},
-    http::{HeaderMap, StatusCode},
+    extract::{ws::WebSocketUpgrade, Extension, Json, Request},
+    http::{
+        header::{HeaderName, HeaderValue},
+        HeaderMap, StatusCode,
+    },
+    middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
@@ -59,6 +63,15 @@ pub const RPC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// Batches exceeding this limit are rejected fail-closed with `-32600 Invalid
 /// Request` before any item is executed.
 pub const MAX_JSONRPC_BATCH_SIZE: usize = 32;
+
+/// HTTP response header carrying the `kovanica-rpc` crate version.
+pub const RPC_VERSION_HEADER: &str = "x-kovanica-rpc-version";
+/// HTTP response header carrying the node's canonical network tag.
+pub const NETWORK_TAG_HEADER: &str = "x-kovanica-network-tag";
+/// Canonical frozen mainnet network tag (`chain_id = 1`).
+const CANONICAL_MAINNET_NETWORK_TAG: &str = "1-f35df34c92001436";
+/// Canonical frozen testnet network tag (`chain_id = 2`).
+const CANONICAL_TESTNET_NETWORK_TAG: &str = "2-24cdb5fadd98b207";
 
 /// Fixed latency histogram bucket upper bounds (in milliseconds) for JSON-RPC
 /// request handling (`rpc_handler_duration_seconds`).
@@ -428,12 +441,68 @@ impl ActivityTracker {
 }
 
 #[derive(Clone)]
+struct RpcIdentityHeaders {
+    rpc_version: HeaderValue,
+    network_tag: HeaderValue,
+}
+
+/// Resolve the canonical network tag advertised in `X-Kovanica-Network-Tag`.
+///
+/// Prefers the live `sync_status` source (populated from the node's startup
+/// `NetworkId::tag()`), falling back to `SigningContext` (`<chain_id>-<16 hex>`
+/// or the frozen mainnet/testnet tags when `genesis_hash` is zero).
+pub fn resolve_network_tag(state: &RpcState) -> String {
+    if let Some(source) = &state.sync_status {
+        if let Some(tag) = source().network_tag {
+            let trimmed = tag.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    let ctx = state.mempool.signing_context();
+    if ctx.genesis_hash != kovanica_types::Hash::zero() {
+        return format!("{}-{}", ctx.chain_id, hex::encode(&ctx.genesis_hash.0[..8]));
+    }
+    match ctx.chain_id {
+        kovanica_types::signing::chain_id::MAINNET => CANONICAL_MAINNET_NETWORK_TAG.to_string(),
+        kovanica_types::signing::chain_id::TESTNET => CANONICAL_TESTNET_NETWORK_TAG.to_string(),
+        other => format!("{other}-{}", hex::encode(&ctx.genesis_hash.0[..8])),
+    }
+}
+
+/// Attach `X-Kovanica-Rpc-Version` and `X-Kovanica-Network-Tag` to `/rpc` and
+/// `/health` responses so clients can verify server version and network
+/// identity without an extra roundtrip.
+async fn attach_identity_headers(
+    Extension(identity): Extension<RpcIdentityHeaders>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let apply = matches!(request.uri().path(), "/rpc" | "/health");
+    let mut response = next.run(request).await;
+    if apply {
+        let headers = response.headers_mut();
+        headers.insert(
+            HeaderName::from_static(RPC_VERSION_HEADER),
+            identity.rpc_version,
+        );
+        headers.insert(
+            HeaderName::from_static(NETWORK_TAG_HEADER),
+            identity.network_tag,
+        );
+    }
+    response
+}
+
+#[derive(Clone)]
 pub struct RpcServer {
     methods: Arc<RwLock<HashMap<String, RpcHandler>>>,
     addr: SocketAddr,
     state: RpcState,
     activity: ActivityTracker,
     ws_limiter: Arc<WsConnectionLimiter>,
+    identity_headers: RpcIdentityHeaders,
 }
 
 impl RpcServer {
@@ -451,6 +520,13 @@ impl RpcServer {
             auth_config,
             ..state
         };
+        let resolved_tag = resolve_network_tag(&state);
+        let network_tag = HeaderValue::from_str(&resolved_tag)
+            .unwrap_or_else(|_| HeaderValue::from_static("unknown"));
+        let identity_headers = RpcIdentityHeaders {
+            rpc_version: HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
+            network_tag,
+        };
 
         let mut server = Self {
             methods: Arc::new(RwLock::new(HashMap::new())),
@@ -458,6 +534,7 @@ impl RpcServer {
             state,
             activity: ActivityTracker::new(),
             ws_limiter: Arc::new(WsConnectionLimiter::default()),
+            identity_headers,
         };
         server.register_default_methods().await;
         server
@@ -660,6 +737,8 @@ impl RpcServer {
             .merge(limited)
             .route("/health", get(health_check))
             .route("/metrics", get(metrics_handler))
+            .layer(axum::middleware::from_fn(attach_identity_headers))
+            .layer(Extension(self.identity_headers.clone()))
             .layer(Extension(self.methods.clone()))
             .layer(Extension(self.state.rate_limiter.clone()))
             .layer(Extension(self.state.auth_config.clone()))
@@ -1182,7 +1261,16 @@ fn append_rpc_metrics(mut base: String) -> String {
          rpc_ws_rejected_connections_total {}\n\
          # HELP rpc_ws_lagged_messages_total Total number of WebSocket broadcast notifications dropped due to slow consumers.\n\
          # TYPE rpc_ws_lagged_messages_total counter\n\
-         rpc_ws_lagged_messages_total {}",
+         rpc_ws_lagged_messages_total {}\n\
+         # HELP rpc_get_logs_blocks_scanned_total Total number of blocks scanned across kovanica_getLogs calls.\n\
+         # TYPE rpc_get_logs_blocks_scanned_total counter\n\
+         rpc_get_logs_blocks_scanned_total {}\n\
+         # HELP rpc_get_logs_results_total Total number of log entries returned by kovanica_getLogs calls.\n\
+         # TYPE rpc_get_logs_results_total counter\n\
+         rpc_get_logs_results_total {}\n\
+         # HELP rpc_get_logs_truncated_total Total number of kovanica_getLogs calls rejected or truncated for exceeding range, result, or scan limits.\n\
+         # TYPE rpc_get_logs_truncated_total counter\n\
+         rpc_get_logs_truncated_total {}",
         latency.count,
         latency.sum_secs,
         latency.count,
@@ -1194,6 +1282,9 @@ fn append_rpc_metrics(mut base: String) -> String {
         rpc_ws_active_connections(),
         rpc_ws_rejected_connections_total(),
         rpc_ws_lagged_messages_total(),
+        rpc_get_logs_blocks_scanned_total(),
+        rpc_get_logs_results_total(),
+        rpc_get_logs_truncated_total(),
     );
     if has_eof {
         base.push_str("# EOF\n");
@@ -2172,5 +2263,195 @@ mod tests {
                 "rpc_slow_requests_total must appear before # EOF"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn get_logs_telemetry_counters_increment_and_export_without_duplicate_types() {
+        let (_dir, server) = server(unlimited(), open_auth()).await;
+
+        let scanned_before = rpc_get_logs_blocks_scanned_total();
+        let results_before = rpc_get_logs_results_total();
+        let truncated_before = rpc_get_logs_truncated_total();
+
+        // Valid range scan (0x0..=0x2 => 3 blocks scanned, 0 matching logs).
+        let (status, body) = call(
+            server.router(),
+            "kovanica_getLogs",
+            json!([{ "fromBlock": "0x0", "toBlock": "0x2" }]),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["error"].is_null(), "{body}");
+        assert_eq!(body["result"], json!([]));
+
+        // Oversized range (> MAX_GET_LOGS_BLOCK_RANGE) increments truncated counter.
+        let (status, body) = call(
+            server.router(),
+            "kovanica_getLogs",
+            json!([{
+                "fromBlock": "0x0",
+                "toBlock": format!("0x{:x}", MAX_GET_LOGS_BLOCK_RANGE)
+            }]),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body["error"].is_null(), "expected invalid params error");
+
+        assert!(
+            rpc_get_logs_blocks_scanned_total() >= scanned_before + 3,
+            "blocks scanned counter must advance by at least 3"
+        );
+        assert!(
+            rpc_get_logs_results_total() >= results_before,
+            "results counter must be monotonic"
+        );
+        assert!(
+            rpc_get_logs_truncated_total() > truncated_before,
+            "truncated counter must advance on oversized range rejection"
+        );
+
+        let metrics_resp = server
+            .router()
+            .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(metrics_resp.status(), StatusCode::OK);
+        let metrics_bytes = metrics_resp.into_body().collect().await.unwrap().to_bytes();
+        let metrics_str = String::from_utf8(metrics_bytes.to_vec()).unwrap();
+
+        for metric in [
+            "rpc_get_logs_blocks_scanned_total",
+            "rpc_get_logs_results_total",
+            "rpc_get_logs_truncated_total",
+        ] {
+            let type_line = format!("# TYPE {metric} counter");
+            assert_eq!(
+                metrics_str.matches(&type_line).count(),
+                1,
+                "expected exactly one `{type_line}` in /metrics"
+            );
+            assert!(
+                metrics_str.contains(&format!("\n{metric} ")),
+                "expected sample line for `{metric}` in /metrics"
+            );
+            if let Some(eof_pos) = metrics_str.find("# EOF") {
+                assert!(
+                    metrics_str.find(&type_line).unwrap() < eof_pos,
+                    "`{metric}` must appear before # EOF"
+                );
+            }
+        }
+
+        // Verify no duplicate `# TYPE <name>` exists anywhere in `/metrics`.
+        let mut seen_types = std::collections::HashSet::new();
+        for line in metrics_str.lines() {
+            if let Some(rest) = line.strip_prefix("# TYPE ") {
+                if let Some(name) = rest.split_whitespace().next() {
+                    assert!(
+                        seen_types.insert(name.to_string()),
+                        "duplicate # TYPE declaration for metric `{name}`"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_and_health_responses_include_version_and_network_tag_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rpc_state = state(&dir, unlimited(), open_auth());
+        rpc_state.sync_status = Some(Arc::new(|| SyncStatus {
+            network_tag: Some("2-24cdb5fadd98b207".to_string()),
+            ..SyncStatus::default()
+        }));
+        let srv = RpcServer::new(
+            "127.0.0.1:0".parse().unwrap(),
+            rpc_state,
+            Some(unlimited()),
+            Some(open_auth()),
+        )
+        .await;
+
+        // `/rpc` response carries both headers.
+        let rpc_req = Request::post("/rpc")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "kovanica_blockNumber",
+                    "params": [],
+                    "id": 1
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let rpc_resp = srv.router().oneshot(rpc_req).await.unwrap();
+        assert_eq!(rpc_resp.status(), StatusCode::OK);
+        assert_eq!(
+            rpc_resp
+                .headers()
+                .get("X-Kovanica-Rpc-Version")
+                .and_then(|v| v.to_str().ok()),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            rpc_resp
+                .headers()
+                .get("X-Kovanica-Network-Tag")
+                .and_then(|v| v.to_str().ok()),
+            Some("2-24cdb5fadd98b207")
+        );
+
+        // `/health` response carries both headers (both healthy 200 and degraded 503).
+        let health_resp = srv
+            .router()
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(health_resp.status(), StatusCode::OK);
+        assert_eq!(
+            health_resp
+                .headers()
+                .get("X-Kovanica-Rpc-Version")
+                .and_then(|v| v.to_str().ok()),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            health_resp
+                .headers()
+                .get("X-Kovanica-Network-Tag")
+                .and_then(|v| v.to_str().ok()),
+            Some("2-24cdb5fadd98b207")
+        );
+
+        // Without sync_status, fallback resolves canonical mainnet/testnet tags cleanly.
+        let dir2 = tempfile::tempdir().unwrap();
+        let fallback_state = state(&dir2, unlimited(), open_auth());
+        let expected_fallback = resolve_network_tag(&fallback_state);
+        assert!(
+            !expected_fallback.is_empty(),
+            "fallback network tag must be non-empty"
+        );
+        let fallback_srv = RpcServer::new(
+            "127.0.0.1:0".parse().unwrap(),
+            fallback_state,
+            Some(unlimited()),
+            Some(open_auth()),
+        )
+        .await;
+        let fallback_health = fallback_srv
+            .router()
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            fallback_health
+                .headers()
+                .get("X-Kovanica-Network-Tag")
+                .and_then(|v| v.to_str().ok()),
+            Some(expected_fallback.as_str())
+        );
     }
 }

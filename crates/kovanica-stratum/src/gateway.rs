@@ -680,8 +680,9 @@ fn difficulty_bucket_label(difficulty: f64) -> &'static str {
 /// Metrics for the Stratum gateway.
 #[derive(Clone)]
 pub struct GatewayMetrics {
-    // Connection metrics
+    // Connection & worker metrics
     pub active_connections: Gauge,
+    pub active_workers: Gauge,
     pub connections_per_ip: Family<IpLabel, Gauge>,
     pub connection_rate_limit_hits: Counter,
     pub connection_rejected_max: Counter,
@@ -703,6 +704,7 @@ pub struct GatewayMetrics {
 
     // VarDiff & active worker difficulty metrics
     pub vardiff_retargets: Counter,
+    pub vardiff_adjustments: Counter,
     pub vardiff_retargets_by_direction: Family<RetargetDirectionLabel, Counter>,
     pub worker_difficulty_min: Gauge<f64, AtomicU64>,
     pub worker_difficulty_max: Gauge<f64, AtomicU64>,
@@ -717,6 +719,7 @@ pub struct GatewayMetrics {
     pub pings: Counter,
     pub idle_evictions: Counter,
     pub graceful_drains: Counter,
+    pub graceful_drain_active: Gauge,
 
     // RPC metrics
     pub rpc_getwork_latency: Histogram,
@@ -751,12 +754,19 @@ impl GatewayMetrics {
     pub fn new(registry: &mut Registry) -> Self {
         // Note: `prometheus_client` automatically appends `_total` to Counter names.
 
-        // Connection metrics
+        // Connection & worker metrics
         let active_connections = Gauge::default();
         registry.register(
             "stratum_active_connections",
             "Current active miner connections",
             active_connections.clone(),
+        );
+
+        let active_workers = Gauge::default();
+        registry.register(
+            "stratum_active_workers",
+            "Current number of active Stratum worker sessions",
+            active_workers.clone(),
         );
 
         let connections_per_ip = Family::<IpLabel, Gauge>::default();
@@ -885,6 +895,13 @@ impl GatewayMetrics {
             vardiff_retargets.clone(),
         );
 
+        let vardiff_adjustments = Counter::default();
+        registry.register(
+            "stratum_vardiff_adjustments",
+            "Total per-worker VarDiff difficulty adjustments",
+            vardiff_adjustments.clone(),
+        );
+
         let vardiff_retargets_by_direction = Family::<RetargetDirectionLabel, Counter>::default();
         for direction in ["up", "down"] {
             let _ =
@@ -959,6 +976,13 @@ impl GatewayMetrics {
             "stratum_graceful_drains",
             "Total graceful drain operations initiated",
             graceful_drains.clone(),
+        );
+
+        let graceful_drain_active = Gauge::default();
+        registry.register(
+            "stratum_graceful_drain_active",
+            "Whether the Stratum gateway is currently in graceful drain mode (1 = draining, 0 = normal)",
+            graceful_drain_active.clone(),
         );
 
         // RPC metrics
@@ -1072,6 +1096,7 @@ impl GatewayMetrics {
 
         Self {
             active_connections,
+            active_workers,
             connections_per_ip,
             connection_rate_limit_hits,
             connection_rejected_max,
@@ -1089,6 +1114,7 @@ impl GatewayMetrics {
             shares_rejected_by_reason,
             shares_by_difficulty_bucket,
             vardiff_retargets,
+            vardiff_adjustments,
             vardiff_retargets_by_direction,
             worker_difficulty_min,
             worker_difficulty_max,
@@ -1099,6 +1125,7 @@ impl GatewayMetrics {
             pings,
             idle_evictions,
             graceful_drains,
+            graceful_drain_active,
             rpc_getwork_latency,
             rpc_submitwork_latency,
             rpc_getwork_errors,
@@ -1167,6 +1194,7 @@ impl GatewayMetrics {
     /// Record a VarDiff retarget event across aggregate and directional counters.
     pub fn record_vardiff_retarget(&self, old_diff: f64, new_diff: f64) {
         self.vardiff_retargets.inc();
+        self.vardiff_adjustments.inc();
         let direction = if new_diff >= old_diff { "up" } else { "down" };
         self.vardiff_retargets_by_direction
             .get_or_create(&RetargetDirectionLabel { direction })
@@ -1386,6 +1414,9 @@ impl StratumGateway {
                             .set(gw.start_time.elapsed().as_secs() as i64);
                         gw.refresh_difficulty_metrics();
                         gw.metrics
+                            .graceful_drain_active
+                            .set(i64::from(gw.is_draining()));
+                        gw.metrics
                             .banned_ips_active
                             .set(gw.ip_ban_scorer.cleanup() as i64);
                         let mut buffer = String::new();
@@ -1497,6 +1528,7 @@ impl StratumGateway {
     ) -> usize {
         self.draining.store(true, Ordering::SeqCst);
         self.metrics.graceful_drains.inc();
+        self.metrics.graceful_drain_active.set(1);
 
         let notif =
             StratumNotification::client_reconnect(reconnect_host, reconnect_port, wait_time_secs);
@@ -1607,6 +1639,7 @@ impl StratumGateway {
         metrics: &GatewayMetrics,
     ) {
         let sessions = active_sessions.read();
+        metrics.active_workers.set(sessions.len() as i64);
         if sessions.is_empty() {
             metrics.set_worker_difficulty_stats(0.0, 0.0, 0.0);
             return;
@@ -2216,6 +2249,7 @@ impl StratumGateway {
                     active_sessions.write().remove(&session.session_id);
                     active_subscribers.write().remove(&session.session_id);
                     session_registry.remove_session(&session.session_id);
+                    Self::refresh_difficulty_metrics_from(&active_sessions, &metrics);
                     if session.mark_evicted() {
                         metrics.idle_evictions.inc();
                         info!(
@@ -3043,6 +3077,7 @@ mod tests {
         let metrics = GatewayMetrics::new(&mut registry);
 
         metrics.active_connections.set(3);
+        metrics.active_workers.set(2);
         metrics
             .connections_per_ip
             .get_or_create(&IpLabel {
@@ -3064,6 +3099,7 @@ mod tests {
         metrics.pings.inc();
         metrics.idle_evictions.inc();
         metrics.graceful_drains.inc();
+        metrics.graceful_drain_active.set(1);
         metrics
             .shares_by_difficulty_bucket
             .get_or_create(&DifficultyBucketLabel { bucket: "1" })
@@ -3082,6 +3118,7 @@ mod tests {
         encode(&mut encoded, &registry).expect("metrics encoding must succeed");
 
         assert!(encoded.contains("stratum_active_connections 3"));
+        assert!(encoded.contains("stratum_active_workers 2"));
         assert!(encoded.contains("stratum_connections_per_ip{ip=\"127.0.0.1\"} 2"));
         assert!(encoded.contains("stratum_shares_submitted_total 1"));
         assert!(encoded.contains("stratum_shares_accepted_total 1"));
@@ -3096,6 +3133,7 @@ mod tests {
             encoded.contains("stratum_shares_rejected_by_reason_total{reason=\"unauthorized\"} 0")
         );
         assert!(encoded.contains("stratum_vardiff_retargets_total 2"));
+        assert!(encoded.contains("stratum_vardiff_adjustments_total 2"));
         assert!(
             encoded.contains("stratum_vardiff_retargets_by_direction_total{direction=\"up\"} 1")
         );
@@ -3113,6 +3151,7 @@ mod tests {
         assert!(encoded.contains("stratum_pings_total 1"));
         assert!(encoded.contains("stratum_idle_evictions_total 1"));
         assert!(encoded.contains("stratum_graceful_drains_total 1"));
+        assert!(encoded.contains("stratum_graceful_drain_active 1"));
         assert!(encoded.contains("stratum_shares_by_difficulty_bucket_total{bucket=\"1\"} 1"));
         assert!(encoded.contains("stratum_worker_hashrate{worker=\"rig1\"} 4200"));
         assert!(encoded.contains("stratum_rpc_getwork_latency_seconds_count 1"));
@@ -3468,5 +3507,89 @@ mod tests {
         assert_eq!(rx2.try_recv().expect("rx2 reconnect"), expected);
         // Dead subscriber must have been pruned
         assert_eq!(gateway.active_subscribers.read().len(), 2);
+        assert_eq!(gateway.metrics().graceful_drain_active.get(), 1);
+    }
+
+    #[test]
+    fn test_openmetrics_no_duplicate_type_headers_and_transitions() {
+        let gateway = StratumGateway::new(StratumConfig::default()).expect("gateway creation");
+        assert_eq!(gateway.metrics().active_workers.get(), 0);
+        assert_eq!(gateway.metrics().graceful_drain_active.get(), 0);
+        assert_eq!(gateway.metrics().vardiff_adjustments.get(), 0);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let idle_sess = gateway.session_registry().create_session(1.0);
+        idle_sess.touch_activity_at(now.saturating_sub(700));
+        let active_sess = gateway.session_registry().create_session(4.0);
+        active_sess.touch_activity_at(now);
+
+        {
+            let mut active = gateway.active_sessions.write();
+            active.insert(idle_sess.session_id.clone(), Arc::clone(&idle_sess));
+            active.insert(active_sess.session_id.clone(), Arc::clone(&active_sess));
+        }
+        gateway.refresh_difficulty_metrics();
+        assert_eq!(gateway.metrics().active_workers.get(), 2);
+
+        // Evicting idle session transitions stratum_active_workers 2 -> 1
+        assert_eq!(gateway.evict_idle_sessions(600), 1);
+        assert_eq!(gateway.metrics().active_workers.get(), 1);
+
+        // Exercise share acceptance, rejection reasons, VarDiff adjustment, and graceful drain
+        gateway.metrics().shares_submitted.inc_by(5);
+        gateway.metrics().shares_accepted.inc_by(3);
+        gateway
+            .metrics()
+            .record_share_rejected(ShareRejectReason::Stale);
+        gateway
+            .metrics()
+            .record_share_rejected(ShareRejectReason::LowDifficulty);
+        gateway.metrics().record_vardiff_retarget(1.0, 2.0);
+        gateway.metrics().record_vardiff_retarget(2.0, 4.0);
+        gateway.metrics().record_vardiff_retarget(4.0, 2.0);
+        gateway.begin_graceful_drain(None, None, 10);
+
+        assert_eq!(gateway.metrics().shares_accepted.get(), 3);
+        assert_eq!(gateway.metrics().shares_rejected.get(), 2);
+        assert_eq!(gateway.metrics().vardiff_adjustments.get(), 3);
+        assert_eq!(gateway.metrics().vardiff_retargets.get(), 3);
+        assert_eq!(gateway.metrics().graceful_drain_active.get(), 1);
+
+        let mut encoded = String::new();
+        encode(&mut encoded, gateway.metrics_registry())
+            .expect("OpenMetrics encoding must succeed");
+
+        // Verify no duplicate `# TYPE <metric_name>` headers exist in the OpenMetrics payload
+        let mut seen_types = HashSet::new();
+        for line in encoded.lines() {
+            if let Some(rest) = line.strip_prefix("# TYPE ") {
+                let metric_name = rest.split_whitespace().next().unwrap_or("");
+                assert!(
+                    seen_types.insert(metric_name.to_string()),
+                    "duplicate # TYPE header detected for metric '{metric_name}'"
+                );
+            }
+        }
+
+        // Verify required OpenMetrics series and values are present
+        assert!(seen_types.contains("stratum_shares_accepted"));
+        assert!(seen_types.contains("stratum_shares_rejected"));
+        assert!(seen_types.contains("stratum_shares_rejected_by_reason"));
+        assert!(seen_types.contains("stratum_active_workers"));
+        assert!(seen_types.contains("stratum_vardiff_adjustments"));
+        assert!(seen_types.contains("stratum_graceful_drain_active"));
+
+        assert!(encoded.contains("stratum_shares_accepted_total 3"));
+        assert!(encoded.contains("stratum_shares_rejected_total 2"));
+        assert!(encoded.contains("stratum_shares_rejected_by_reason_total{reason=\"stale\"} 1"));
+        assert!(encoded
+            .contains("stratum_shares_rejected_by_reason_total{reason=\"low_difficulty\"} 1"));
+        assert!(encoded.contains("stratum_active_workers 1"));
+        assert!(encoded.contains("stratum_vardiff_adjustments_total 3"));
+        assert!(encoded.contains("stratum_graceful_drain_active 1"));
     }
 }
