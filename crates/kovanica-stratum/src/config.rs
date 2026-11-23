@@ -48,6 +48,8 @@ pub const DEFAULT_BAN_DURATION_SECS: u64 = 900;
 pub const DEFAULT_SESSION_IDLE_TIMEOUT_SECS: u64 = 600;
 /// Maximum allowed worker session idle timeout in seconds (24 hours).
 pub const MAX_SESSION_IDLE_TIMEOUT_SECS: u64 = 86_400;
+/// Default graceful drain timeout (in seconds) before closing remaining worker connections.
+pub const DEFAULT_DRAIN_TIMEOUT_SECS: u64 = 15;
 /// Valid canonical PRO-21 burn address used when the operator does not supply a payout.
 ///
 /// This replaces the previous invalid placeholder, which made `kovanica_getWork` fail on every
@@ -168,6 +170,10 @@ pub struct StratumArgs {
     /// Idle timeout in seconds before evicting an inactive worker session (0 disables idle timeout).
     #[arg(long, default_value_t = DEFAULT_SESSION_IDLE_TIMEOUT_SECS)]
     pub session_idle_timeout_secs: u64,
+
+    /// Graceful drain timeout in seconds before closing remaining worker connections on shutdown.
+    #[arg(long, default_value_t = DEFAULT_DRAIN_TIMEOUT_SECS)]
+    pub drain_timeout_secs: u64,
 }
 
 /// Bounded per-worker Variable Difficulty (VarDiff) settings.
@@ -255,6 +261,8 @@ pub struct StratumConfig {
     pub ban_duration_secs: u64,
     /// Idle timeout in seconds before evicting an inactive worker session (0 disables idle timeout).
     pub session_idle_timeout_secs: u64,
+    /// Graceful drain timeout in seconds before closing remaining worker connections on shutdown.
+    pub drain_timeout_secs: u64,
 }
 
 /// Resolve the bearer token for node write RPC calls from the environment.
@@ -305,6 +313,7 @@ impl Default for StratumConfig {
             ban_threshold_invalid_shares: DEFAULT_BAN_THRESHOLD_INVALID_SHARES,
             ban_duration_secs: DEFAULT_BAN_DURATION_SECS,
             session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
+            drain_timeout_secs: DEFAULT_DRAIN_TIMEOUT_SECS,
         }
     }
 }
@@ -441,6 +450,7 @@ impl From<StratumArgs> for StratumConfig {
             ban_threshold_invalid_shares: args.ban_threshold_invalid_shares,
             ban_duration_secs: args.ban_duration_secs,
             session_idle_timeout_secs: args.session_idle_timeout_secs,
+            drain_timeout_secs: args.drain_timeout_secs,
         }
     }
 }
@@ -733,6 +743,22 @@ mod tests {
                 .expect("valid --session-idle-timeout-secs CLI flag must parse");
         let cfg = StratumConfig::from(parsed);
         assert_eq!(cfg.session_idle_timeout_secs, 120);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn drain_timeout_config_defaults_and_cli_parse() {
+        assert_eq!(DEFAULT_DRAIN_TIMEOUT_SECS, 15);
+
+        let default_cfg = StratumConfig::default();
+        assert_eq!(default_cfg.drain_timeout_secs, DEFAULT_DRAIN_TIMEOUT_SECS);
+        assert!(default_cfg.validate().is_ok());
+
+        let parsed =
+            StratumArgs::try_parse_from(["kovanica-stratum", "--drain-timeout-secs", "45"])
+                .expect("valid --drain-timeout-secs CLI flag must parse");
+        let cfg = StratumConfig::from(parsed);
+        assert_eq!(cfg.drain_timeout_secs, 45);
         assert!(cfg.validate().is_ok());
     }
 }

@@ -10,6 +10,7 @@ pub mod contracts;
 pub mod miner;
 pub mod mining;
 pub mod node;
+pub mod node_doctor;
 pub mod output;
 pub mod rpc;
 pub mod stake;

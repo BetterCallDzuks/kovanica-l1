@@ -2013,3 +2013,137 @@ async fn test_mining_ping_keepalive_and_idle_session_timeout_eviction_e2e() {
 
     gateway.shutdown();
 }
+
+#[tokio::test]
+async fn test_graceful_drain_client_reconnect_health_metrics_and_reject_new_connections_e2e() {
+    let (gateway, stratum_addr) = start_test_gateway(0.0).await;
+
+    // Start observability HTTP server on ephemeral port
+    let obs_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind observability listener");
+    let obs_addr = obs_listener.local_addr().expect("observability local addr");
+    let obs_gateway = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = obs_gateway.serve_observability(obs_listener).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let http = reqwest::Client::new();
+
+    // 1. Verify /health starts as "healthy"
+    let health_before: Value = http
+        .get(format!("http://{obs_addr}/health"))
+        .send()
+        .await
+        .expect("GET /health before drain")
+        .json()
+        .await
+        .expect("parse /health JSON");
+    assert_eq!(health_before["status"], "healthy");
+    assert!(!gateway.is_draining());
+
+    // 2. Connect and subscribe/authorize two workers
+    let mut client1 = TestClient::connect(stratum_addr).await;
+    let mut client2 = TestClient::connect(stratum_addr).await;
+
+    for (idx, client) in [&mut client1, &mut client2].into_iter().enumerate() {
+        client
+            .send_line(
+                &json!({"id": 1, "method": "mining.subscribe", "params": [format!("drain-miner/{idx}")]})
+                    .to_string(),
+            )
+            .await;
+        let sub_resp = client.read_json().await;
+        assert_eq!(sub_resp["id"], 1);
+        assert!(sub_resp["error"].is_null());
+
+        let (_sk, pk) = generate_keypair();
+        let username = format!("{}.drain_rig_{idx}", Address(pk.0).encode());
+        client
+            .send_line(
+                &json!({"id": 2, "method": "mining.authorize", "params": [username, "x"]})
+                    .to_string(),
+            )
+            .await;
+        let auth_resp = client.read_json().await;
+        assert_eq!(auth_resp["id"], 2);
+        assert_eq!(auth_resp["result"], true);
+        let _ = client.read_json().await; // mining.set_difficulty
+    }
+
+    assert_eq!(gateway.metrics().active_connections.get(), 2);
+
+    // 3. Initiate graceful drain with target host, port, and wait time
+    let notified = gateway.begin_graceful_drain(Some("pool2.kovanica.online"), Some(3334), 5);
+    assert_eq!(notified, 2);
+    assert!(gateway.is_draining());
+
+    // 4. Both connected workers must receive the standard Stratum client.reconnect notification
+    for client in [&mut client1, &mut client2] {
+        let notif = client.read_json().await;
+        assert!(notif["id"].is_null());
+        assert_eq!(notif["method"], "client.reconnect");
+        assert_eq!(notif["params"], json!(["pool2.kovanica.online", 3334, 5]));
+    }
+
+    // 5. /health must now report "status": "draining"
+    let health_draining: Value = http
+        .get(format!("http://{obs_addr}/health"))
+        .send()
+        .await
+        .expect("GET /health while draining")
+        .json()
+        .await
+        .expect("parse /health JSON while draining");
+    assert_eq!(health_draining["status"], "draining");
+
+    // 6. /metrics must increment stratum_graceful_drains_total
+    let metrics_body = http
+        .get(format!("http://{obs_addr}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics while draining")
+        .text()
+        .await
+        .expect("read /metrics body");
+    assert!(
+        metrics_body.contains("stratum_graceful_drains_total 1"),
+        "expected stratum_graceful_drains_total 1 in:\n{metrics_body}"
+    );
+
+    // 7. New connections must be rejected cleanly while draining
+    let mut rejected_client = TestClient::connect(stratum_addr).await;
+    let mut eof_buf = String::new();
+    let read_res = timeout(
+        Duration::from_secs(2),
+        rejected_client.reader.read_line(&mut eof_buf),
+    )
+    .await
+    .expect("draining gateway must close rejected connection promptly");
+    assert!(
+        matches!(read_res, Ok(0) | Err(_)),
+        "expected EOF or connection reset for rejected connection during drain, got {read_res:?} ({eof_buf:?})"
+    );
+    assert_eq!(
+        gateway.metrics().active_connections.get(),
+        2,
+        "rejected connection during drain must not increment active_connections"
+    );
+
+    // 8. Existing workers disconnect cleanly
+    drop(client1);
+    drop(client2);
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if gateway.metrics().active_connections.get() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("active_connections must return to 0 after workers disconnect");
+
+    gateway.shutdown();
+}

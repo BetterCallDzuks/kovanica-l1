@@ -60,6 +60,137 @@ pub const RPC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// Request` before any item is executed.
 pub const MAX_JSONRPC_BATCH_SIZE: usize = 32;
 
+/// Fixed latency histogram bucket upper bounds (in milliseconds) for JSON-RPC
+/// request handling (`rpc_handler_duration_seconds`).
+pub const RPC_LATENCY_BUCKETS_MS: [u64; 10] = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
+
+/// Threshold in milliseconds above which a JSON-RPC request is classified as
+/// slow (`rpc_slow_requests_total` + structured `tracing::warn!`).
+pub const SLOW_RPC_THRESHOLD_MS: u64 = 500;
+
+/// Point-in-time snapshot of [`RpcLatencyHistogram`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpcLatencySnapshot {
+    /// Cumulative observation counts for each bound in [`RPC_LATENCY_BUCKETS_MS`].
+    pub buckets: [u64; RPC_LATENCY_BUCKETS_MS.len()],
+    /// Total number of observed requests (`+Inf` bucket and `_count`).
+    pub count: u64,
+    /// Cumulative duration across all observed requests, in seconds (`_sum`).
+    pub sum_secs: f64,
+    /// Total requests whose duration exceeded [`SLOW_RPC_THRESHOLD_MS`].
+    pub slow_total: u64,
+}
+
+/// Lightweight lock-free atomic latency histogram for JSON-RPC requests.
+///
+/// Exported on `/metrics` as `rpc_handler_duration_seconds` (`_bucket`, `_sum`,
+/// `_count`) alongside `rpc_slow_requests_total` so it complements (without
+/// duplicating `# TYPE`) the per-method `rpc_request_duration_seconds` family
+/// registered in `kovanica-consensus`.
+pub struct RpcLatencyHistogram {
+    buckets: [AtomicU64; RPC_LATENCY_BUCKETS_MS.len()],
+    count: AtomicU64,
+    sum_us: AtomicU64,
+    slow_total: AtomicU64,
+}
+
+impl Default for RpcLatencyHistogram {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RpcLatencyHistogram {
+    /// Create a zero-initialized lock-free latency histogram.
+    pub const fn new() -> Self {
+        Self {
+            buckets: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
+            count: AtomicU64::new(0),
+            sum_us: AtomicU64::new(0),
+            slow_total: AtomicU64::new(0),
+        }
+    }
+
+    /// Record a request duration. Returns `true` if the duration exceeded
+    /// [`SLOW_RPC_THRESHOLD_MS`].
+    pub fn observe(&self, duration: std::time::Duration) -> bool {
+        let us = duration.as_micros().min(u64::MAX as u128) as u64;
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.sum_us.fetch_add(us, Ordering::Relaxed);
+        for (idx, &bound_ms) in RPC_LATENCY_BUCKETS_MS.iter().enumerate() {
+            if us <= bound_ms * 1_000 {
+                self.buckets[idx].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        if us > SLOW_RPC_THRESHOLD_MS * 1_000 {
+            self.slow_total.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Take a monotonically consistent snapshot for Prometheus exposition or
+    /// diagnostics.
+    pub fn snapshot(&self) -> RpcLatencySnapshot {
+        let mut buckets = [0u64; RPC_LATENCY_BUCKETS_MS.len()];
+        let mut prev = 0u64;
+        for (idx, slot) in self.buckets.iter().enumerate() {
+            let val = slot.load(Ordering::Relaxed).max(prev);
+            buckets[idx] = val;
+            prev = val;
+        }
+        let count = self.count.load(Ordering::Relaxed).max(prev);
+        let sum_secs = self.sum_us.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        let slow_total = self.slow_total.load(Ordering::Relaxed);
+        RpcLatencySnapshot {
+            buckets,
+            count,
+            sum_secs,
+            slow_total,
+        }
+    }
+}
+
+/// Process-wide lock-free JSON-RPC latency histogram and slow-request counter.
+static RPC_LATENCY_HISTOGRAM: RpcLatencyHistogram = RpcLatencyHistogram::new();
+
+/// Total JSON-RPC requests whose execution exceeded [`SLOW_RPC_THRESHOLD_MS`].
+pub fn rpc_slow_requests_total() -> u64 {
+    RPC_LATENCY_HISTOGRAM.slow_total.load(Ordering::Relaxed)
+}
+
+/// Snapshot of the process-wide JSON-RPC latency histogram.
+pub fn rpc_latency_snapshot() -> RpcLatencySnapshot {
+    RPC_LATENCY_HISTOGRAM.snapshot()
+}
+
+/// Record a JSON-RPC request's duration in both the per-method consensus
+/// metrics and the lock-free RPC latency histogram, logging a structured
+/// warning when the call exceeds [`SLOW_RPC_THRESHOLD_MS`].
+fn record_rpc_latency(method: &'static str, elapsed: std::time::Duration) {
+    observe_rpc_request(method, elapsed.as_secs_f64());
+    if RPC_LATENCY_HISTOGRAM.observe(elapsed) {
+        warn!(
+            method = method,
+            duration_ms = elapsed.as_millis() as u64,
+            threshold_ms = SLOW_RPC_THRESHOLD_MS,
+            "slow JSON-RPC request"
+        );
+    }
+}
+
 /// Process-wide JSON-RPC batch telemetry counters (exported on `/metrics`).
 static RPC_BATCH_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_BATCH_ITEMS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -795,7 +926,7 @@ async fn rpc_handler(
             let request: JsonRpcRequest = match serde_json::from_value(payload) {
                 Ok(req) => req,
                 Err(err) => {
-                    observe_rpc_request("other", 0.0);
+                    record_rpc_latency("other", std::time::Duration::ZERO);
                     record_rpc_error("other");
                     return build_error_response(
                         None,
@@ -809,7 +940,7 @@ async fn rpc_handler(
             let (rpc_response, status, failed) =
                 dispatch_rpc_object(&methods, &auth, &headers, request).await;
 
-            observe_rpc_request(method_label, started.elapsed().as_secs_f64());
+            record_rpc_latency(method_label, started.elapsed());
             if failed {
                 record_rpc_error(method_label);
             }
@@ -818,7 +949,7 @@ async fn rpc_handler(
         Value::Array(items) => {
             if items.is_empty() {
                 RPC_BATCH_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
-                observe_rpc_request("other", 0.0);
+                record_rpc_latency("other", std::time::Duration::ZERO);
                 record_rpc_error("other");
                 return build_error_response(
                     None,
@@ -828,7 +959,7 @@ async fn rpc_handler(
 
             if items.len() > MAX_JSONRPC_BATCH_SIZE {
                 RPC_BATCH_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
-                observe_rpc_request("other", 0.0);
+                record_rpc_latency("other", std::time::Duration::ZERO);
                 record_rpc_error("other");
                 return build_error_response(
                     None,
@@ -871,14 +1002,14 @@ async fn rpc_handler(
                         let started = std::time::Instant::now();
                         let (rpc_response, _status, failed) =
                             dispatch_rpc_object(&methods, &auth, &headers, request).await;
-                        observe_rpc_request(method_label, started.elapsed().as_secs_f64());
+                        record_rpc_latency(method_label, started.elapsed());
                         if failed {
                             record_rpc_error(method_label);
                         }
                         responses.push(rpc_response);
                     }
                     Err(err) => {
-                        observe_rpc_request("other", 0.0);
+                        record_rpc_latency("other", std::time::Duration::ZERO);
                         record_rpc_error("other");
                         responses.push(build_error_object(
                             fallback_id,
@@ -893,7 +1024,7 @@ async fn rpc_handler(
             (StatusCode::OK, Json(responses)).into_response()
         }
         _ => {
-            observe_rpc_request("other", 0.0);
+            record_rpc_latency("other", std::time::Duration::ZERO);
             record_rpc_error("other");
             build_error_response(
                 None,
@@ -1000,9 +1131,9 @@ async fn health_check(Extension(state): Extension<RpcState>) -> (StatusCode, Jso
     )
 }
 
-/// Append RPC batch and WebSocket telemetry counters/gauges to the Prometheus
-/// exposition text, preserving any trailing `# EOF\n` marker required by
-/// OpenMetrics scrapers.
+/// Append RPC latency histogram, slow-RPC, batch, and WebSocket telemetry
+/// metrics to the Prometheus exposition text, preserving any trailing `# EOF\n`
+/// marker required by OpenMetrics scrapers.
 fn append_rpc_metrics(mut base: String) -> String {
     let has_eof = base.ends_with("# EOF\n");
     if has_eof {
@@ -1012,9 +1143,29 @@ fn append_rpc_metrics(mut base: String) -> String {
         base.push('\n');
     }
     use std::fmt::Write as _;
+    let latency = rpc_latency_snapshot();
     let _ = writeln!(
         base,
-        "# HELP rpc_batch_requests_total Total number of accepted JSON-RPC 2.0 batch requests.\n\
+        "# HELP rpc_handler_duration_seconds Aggregate JSON-RPC request handling duration in seconds.\n\
+         # TYPE rpc_handler_duration_seconds histogram"
+    );
+    for (idx, &bound_ms) in RPC_LATENCY_BUCKETS_MS.iter().enumerate() {
+        let le = (bound_ms as f64) / 1000.0;
+        let _ = writeln!(
+            base,
+            "rpc_handler_duration_seconds_bucket{{le=\"{le}\"}} {}",
+            latency.buckets[idx]
+        );
+    }
+    let _ = writeln!(
+        base,
+        "rpc_handler_duration_seconds_bucket{{le=\"+Inf\"}} {}\n\
+         rpc_handler_duration_seconds_sum {:.6}\n\
+         rpc_handler_duration_seconds_count {}\n\
+         # HELP rpc_slow_requests_total Total number of JSON-RPC requests exceeding {}ms.\n\
+         # TYPE rpc_slow_requests_total counter\n\
+         rpc_slow_requests_total {}\n\
+         # HELP rpc_batch_requests_total Total number of accepted JSON-RPC 2.0 batch requests.\n\
          # TYPE rpc_batch_requests_total counter\n\
          rpc_batch_requests_total {}\n\
          # HELP rpc_batch_items_total Total number of items processed in JSON-RPC 2.0 batch requests.\n\
@@ -1032,6 +1183,11 @@ fn append_rpc_metrics(mut base: String) -> String {
          # HELP rpc_ws_lagged_messages_total Total number of WebSocket broadcast notifications dropped due to slow consumers.\n\
          # TYPE rpc_ws_lagged_messages_total counter\n\
          rpc_ws_lagged_messages_total {}",
+        latency.count,
+        latency.sum_secs,
+        latency.count,
+        SLOW_RPC_THRESHOLD_MS,
+        latency.slow_total,
         rpc_batch_requests_total(),
         rpc_batch_items_total(),
         rpc_batch_rejected_total(),
@@ -1906,5 +2062,115 @@ mod tests {
             "rate-limited batch must not execute partial items"
         );
         assert!(rpc_batch_rejected_total() > rejected_before);
+    }
+
+    #[test]
+    fn latency_histogram_records_cumulative_buckets_sum_and_slow_threshold() {
+        let hist = RpcLatencyHistogram::new();
+
+        // 3ms: <= 5ms and all larger buckets, not slow.
+        assert!(!hist.observe(std::time::Duration::from_millis(3)));
+        // 500ms: exactly at SLOW_RPC_THRESHOLD_MS, fits le="0.5", not slow.
+        assert!(!hist.observe(std::time::Duration::from_millis(500)));
+        // 501ms: exceeds SLOW_RPC_THRESHOLD_MS, fits le="1", counted as slow.
+        assert!(hist.observe(std::time::Duration::from_millis(501)));
+        // 6000ms: exceeds all finite buckets (+Inf only), counted as slow.
+        assert!(hist.observe(std::time::Duration::from_millis(6000)));
+
+        let snap = hist.snapshot();
+        assert_eq!(snap.count, 4);
+        assert_eq!(snap.slow_total, 2);
+        assert!(
+            (snap.sum_secs - 7.004).abs() < 1e-6,
+            "sum_secs={}",
+            snap.sum_secs
+        );
+
+        // RPC_LATENCY_BUCKETS_MS = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000]
+        assert_eq!(snap.buckets, [1, 1, 1, 1, 1, 1, 2, 3, 3, 3]);
+    }
+
+    #[tokio::test]
+    async fn rpc_handler_updates_latency_histogram_slow_counter_and_metrics_before_eof() {
+        let (_dir, mut server) = server(unlimited(), open_auth()).await;
+        server
+            .register_method("test_slow_rpc", |_params| async {
+                tokio::time::sleep(std::time::Duration::from_millis(SLOW_RPC_THRESHOLD_MS + 25))
+                    .await;
+                Ok(json!("slow_ok"))
+            })
+            .await;
+
+        let before = rpc_latency_snapshot();
+
+        let (status, body) = call(server.router(), "kovanica_blockNumber", Value::Null, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["error"].is_null(), "{body}");
+
+        let (status, body) = call(server.router(), "test_slow_rpc", Value::Null, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["result"], json!("slow_ok"));
+
+        let after = rpc_latency_snapshot();
+        assert!(
+            after.count >= before.count + 2,
+            "latency histogram count must advance ({} -> {})",
+            before.count,
+            after.count
+        );
+        assert!(
+            after.slow_total > before.slow_total,
+            "slow RPC counter must increment ({} -> {})",
+            before.slow_total,
+            after.slow_total
+        );
+        assert!(
+            after.sum_secs > before.sum_secs + 0.5,
+            "latency sum_secs must reflect slow call ({} -> {})",
+            before.sum_secs,
+            after.sum_secs
+        );
+
+        let metrics_resp = server
+            .router()
+            .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(metrics_resp.status(), StatusCode::OK);
+        let metrics_bytes = metrics_resp.into_body().collect().await.unwrap().to_bytes();
+        let metrics_str = String::from_utf8(metrics_bytes.to_vec()).unwrap();
+
+        assert!(metrics_str.contains("# TYPE rpc_handler_duration_seconds histogram"));
+        assert!(metrics_str.contains("rpc_handler_duration_seconds_bucket{le=\"0.005\"} "));
+        assert!(metrics_str.contains("rpc_handler_duration_seconds_bucket{le=\"0.5\"} "));
+        assert!(metrics_str.contains("rpc_handler_duration_seconds_bucket{le=\"5\"} "));
+        assert!(metrics_str.contains("rpc_handler_duration_seconds_bucket{le=\"+Inf\"} "));
+        assert!(metrics_str.contains("rpc_handler_duration_seconds_sum "));
+        assert!(metrics_str.contains("rpc_handler_duration_seconds_count "));
+        assert!(metrics_str.contains("# TYPE rpc_slow_requests_total counter"));
+        assert!(metrics_str.contains("rpc_slow_requests_total "));
+
+        // Ensure no duplicate `# TYPE rpc_request_duration_seconds` was introduced.
+        assert!(
+            metrics_str
+                .matches("# TYPE rpc_request_duration_seconds ")
+                .count()
+                <= 1,
+            "rpc_request_duration_seconds must not have duplicate # TYPE declarations"
+        );
+
+        if let Some(eof_pos) = metrics_str.find("# EOF") {
+            assert!(
+                metrics_str
+                    .find("rpc_handler_duration_seconds_bucket")
+                    .unwrap()
+                    < eof_pos,
+                "latency histogram must appear before # EOF"
+            );
+            assert!(
+                metrics_str.find("rpc_slow_requests_total").unwrap() < eof_pos,
+                "rpc_slow_requests_total must appear before # EOF"
+            );
+        }
     }
 }

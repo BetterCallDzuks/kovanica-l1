@@ -22,8 +22,8 @@ pub mod rpc;
 pub mod session;
 
 pub use config::{
-    StratumArgs, StratumConfig, VarDiffConfig, DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
-    MAX_SESSION_IDLE_TIMEOUT_SECS,
+    StratumArgs, StratumConfig, VarDiffConfig, DEFAULT_DRAIN_TIMEOUT_SECS,
+    DEFAULT_SESSION_IDLE_TIMEOUT_SECS, MAX_SESSION_IDLE_TIMEOUT_SECS,
 };
 pub use difficulty::{
     check_network_solution, check_share_hash_meets_difficulty, check_share_hash_meets_target,

@@ -716,6 +716,7 @@ pub struct GatewayMetrics {
     pub extranonce_subscriptions: Counter,
     pub pings: Counter,
     pub idle_evictions: Counter,
+    pub graceful_drains: Counter,
 
     // RPC metrics
     pub rpc_getwork_latency: Histogram,
@@ -953,6 +954,13 @@ impl GatewayMetrics {
             idle_evictions.clone(),
         );
 
+        let graceful_drains = Counter::default();
+        registry.register(
+            "stratum_graceful_drains",
+            "Total graceful drain operations initiated",
+            graceful_drains.clone(),
+        );
+
         // RPC metrics
         let rpc_getwork_latency =
             Histogram::new(exponential_buckets(0.001, 2.0, 20).collect::<Vec<f64>>());
@@ -1090,6 +1098,7 @@ impl GatewayMetrics {
             extranonce_subscriptions,
             pings,
             idle_evictions,
+            graceful_drains,
             rpc_getwork_latency,
             rpc_submitwork_latency,
             rpc_getwork_errors,
@@ -1199,6 +1208,7 @@ pub struct StratumGateway {
     /// Active worker sessions keyed by `session_id` for difficulty telemetry aggregation.
     active_sessions: Arc<RwLock<HashMap<String, Arc<WorkerSession>>>>,
     shutdown: Arc<AtomicBool>,
+    draining: Arc<AtomicBool>,
     shutdown_notify: Arc<Notify>,
     tls_acceptor: Option<TlsAcceptor>,
     /// Semaphore for limiting total concurrent connections.
@@ -1248,6 +1258,7 @@ impl StratumGateway {
             active_subscribers: Arc::new(RwLock::new(HashMap::new())),
             active_sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown: Arc::new(AtomicBool::new(false)),
+            draining: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Arc::new(Notify::new()),
             tls_acceptor,
             connection_semaphore: Arc::new(Semaphore::new(max_connections)),
@@ -1411,8 +1422,13 @@ impl StratumGateway {
                         let active_connections = gw.metrics.active_connections.get();
                         let current_job_id =
                             gw.job_manager.get_current_job().map(|j| j.job_id.clone());
+                        let status = if gw.is_draining() {
+                            "draining"
+                        } else {
+                            "healthy"
+                        };
                         let health = json!({
-                            "status": "healthy",
+                            "status": status,
                             "uptime_seconds": uptime,
                             "active_connections": active_connections,
                             "current_job_id": current_job_id,
@@ -1463,6 +1479,60 @@ impl StratumGateway {
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
         self.shutdown_notify.notify_waiters();
+    }
+
+    /// Return whether the gateway is currently in graceful drain mode.
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::SeqCst)
+    }
+
+    /// Enter graceful drain mode, reject new incoming connections, flip `/health` to `"draining"`,
+    /// broadcast a Stratum `client.reconnect` notification to all active subscribed worker sessions,
+    /// increment `stratum_graceful_drains_total`, and return the number of notified sessions.
+    pub fn begin_graceful_drain(
+        &self,
+        reconnect_host: Option<&str>,
+        reconnect_port: Option<u16>,
+        wait_time_secs: u64,
+    ) -> usize {
+        self.draining.store(true, Ordering::SeqCst);
+        self.metrics.graceful_drains.inc();
+
+        let notif =
+            StratumNotification::client_reconnect(reconnect_host, reconnect_port, wait_time_secs);
+        let wire_msg = notif.to_wire_line();
+
+        let mut notified = 0usize;
+        {
+            let mut subscribers = self.active_subscribers.write();
+            let mut dead_sessions = Vec::new();
+            for (session_id, tx) in subscribers.iter() {
+                match tx.try_send(wire_msg.clone()) {
+                    Ok(()) => {
+                        notified += 1;
+                    }
+                    Err(e) => {
+                        debug!(%session_id, %e, "miner channel full or closed during graceful drain");
+                        dead_sessions.push(session_id.clone());
+                    }
+                }
+            }
+            for dead in dead_sessions {
+                subscribers.remove(&dead);
+            }
+        }
+
+        info!(
+            event = "stratum_graceful_drain_started",
+            notified_sessions = notified,
+            reconnect_host = ?reconnect_host,
+            reconnect_port = ?reconnect_port,
+            wait_time_secs,
+            drain_timeout_secs = self.config.drain_timeout_secs,
+            "Stratum gateway entered graceful drain mode and broadcast client.reconnect"
+        );
+
+        notified
     }
 
     /// Sweep expired per-IP connection rate-limiter and ban-scorer entries.
@@ -1782,6 +1852,19 @@ impl StratumGateway {
                     let client_ip = remote_addr.ip();
                     let conn_seq = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
                     let correlation_id = format!("conn-{conn_seq:08x}");
+
+                    // Reject new connections cleanly while in graceful drain mode
+                    if self.is_draining() {
+                        info!(
+                            event = "stratum_access_denied",
+                            reason = "draining",
+                            %correlation_id,
+                            %remote_addr,
+                            "connection rejected: gateway is in graceful drain mode"
+                        );
+                        drop(socket);
+                        continue;
+                    }
 
                     // Reject new connections from actively banned IPs immediately
                     if self.is_ip_banned(&client_ip) {
@@ -2980,6 +3063,7 @@ mod tests {
         metrics.extranonce_subscriptions.inc();
         metrics.pings.inc();
         metrics.idle_evictions.inc();
+        metrics.graceful_drains.inc();
         metrics
             .shares_by_difficulty_bucket
             .get_or_create(&DifficultyBucketLabel { bucket: "1" })
@@ -3028,6 +3112,7 @@ mod tests {
         assert!(encoded.contains("stratum_extranonce_subscriptions_total 1"));
         assert!(encoded.contains("stratum_pings_total 1"));
         assert!(encoded.contains("stratum_idle_evictions_total 1"));
+        assert!(encoded.contains("stratum_graceful_drains_total 1"));
         assert!(encoded.contains("stratum_shares_by_difficulty_bucket_total{bucket=\"1\"} 1"));
         assert!(encoded.contains("stratum_worker_hashrate{worker=\"rig1\"} 4200"));
         assert!(encoded.contains("stratum_rpc_getwork_latency_seconds_count 1"));
@@ -3352,5 +3437,36 @@ mod tests {
         // Calling evict_idle_sessions again does not double-count already-evicted session
         assert_eq!(gateway.evict_idle_sessions(600), 0);
         assert_eq!(gateway.metrics().idle_evictions.get(), 1);
+    }
+
+    #[test]
+    fn test_gateway_begin_graceful_drain_notifies_subscribers_and_updates_metrics() {
+        let gateway = StratumGateway::new(StratumConfig::default()).expect("gateway creation");
+        assert!(!gateway.is_draining());
+        assert_eq!(gateway.metrics().graceful_drains.get(), 0);
+
+        let (tx1, mut rx1) = mpsc::channel::<String>(8);
+        let (tx2, mut rx2) = mpsc::channel::<String>(8);
+        let (tx_dead, rx_dead) = mpsc::channel::<String>(8);
+        drop(rx_dead);
+
+        {
+            let mut subs = gateway.active_subscribers.write();
+            subs.insert("sess_00000001".to_string(), tx1);
+            subs.insert("sess_00000002".to_string(), tx2);
+            subs.insert("sess_00000003".to_string(), tx_dead);
+        }
+
+        let notified = gateway.begin_graceful_drain(Some("pool2.kovanica.online"), Some(3334), 5);
+        assert_eq!(notified, 2);
+        assert!(gateway.is_draining());
+        assert_eq!(gateway.metrics().graceful_drains.get(), 1);
+
+        let expected =
+            "{\"id\":null,\"method\":\"client.reconnect\",\"params\":[\"pool2.kovanica.online\",3334,5]}\n";
+        assert_eq!(rx1.try_recv().expect("rx1 reconnect"), expected);
+        assert_eq!(rx2.try_recv().expect("rx2 reconnect"), expected);
+        // Dead subscriber must have been pruned
+        assert_eq!(gateway.active_subscribers.read().len(), 2);
     }
 }

@@ -1,0 +1,63 @@
+groups:
+  - name: kovanica_rpc_alerts
+    interval: 30s
+    rules:
+      - alert: RpcEndpointDown
+        expr: up{job="kovanica-node"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: kovanica-rpc
+        annotations:
+          summary: "Kovanica RPC endpoint is down ({{ $labels.instance }})"
+          description: "Prometheus cannot scrape the kovanica-node /metrics endpoint on {{ $labels.instance }} for more than 1 minute."
+
+      - alert: RpcSlowP95Latency
+        expr: histogram_quantile(0.95, sum by (le, instance) (rate(rpc_request_duration_seconds_bucket[5m]))) > 0.5 or histogram_quantile(0.95, sum by (le, instance) (rate(rpc_handler_duration_seconds_bucket[5m]))) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-rpc
+        annotations:
+          summary: "High JSON-RPC p95 latency (>500ms over 5m) on {{ $labels.instance }}"
+          description: "JSON-RPC p95 request latency has exceeded 500ms for 5 minutes (current: {{ $value | printf \"%.3f\" }}s). Inspect slow RPC warnings in node logs and per-method rpc_request_duration_seconds_bucket."
+
+      - alert: RpcSlowRequestsSpike
+        expr: sum by (instance) (rate(rpc_slow_requests_total[5m])) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+          service: kovanica-rpc
+        annotations:
+          summary: "Slow JSON-RPC request spike (>500ms) on {{ $labels.instance }}"
+          description: "Slow JSON-RPC requests exceeding 500ms are occurring at {{ $value | printf \"%.2f\" }}/s over the last 5 minutes. Check storage lock contention, heavy queries, or mempool backpressure."
+
+      - alert: RpcBatchRejectionSpike
+        expr: sum by (instance) (rate(rpc_batch_rejected_total[5m])) > 0.5 or ((sum by (instance) (rate(rpc_batch_rejected_total[5m])) / clamp_min(sum by (instance) (rate(rpc_batch_requests_total[5m])) + sum by (instance) (rate(rpc_batch_rejected_total[5m])), 1e-9)) > 0.15 and sum by (instance) (increase(rpc_batch_rejected_total[5m])) > 10)
+        for: 3m
+        labels:
+          severity: warning
+          service: kovanica-rpc
+        annotations:
+          summary: "JSON-RPC batch rejection spike on {{ $labels.instance }}"
+          description: "JSON-RPC batch requests are being rejected (empty, oversized >32, or rate-limited) at an elevated rate (value: {{ $value }}). Inspect client batch sizing and per-IP rate limits."
+
+      - alert: RpcWsConnectionCapRejections
+        expr: sum by (instance) (rate(rpc_ws_rejected_connections_total[5m])) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          service: kovanica-rpc
+        annotations:
+          summary: "WebSocket per-IP connection cap rejections on {{ $labels.instance }}"
+          description: "WebSocket upgrades are being rejected with HTTP 429 due to per-IP connection caps at {{ $value | printf \"%.2f\" }}/s over 5m. Check for reconnect storms or abusive subscribers."
+
+      - alert: RpcWsLaggedMessagesSpike
+        expr: sum by (instance) (rate(rpc_ws_lagged_messages_total[5m])) > 1
+        for: 3m
+        labels:
+          severity: warning
+          service: kovanica-rpc
+        annotations:
+          summary: "WebSocket subscriber lagged message drops on {{ $labels.instance }}"
+          description: "WebSocket broadcast notifications are being dropped for slow consumers at {{ $value | printf \"%.2f\" }}/s over 5m. Inspect client consumption speed or EventBus broadcast load."
