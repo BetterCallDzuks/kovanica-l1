@@ -44,6 +44,42 @@ pub struct IndexerStatus {
     pub event_count: u64,
 }
 
+/// Classify indexer sync lag relative to the node head height.
+///
+/// - `"synced"` when lag <= 2
+/// - `"lagging"` when lag <= 50
+/// - `"stalled"` when lag > 50
+pub fn classify_sync_lag(indexed_height: u64, node_head_height: u64) -> &'static str {
+    let lag = node_head_height.saturating_sub(indexed_height);
+    if lag <= 2 {
+        "synced"
+    } else if lag <= 50 {
+        "lagging"
+    } else {
+        "stalled"
+    }
+}
+
+/// Structured readiness and sync-lag health payload returned by `/health`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerHealth {
+    pub status: String,
+    pub indexed_height: u64,
+    pub node_head_height: u64,
+    pub lag_blocks: u64,
+    pub sync_state: String,
+    pub event_count: u64,
+}
+
+/// Point-in-time snapshot of lock-free indexer telemetry counters and gauges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexerMetricsSnapshot {
+    pub indexed_height: u64,
+    pub node_head_height: u64,
+    pub lag_blocks: u64,
+    pub blocks_processed_total: u64,
+}
+
 /// WS subscription filter.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct WsFilter {

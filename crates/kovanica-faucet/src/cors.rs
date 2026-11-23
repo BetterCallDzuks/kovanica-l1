@@ -61,6 +61,10 @@ fn allow_origin(headers: &mut HeaderMap, origin: &'static str) {
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_static(origin),
     );
+    headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("X-Kovanica-Chain-Id, X-Kovanica-Network-Tag"),
+    );
     headers.insert(header::VARY, HeaderValue::from_static("Origin"));
 }
 
@@ -153,6 +157,13 @@ mod tests {
                 .unwrap(),
             "content-type"
         );
+        assert_eq!(
+            preflight
+                .headers()
+                .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+                .unwrap(),
+            "X-Kovanica-Chain-Id, X-Kovanica-Network-Tag"
+        );
 
         let call = send(Some("http://localhost:5173"), "POST", "/faucet").await;
         assert_eq!(call.status(), StatusCode::OK);
@@ -161,6 +172,12 @@ mod tests {
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .unwrap(),
             "http://localhost:5173"
+        );
+        assert_eq!(
+            call.headers()
+                .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+                .unwrap(),
+            "X-Kovanica-Chain-Id, X-Kovanica-Network-Tag"
         );
         let body = call.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body.as_ref(), b"dispensed");
@@ -183,6 +200,13 @@ mod tests {
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .unwrap(),
             "https://console.kovanica.online"
+        );
+        assert_eq!(
+            health
+                .headers()
+                .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+                .unwrap(),
+            "X-Kovanica-Chain-Id, X-Kovanica-Network-Tag"
         );
     }
 
