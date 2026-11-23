@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
+use kovanica_cli::address_inspect::{self, AddressCommand};
 use kovanica_cli::amount::{format_kuna_fixed, parse_cli_amount};
 use kovanica_cli::contract_inspect::{self, ContractInspectCommand};
 use kovanica_cli::contracts::{
@@ -64,7 +65,7 @@ enum Commands {
     ImportKey(ImportKeyArgs),
     /// Explicitly migrate a legacy v1 keystore to authenticated v2 encryption
     Migrate(MigrateArgs),
-    /// Derive the canonical address + public key from a raw 32-byte hex seed file (offline; never prints the seed)
+    /// Derive an address from a seed file or inspect/validate an existing address offline
     Address(AddressArgs),
     /// Sign a message offline and print the signature as hex
     Sign(SignArgs),
@@ -298,10 +299,14 @@ struct MigrateArgs {
 
 /// Arguments for `kovanica address`.
 #[derive(Args)]
+#[command(args_conflicts_with_subcommands = true)]
 struct AddressArgs {
+    /// Address inspection subcommands (`kovanica address inspect <address>`)
+    #[command(subcommand)]
+    command: Option<AddressCommand>,
     /// File containing a 32-byte hex seed (the seed itself is never printed)
     #[arg(long, value_name = "FILE")]
-    key_file: PathBuf,
+    key_file: Option<PathBuf>,
     /// Allow raw hex seed import (disabled by default for security; enable with caution)
     #[arg(long, default_value_t = false)]
     allow_raw_hex: bool,
@@ -1325,12 +1330,27 @@ fn cmd_migrate(args: MigrateArgs, json_output: bool) -> Result<()> {
     Ok(())
 }
 
-/// `kovanica address --key-file <FILE>` — offline derivation of the canonical
-/// address and public key from a raw 32-byte hex seed. Prints only public
-/// identity material; the seed is never echoed.
+/// `kovanica address --key-file <FILE>` or `kovanica address inspect <ADDRESS>`.
 ///
-/// Security: requires `--allow-raw-hex` flag and key file must have 0600 permissions.
+/// Offline derivation of the canonical address and public key from a raw
+/// 32-byte hex seed (never prints the seed), or offline address inspection.
+///
+/// Security: key-file derivation requires `--allow-raw-hex` and 0600 permissions.
 fn cmd_address(args: AddressArgs, json_output: bool) -> Result<()> {
+    if let Some(command) = args.command {
+        return match command {
+            AddressCommand::Inspect(inspect_args) => {
+                address_inspect::run(inspect_args, json_output)
+            }
+        };
+    }
+
+    let key_file = args.key_file.ok_or_else(|| {
+        anyhow::anyhow!(
+            "either `--key-file <FILE>` or a subcommand (e.g. `kovanica address inspect <ADDRESS>`) is required"
+        )
+    })?;
+
     if !args.allow_raw_hex {
         anyhow::bail!(
             "raw hex seed import is disabled by default for security. \
@@ -1338,10 +1358,10 @@ fn cmd_address(args: AddressArgs, json_output: bool) -> Result<()> {
         );
     }
 
-    wallet::ensure_owner_only(&args.key_file)?;
+    wallet::ensure_owner_only(&key_file)?;
 
-    let raw = std::fs::read_to_string(&args.key_file)
-        .with_context(|| format!("reading key file {}", args.key_file.display()))?;
+    let raw = std::fs::read_to_string(&key_file)
+        .with_context(|| format!("reading key file {}", key_file.display()))?;
     let trimmed = raw.trim();
 
     let is_hd = args.hd || args.account.is_some() || args.index.is_some();
@@ -1622,7 +1642,8 @@ mod wallet_cli_security_tests {
         }
         assert!(cmd_address(
             AddressArgs {
-                key_file: key_path.clone(),
+                command: None,
+                key_file: Some(key_path.clone()),
                 allow_raw_hex: true,
                 hd: false,
                 account: None,
@@ -1634,7 +1655,8 @@ mod wallet_cli_security_tests {
         std::fs::write(&key_path, "00").unwrap();
         assert!(cmd_address(
             AddressArgs {
-                key_file: key_path,
+                command: None,
+                key_file: Some(key_path),
                 allow_raw_hex: true,
                 hd: false,
                 account: None,
@@ -1656,7 +1678,8 @@ mod wallet_cli_security_tests {
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let error = cmd_address(
             AddressArgs {
-                key_file: key_path,
+                command: None,
+                key_file: Some(key_path),
                 allow_raw_hex: true,
                 hd: false,
                 account: None,
@@ -1723,7 +1746,8 @@ mod wallet_cli_security_tests {
         }
 
         let args_hd = AddressArgs {
-            key_file: mnemonic_file.clone(),
+            command: None,
+            key_file: Some(mnemonic_file.clone()),
             allow_raw_hex: true,
             hd: true,
             account: Some(0),
@@ -2543,5 +2567,70 @@ mod wallet_cli_security_tests {
             }
             _ => panic!("expected snapshot verify"),
         }
+    }
+
+    #[test]
+    fn address_inspect_subcommand_parses_and_preserves_key_file_mode() {
+        let addr = Address([0x42; 32]).encode();
+
+        // 1. kovanica address inspect <addr> --json
+        let cli = Cli::try_parse_from(["kovanica", "address", "inspect", &addr, "--json"]).unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Address(AddressArgs {
+                command: Some(AddressCommand::Inspect(args)),
+                key_file: None,
+                ..
+            }) => {
+                assert_eq!(args.address, addr);
+                assert_eq!(args.expected_chain_id, None);
+            }
+            _ => panic!("expected address inspect"),
+        }
+
+        // 2. kovanica address inspect <addr> --expected-chain-id 2 --json
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "address",
+            "inspect",
+            &addr,
+            "--expected-chain-id",
+            "2",
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Address(AddressArgs {
+                command: Some(AddressCommand::Inspect(args)),
+                ..
+            }) => {
+                assert_eq!(args.address, addr);
+                assert_eq!(args.expected_chain_id, Some(2));
+            }
+            _ => panic!("expected address inspect"),
+        }
+
+        // 3. Existing `kovanica address --key-file <FILE> --allow-raw-hex` still parses
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "address",
+            "--key-file",
+            "seed.hex",
+            "--allow-raw-hex",
+        ])
+        .unwrap();
+        assert!(!cli.json);
+        match cli.command {
+            Commands::Address(args) => {
+                assert!(args.command.is_none());
+                assert_eq!(args.key_file, Some(PathBuf::from("seed.hex")));
+                assert!(args.allow_raw_hex);
+            }
+            _ => panic!("expected address key-file mode"),
+        }
+
+        // 4. Missing address argument to `kovanica address inspect` fails
+        assert!(Cli::try_parse_from(["kovanica", "address", "inspect"]).is_err());
     }
 }

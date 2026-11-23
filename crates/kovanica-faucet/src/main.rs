@@ -2,14 +2,19 @@
 //!
 //! Rate-limited faucet that dispenses test KVNC to addresses.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use axum::{
-    extract::{Json, State},
-    http::StatusCode,
-    response::IntoResponse,
+    extract::{Json, Request, State},
+    http::{
+        header::{self, HeaderName, HeaderValue},
+        StatusCode,
+    },
+    middleware::Next,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
@@ -58,6 +63,8 @@ struct FaucetConfig {
     /// Refuse to dispense when the faucet's own balance (in atoms) is below
     /// this. `0` disables the check.
     min_balance_atoms: u64,
+    /// Network tag advertised in `X-Kovanica-Network-Tag` on `/health` and `/faucet`.
+    network_tag: String,
 }
 
 const DEFAULT_MAP_SIZE_CAP: usize = 100_000;
@@ -412,6 +419,55 @@ impl PendingNonce {
     }
 }
 
+/// Lock-free OpenMetrics counters and gauges for the faucet.
+#[derive(Default)]
+struct FaucetMetrics {
+    drips_succeeded_total: AtomicU64,
+    drips_rejected_total: AtomicU64,
+    rate_limited_total: AtomicU64,
+    balance_atoms: AtomicU64,
+}
+
+impl FaucetMetrics {
+    fn inc_succeeded(&self) {
+        self.drips_succeeded_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn inc_rejected(&self) {
+        self.drips_rejected_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn inc_rate_limited(&self) {
+        self.rate_limited_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn set_balance_atoms(&self, atoms: u64) {
+        self.balance_atoms.store(atoms, Ordering::Relaxed);
+    }
+
+    fn render_openmetrics(&self) -> String {
+        let succeeded = self.drips_succeeded_total.load(Ordering::Relaxed);
+        let rejected = self.drips_rejected_total.load(Ordering::Relaxed);
+        let rate_limited = self.rate_limited_total.load(Ordering::Relaxed);
+        let balance_atoms = self.balance_atoms.load(Ordering::Relaxed);
+        format!(
+            "# HELP faucet_drips_succeeded_total Total number of successful faucet drips.\n\
+             # TYPE faucet_drips_succeeded_total counter\n\
+             faucet_drips_succeeded_total {succeeded}\n\
+             # HELP faucet_drips_rejected_total Total number of rejected faucet drip requests.\n\
+             # TYPE faucet_drips_rejected_total counter\n\
+             faucet_drips_rejected_total {rejected}\n\
+             # HELP faucet_rate_limited_total Total number of rate-limited faucet drip requests.\n\
+             # TYPE faucet_rate_limited_total counter\n\
+             faucet_rate_limited_total {rate_limited}\n\
+             # HELP faucet_balance_atoms Last known faucet account balance in atoms.\n\
+             # TYPE faucet_balance_atoms gauge\n\
+             faucet_balance_atoms {balance_atoms}\n\
+             # EOF\n"
+        )
+    }
+}
+
 /// Faucet state
 struct FaucetState {
     config: FaucetConfig,
@@ -420,6 +476,7 @@ struct FaucetState {
     rate_limiter: RateLimiter,
     client: reqwest::Client,
     pending_nonce: Mutex<PendingNonce>,
+    metrics: FaucetMetrics,
 }
 
 /// Request payload
@@ -495,6 +552,11 @@ struct Cli {
     /// `0` (default) disables the low-balance guard.
     #[arg(long, default_value = "0")]
     min_balance_ku: u64,
+    /// Optional explicit network tag advertised in `X-Kovanica-Network-Tag`.
+    /// When omitted, derives the canonical tag for mainnet/testnet or `<chain_id>-0000000000000000`.
+    /// Equivalent to `KOVANICA_FAUCET_NETWORK_TAG`.
+    #[arg(long, env = NETWORK_TAG_ENV)]
+    network_tag: Option<String>,
     /// Node RPC URL
     #[arg(long, default_value = "http://127.0.0.1:8545")]
     rpc_url: String,
@@ -567,6 +629,10 @@ async fn main() -> Result<()> {
 
     info!(faucet_address = %faucet_address, "faucet identity loaded");
 
+    let network_tag = resolve_network_tag(cli.chain_id, cli.network_tag.as_deref());
+    HeaderValue::from_str(&network_tag)
+        .with_context(|| format!("invalid network tag header value `{network_tag}`"))?;
+
     let config = FaucetConfig {
         dispense_amount: cli.dispense_kovanica * 1_000_000_000, // KVNC to atoms
         rate_limit_window: cli.rate_limit_window,
@@ -578,6 +644,7 @@ async fn main() -> Result<()> {
         signing_ctx: kovanica_types::SigningContext::new(cli.chain_id),
         trusted_proxies,
         min_balance_atoms: cli.min_balance_ku * 1_000_000_000, // KVNC to atoms
+        network_tag,
     };
     if config.rpc_token.is_none() {
         warn!(
@@ -599,13 +666,10 @@ async fn main() -> Result<()> {
         rate_limiter: RateLimiter::default(),
         client,
         pending_nonce: Mutex::new(PendingNonce::default()),
+        metrics: FaucetMetrics::default(),
     });
 
-    let app = Router::new()
-        .route("/health", get(health_check))
-        .route("/faucet", post(faucet_handler))
-        .with_state(state)
-        .layer(axum::middleware::from_fn(cors::faucet_cors));
+    let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&cli.listen).await?;
     info!(addr = %cli.listen, "faucet server listening");
@@ -629,6 +693,72 @@ const ADDRESS_RATE_LIMIT_WINDOW_ENV: &str = "KOVANICA_FAUCET_ADDRESS_RATE_LIMIT_
 
 /// Env override for the per-destination-address request cap per window.
 const ADDRESS_MAX_REQUESTS_ENV: &str = "KOVANICA_FAUCET_ADDRESS_MAX_REQUESTS";
+
+/// Env override for the `X-Kovanica-Network-Tag` response header.
+const NETWORK_TAG_ENV: &str = "KOVANICA_FAUCET_NETWORK_TAG";
+
+/// Canonical frozen network tags matching `kovanica-rpc` / `kovanica-cli`.
+const CANONICAL_MAINNET_NETWORK_TAG: &str = "1-f35df34c92001436";
+const CANONICAL_TESTNET_NETWORK_TAG: &str = "2-24cdb5fadd98b207";
+
+/// HTTP identity header names (lowercase as required by `HeaderName::from_static`).
+const CHAIN_ID_HEADER: &str = "x-kovanica-chain-id";
+const NETWORK_TAG_HEADER: &str = "x-kovanica-network-tag";
+
+/// Content-Type for the `/metrics` OpenMetrics exposition endpoint.
+const OPENMETRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// Resolve the network tag advertised in `X-Kovanica-Network-Tag`.
+///
+/// Uses the explicitly configured tag when non-empty, otherwise derives the
+/// canonical tag for Chain 1 (`1-f35df34c92001436`) and Chain 2
+/// (`2-24cdb5fadd98b207`), or `<chain_id>-0000000000000000` for other chains.
+fn resolve_network_tag(chain_id: u64, configured: Option<&str>) -> String {
+    if let Some(tag) = configured.map(str::trim).filter(|t| !t.is_empty()) {
+        return tag.to_string();
+    }
+    match chain_id {
+        chain_id::MAINNET => CANONICAL_MAINNET_NETWORK_TAG.to_string(),
+        chain_id::TESTNET => CANONICAL_TESTNET_NETWORK_TAG.to_string(),
+        other => format!("{other}-0000000000000000"),
+    }
+}
+
+fn build_router(state: Arc<FaucetState>) -> Router {
+    Router::new()
+        .route("/health", get(health_check))
+        .route("/metrics", get(metrics_handler))
+        .route("/faucet", post(faucet_handler))
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            attach_identity_headers,
+        ))
+        .layer(axum::middleware::from_fn(cors::faucet_cors))
+}
+
+/// Attach `X-Kovanica-Chain-Id` and `X-Kovanica-Network-Tag` to `/health` and
+/// `/faucet` responses.
+async fn attach_identity_headers(
+    State(state): State<Arc<FaucetState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let apply = matches!(request.uri().path(), "/health" | "/faucet");
+    let mut response = next.run(request).await;
+    if apply {
+        let headers = response.headers_mut();
+        if let Ok(chain_id_val) =
+            HeaderValue::from_str(&state.config.signing_ctx.chain_id.to_string())
+        {
+            headers.insert(HeaderName::from_static(CHAIN_ID_HEADER), chain_id_val);
+        }
+        if let Ok(tag_val) = HeaderValue::from_str(&state.config.network_tag) {
+            headers.insert(HeaderName::from_static(NETWORK_TAG_HEADER), tag_val);
+        }
+    }
+    response
+}
 
 /// Whether `listen` (`host:port`) binds a loopback, private or unspecified address.
 ///
@@ -722,6 +852,17 @@ async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
 }
 
+async fn metrics_handler(State(state): State<Arc<FaucetState>>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(OPENMETRICS_CONTENT_TYPE),
+        )],
+        state.metrics.render_openmetrics(),
+    )
+}
+
 async fn faucet_handler(
     State(state): State<Arc<FaucetState>>,
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -740,6 +881,7 @@ async fn faucet_handler(
         state.config.rate_limit_window,
         state.config.max_requests_per_window,
     ) {
+        state.metrics.inc_rate_limited();
         warn!(ip = %ip_str, "rate limit exceeded for IP");
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -759,6 +901,7 @@ async fn faucet_handler(
     let to_address = match parse_address(&req.address, state.config.signing_ctx.chain_id) {
         Ok(addr) => addr,
         Err(e) => {
+            state.metrics.inc_rejected();
             return (
                 StatusCode::BAD_REQUEST,
                 Json(FaucetResponse {
@@ -782,6 +925,7 @@ async fn faucet_handler(
     ) {
         Some(res) => res,
         None => {
+            state.metrics.inc_rate_limited();
             warn!(
                 address = %to_address_str,
                 window = state.config.address_rate_limit_window,
@@ -805,6 +949,7 @@ async fn faucet_handler(
 
     // Prevent faucet from sending to itself
     if to_address == state.faucet_address {
+        state.metrics.inc_rejected();
         return (
             StatusCode::BAD_REQUEST,
             Json(FaucetResponse {
@@ -828,6 +973,8 @@ async fn faucet_handler(
         .await
         {
             Ok(balance) if balance < state.config.min_balance_atoms => {
+                state.metrics.set_balance_atoms(balance);
+                state.metrics.inc_rejected();
                 warn!(
                     balance,
                     threshold = state.config.min_balance_atoms,
@@ -844,6 +991,7 @@ async fn faucet_handler(
                     .into_response();
             }
             Ok(balance) => {
+                state.metrics.set_balance_atoms(balance);
                 tracing::debug!(balance, "faucet balance above minimum");
             }
             Err(e) => {
@@ -865,6 +1013,7 @@ async fn faucet_handler(
     {
         Ok(n) => n,
         Err(e) => {
+            state.metrics.inc_rejected();
             warn!("Failed to get faucet nonce: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -901,6 +1050,7 @@ async fn faucet_handler(
     let mut signed_tx = match build_and_sign_tx(nonce) {
         Ok(tx) => tx,
         Err(e) => {
+            state.metrics.inc_rejected();
             warn!("Failed to sign transaction: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -963,6 +1113,7 @@ async fn faucet_handler(
 
     match submit_outcome {
         SubmitOutcome::Success(tx_hash) => {
+            state.metrics.inc_succeeded();
             info!(
                 to = %to_address,
                 amount = state.config.dispense_amount,
@@ -984,6 +1135,7 @@ async fn faucet_handler(
                 .into_response()
         }
         SubmitOutcome::Unknown(e) => {
+            state.metrics.inc_rejected();
             // UNKNOWN outcome (transport error or timeout): keep address slot to prevent double payout.
             if retry_attempted {
                 let mut guard = state.pending_nonce.lock();
@@ -1008,6 +1160,7 @@ async fn faucet_handler(
                 .into_response()
         }
         SubmitOutcome::ExplicitRejection(e) => {
+            state.metrics.inc_rejected();
             // Explicit rejection from node (e.g. invalid tx, balance insufficient): roll back address slot.
             reservation.rollback();
             {
@@ -2060,20 +2213,19 @@ mod http_tests {
                 signing_ctx: kovanica_types::SigningContext::new(chain_id::TESTNET),
                 trusted_proxies: proxy::TrustedProxies::parse_list(trusted).unwrap(),
                 min_balance_atoms,
+                network_tag: resolve_network_tag(chain_id::TESTNET, None),
             },
             signer,
             faucet_address,
             rate_limiter,
             client,
             pending_nonce: Mutex::new(PendingNonce::default()),
+            metrics: FaucetMetrics::default(),
         })
     }
 
     fn app(state: Arc<FaucetState>) -> Router {
-        Router::new()
-            .route("/health", get(health_check))
-            .route("/faucet", post(faucet_handler))
-            .with_state(state)
+        build_router(state)
     }
 
     fn canonical(seed: u8) -> String {
@@ -3452,5 +3604,313 @@ mod http_tests {
                 "sustained recovery must keep the nonce sequence contiguous: {accepted_final:?}"
             );
         }
+    }
+
+    #[test]
+    fn resolve_network_tag_derives_canonical_and_honours_override() {
+        assert_eq!(
+            resolve_network_tag(chain_id::MAINNET, None),
+            "1-f35df34c92001436"
+        );
+        assert_eq!(
+            resolve_network_tag(chain_id::TESTNET, None),
+            "2-24cdb5fadd98b207"
+        );
+        assert_eq!(
+            resolve_network_tag(chain_id::DEVNET, None),
+            "3-0000000000000000"
+        );
+        assert_eq!(
+            resolve_network_tag(chain_id::TESTNET, Some("  2-customtag0000000  ")),
+            "2-customtag0000000"
+        );
+        assert_eq!(
+            resolve_network_tag(chain_id::TESTNET, Some("   ")),
+            "2-24cdb5fadd98b207"
+        );
+    }
+
+    fn assert_valid_openmetrics_envelope(body: &str) {
+        assert!(
+            body.ends_with("# EOF\n"),
+            "OpenMetrics payload must end with `# EOF\\n`, got:\n{body}"
+        );
+        let expected_types = [
+            ("faucet_drips_succeeded_total", "counter"),
+            ("faucet_drips_rejected_total", "counter"),
+            ("faucet_rate_limited_total", "counter"),
+            ("faucet_balance_atoms", "gauge"),
+        ];
+        let mut seen_types = std::collections::HashSet::new();
+        for line in body.lines() {
+            if let Some(rest) = line.strip_prefix("# TYPE ") {
+                let metric_name = rest
+                    .split_whitespace()
+                    .next()
+                    .expect("# TYPE line must include metric name");
+                assert!(
+                    seen_types.insert(metric_name.to_string()),
+                    "duplicate # TYPE header for `{metric_name}` in:\n{body}"
+                );
+            }
+        }
+        let eof_pos = body.find("# EOF").expect("# EOF must be present");
+        for (metric, kind) in expected_types {
+            let help_prefix = format!("# HELP {metric} ");
+            let type_line = format!("# TYPE {metric} {kind}\n");
+            let help_pos = body
+                .find(&help_prefix)
+                .unwrap_or_else(|| panic!("missing `{help_prefix}` in:\n{body}"));
+            let type_pos = body
+                .find(&type_line)
+                .unwrap_or_else(|| panic!("missing `{type_line}` in:\n{body}"));
+            assert!(
+                help_pos < type_pos && type_pos < eof_pos,
+                "`{metric}` # HELP and # TYPE must appear before # EOF in:\n{body}"
+            );
+        }
+        assert_eq!(
+            seen_types.len(),
+            expected_types.len(),
+            "unexpected extra # TYPE headers: {seen_types:?}"
+        );
+    }
+
+    async fn get_metrics(app: &Router) -> (StatusCode, String, String) {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let content_type = res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        (status, content_type, body)
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_renders_openmetrics_and_tracks_transitions() {
+        let stub_balance: u64 = 500 * 1_000_000_000;
+        let (rpc, _, fail_submit) = stub_node_ext(stub_balance).await;
+        // IP cap 2, address cap 1, min_balance > 0 so balance is fetched on valid drips.
+        let app = app(faucet_state(
+            &rpc,
+            3600,
+            2,
+            86_400,
+            1,
+            "",
+            10 * 1_000_000_000,
+        ));
+
+        // 1. Initial scrape: all 4 metrics present, zero duplicates, all at 0.
+        let (status, content_type, body) = get_metrics(&app).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type, OPENMETRICS_CONTENT_TYPE);
+        assert_valid_openmetrics_envelope(&body);
+        assert!(body.contains("faucet_drips_succeeded_total 0\n"), "{body}");
+        assert!(body.contains("faucet_drips_rejected_total 0\n"), "{body}");
+        assert!(body.contains("faucet_rate_limited_total 0\n"), "{body}");
+        assert!(body.contains("faucet_balance_atoms 0\n"), "{body}");
+
+        // 2. Successful drip -> succeeded = 1, balance_atoms = stub_balance.
+        let addr_ok = canonical(101);
+        let (s1, _) = post_faucet(
+            &app,
+            "198.51.100.10:5000",
+            None,
+            json!({ "address": addr_ok }),
+        )
+        .await;
+        assert_eq!(s1, StatusCode::OK);
+
+        // 3. Invalid address -> rejected = 1.
+        let (s2, _) = post_faucet(
+            &app,
+            "198.51.100.11:5000",
+            None,
+            json!({ "address": "not-a-valid-address" }),
+        )
+        .await;
+        assert_eq!(s2, StatusCode::BAD_REQUEST);
+
+        // 4. Address rate-limited (same address from fresh IP) -> rate_limited = 1.
+        let (s3, _) = post_faucet(
+            &app,
+            "198.51.100.12:5000",
+            None,
+            json!({ "address": addr_ok }),
+        )
+        .await;
+        assert_eq!(s3, StatusCode::TOO_MANY_REQUESTS);
+
+        // 5. Explicit node rejection -> rejected = 2 (also consumes 2nd IP slot for .10).
+        *fail_submit.lock() = true;
+        let (s4, _) = post_faucet(
+            &app,
+            "198.51.100.10:5001",
+            None,
+            json!({ "address": canonical(102) }),
+        )
+        .await;
+        assert_eq!(s4, StatusCode::INTERNAL_SERVER_ERROR);
+
+        // 6. IP rate-limited (3rd request from .10 where IP cap is 2) -> rate_limited = 2.
+        let (s5, _) = post_faucet(
+            &app,
+            "198.51.100.10:5002",
+            None,
+            json!({ "address": canonical(103) }),
+        )
+        .await;
+        assert_eq!(s5, StatusCode::TOO_MANY_REQUESTS);
+
+        // 7. Scrape again and verify exact counter/gauge values and envelope integrity.
+        let (status, _, body) = get_metrics(&app).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_valid_openmetrics_envelope(&body);
+        assert!(body.contains("faucet_drips_succeeded_total 1\n"), "{body}");
+        assert!(body.contains("faucet_drips_rejected_total 2\n"), "{body}");
+        assert!(body.contains("faucet_rate_limited_total 2\n"), "{body}");
+        assert!(
+            body.contains(&format!("faucet_balance_atoms {stub_balance}\n")),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn health_and_drip_responses_include_identity_headers_and_cors_exposes_them() {
+        let (rpc, _) = stub_node(1_000 * 1_000_000_000).await;
+        let state = faucet_state(&rpc, 60, 100, 86_400, 100, "", 0);
+        let app = app(state);
+
+        // GET /health with allowed Origin
+        let health_req = Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header(header::ORIGIN, "https://console.kovanica.online")
+            .body(Body::empty())
+            .unwrap();
+        let health_res = app.clone().oneshot(health_req).await.unwrap();
+        assert_eq!(health_res.status(), StatusCode::OK);
+        assert_eq!(
+            health_res
+                .headers()
+                .get("X-Kovanica-Chain-Id")
+                .and_then(|v| v.to_str().ok()),
+            Some("2")
+        );
+        assert_eq!(
+            health_res
+                .headers()
+                .get("X-Kovanica-Network-Tag")
+                .and_then(|v| v.to_str().ok()),
+            Some("2-24cdb5fadd98b207")
+        );
+        let exposed = health_res
+            .headers()
+            .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .and_then(|v| v.to_str().ok())
+            .expect("Access-Control-Expose-Headers must be set on /health");
+        assert!(
+            exposed.contains("X-Kovanica-Chain-Id") && exposed.contains("X-Kovanica-Network-Tag"),
+            "expected identity headers in Access-Control-Expose-Headers, got: {exposed}"
+        );
+
+        // POST /faucet with allowed Origin
+        let mut drip_req = Request::builder()
+            .method("POST")
+            .uri("/faucet")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "https://faucet.kovanica.online")
+            .body(Body::from(json!({ "address": canonical(110) }).to_string()))
+            .unwrap();
+        drip_req.extensions_mut().insert(ConnectInfo(
+            "198.51.100.50:5000".parse::<SocketAddr>().unwrap(),
+        ));
+        let drip_res = app.clone().oneshot(drip_req).await.unwrap();
+        assert_eq!(drip_res.status(), StatusCode::OK);
+        assert_eq!(
+            drip_res
+                .headers()
+                .get("X-Kovanica-Chain-Id")
+                .and_then(|v| v.to_str().ok()),
+            Some("2")
+        );
+        assert_eq!(
+            drip_res
+                .headers()
+                .get("X-Kovanica-Network-Tag")
+                .and_then(|v| v.to_str().ok()),
+            Some("2-24cdb5fadd98b207")
+        );
+        let drip_exposed = drip_res
+            .headers()
+            .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+            .and_then(|v| v.to_str().ok())
+            .expect("Access-Control-Expose-Headers must be set on /faucet");
+        assert!(
+            drip_exposed.contains("X-Kovanica-Chain-Id")
+                && drip_exposed.contains("X-Kovanica-Network-Tag"),
+            "expected identity headers in Access-Control-Expose-Headers, got: {drip_exposed}"
+        );
+
+        // Mainnet chain_id=1 derives canonical mainnet tag on /health
+        let signer = SigningKey::from_bytes(&[8u8; 32]);
+        let faucet_address = Address::from_public_key(&PublicKey::from(signer.verifying_key()));
+        let mainnet_state = Arc::new(FaucetState {
+            config: FaucetConfig {
+                dispense_amount: DISPENSE_ATOMS,
+                rate_limit_window: 60,
+                max_requests_per_window: 10,
+                address_rate_limit_window: 86_400,
+                address_max_requests: 1,
+                rpc_url: rpc,
+                rpc_token: None,
+                signing_ctx: kovanica_types::SigningContext::new(chain_id::MAINNET),
+                trusted_proxies: proxy::TrustedProxies::default(),
+                min_balance_atoms: 0,
+                network_tag: resolve_network_tag(chain_id::MAINNET, None),
+            },
+            signer,
+            faucet_address,
+            rate_limiter: RateLimiter::default(),
+            client: reqwest::Client::new(),
+            pending_nonce: Mutex::new(PendingNonce::default()),
+            metrics: FaucetMetrics::default(),
+        });
+        let mainnet_app = build_router(mainnet_state);
+        let mainnet_health = mainnet_app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mainnet_health.status(), StatusCode::OK);
+        assert_eq!(
+            mainnet_health
+                .headers()
+                .get("X-Kovanica-Chain-Id")
+                .and_then(|v| v.to_str().ok()),
+            Some("1")
+        );
+        assert_eq!(
+            mainnet_health
+                .headers()
+                .get("X-Kovanica-Network-Tag")
+                .and_then(|v| v.to_str().ok()),
+            Some("1-f35df34c92001436")
+        );
     }
 }

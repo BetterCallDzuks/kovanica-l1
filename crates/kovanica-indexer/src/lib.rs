@@ -12,7 +12,10 @@ pub mod store;
 pub mod types;
 
 pub use config::Config;
-pub use indexer::Indexer;
+pub use indexer::{Indexer, IndexerMetrics};
 pub use node_reader::{NodeReader, StorageNodeReader};
 pub use store::IndexerStore;
-pub use types::{IndexedEvent, IndexerStatus, LogFilter};
+pub use types::{
+    classify_sync_lag, IndexedEvent, IndexerHealth, IndexerMetricsSnapshot, IndexerStatus,
+    LogFilter,
+};
