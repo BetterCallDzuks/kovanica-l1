@@ -268,7 +268,7 @@ fn parse_forwarded_ip(raw: &str) -> Option<IpAddr> {
 
 /// Normalize client IPs for rate-limit bucketing: group IPv6 clients by `/64`
 /// so rotating host bits within a `/64` allocation cannot bypass per-client limits.
-fn normalize_bucket_ip(ip: IpAddr) -> IpAddr {
+pub(crate) fn normalize_bucket_ip(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V4(v4) => IpAddr::V4(v4),
         IpAddr::V6(v6) => {

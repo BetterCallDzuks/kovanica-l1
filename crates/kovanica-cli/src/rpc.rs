@@ -16,6 +16,8 @@ pub use kovanica_sdk::RpcClient as SdkRpcClient;
 #[derive(Clone)]
 pub struct RpcClient {
     inner: kovanica_sdk::RpcClient,
+    http: reqwest::Client,
+    auth_token: Option<String>,
     url: String,
 }
 
@@ -27,11 +29,17 @@ impl RpcClient {
         if !url.ends_with("/rpc") {
             url = format!("{}/rpc", url.trim_end_matches('/'));
         }
+        let auth_token = write_token_from_env();
         let mut inner = kovanica_sdk::RpcClient::new(url.clone());
-        if let Some(token) = write_token_from_env() {
-            inner = inner.with_auth_token(token);
+        if let Some(ref token) = auth_token {
+            inner = inner.with_auth_token(token.clone());
         }
-        Self { url, inner }
+        Self {
+            url,
+            http: reqwest::Client::new(),
+            auth_token,
+            inner,
+        }
     }
 
     /// The endpoint this client posts to.
@@ -45,6 +53,32 @@ impl RpcClient {
             .call(method, params)
             .await
             .map_err(|e| anyhow::anyhow!("RPC `{method}` failed: {e}"))
+    }
+
+    /// Send a JSON-RPC 2.0 batch request array and return the array of response objects.
+    pub async fn call_batch(&self, requests: &[Value]) -> Result<Vec<Value>> {
+        let mut request = self.http.post(&self.url).json(requests);
+        if let Some(token) = self.auth_token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+        let resp = request
+            .send()
+            .await
+            .with_context(|| format!("RPC batch request to `{}` failed", self.url))?;
+        let status = resp.status();
+        let value: Value = resp
+            .json()
+            .await
+            .with_context(|| format!("invalid JSON in RPC batch response (HTTP {status})"))?;
+        if let Some(err) = value.get("error") {
+            return Err(anyhow!("RPC batch failed: {err}"));
+        }
+        match value {
+            Value::Array(items) => Ok(items),
+            other => Err(anyhow!(
+                "expected JSON array in RPC batch response, got {other}"
+            )),
+        }
     }
 
     /// Read the node's `/health` peer count.

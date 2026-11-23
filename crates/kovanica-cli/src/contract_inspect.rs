@@ -1,12 +1,16 @@
-//! Read-only contract inspection subcommands (`kovanica contract call` & `kovanica contract storage`).
+//! Read-only contract inspection subcommands (`kovanica contract call`, `batch-call` & `storage`).
 //!
 //! These commands never sign or submit transactions; they invoke the node's
 //! read-only JSON-RPC endpoints (`kovanica_call` and `kovanica_getStorageAt`)
 //! and derive canonical BLAKE3-256 contract storage slots locally.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
 use kovanica_types::Address;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::output;
@@ -14,6 +18,12 @@ use crate::rpc::RpcClient;
 
 /// Default gas limit for read-only `kovanica contract call` simulations.
 pub const DEFAULT_CALL_GAS: u64 = 100_000;
+
+/// Maximum number of calls allowed in a single JSON-RPC 2.0 batch request.
+///
+/// Matches `kovanica_rpc::MAX_JSONRPC_BATCH_SIZE` and is enforced fail-closed
+/// before any network I/O is attempted.
+pub const MAX_BATCH_CALL_SIZE: usize = 32;
 
 /// Canonical raw storage key for singleton token/NFT/multisig state.
 const SINGLETON_STATE_KEY: &[u8] = b"kvnc/v1/state";
@@ -31,8 +41,53 @@ const VAULT_KEY_PREFIX: &[u8] = b"kvnc/v1/vault/";
 pub enum ContractInspectCommand {
     /// Simulate a read-only contract call via `kovanica_call`
     Call(ContractCallArgs),
+    /// Simulate a batch of read-only contract calls via a single JSON-RPC 2.0 batch request
+    BatchCall(ContractBatchCallArgs),
     /// Read a raw contract storage slot via `kovanica_getStorageAt`
     Storage(ContractStorageArgs),
+}
+
+/// Arguments for `kovanica contract batch-call`.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct ContractBatchCallArgs {
+    /// Path to a JSON file containing an array of call specifications (1..=32 items)
+    #[arg(long, value_name = "PATH")]
+    pub file: PathBuf,
+}
+
+fn default_hex_data() -> String {
+    "0x".to_string()
+}
+
+fn default_call_gas() -> u64 {
+    DEFAULT_CALL_GAS
+}
+
+/// One call entry in a `kovanica contract batch-call --file <path>` JSON array.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct BatchCallSpec {
+    pub contract: String,
+    pub method: String,
+    #[serde(default = "default_hex_data")]
+    pub data: String,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub value: u64,
+    #[serde(default = "default_call_gas")]
+    pub gas: u64,
+}
+
+/// Validated batch call item paired with its JSON-RPC 2.0 request ID (`1..=N`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedBatchCall {
+    pub id: usize,
+    pub contract: Address,
+    pub method: String,
+    pub data: String,
+    pub from: Option<Address>,
+    pub value: u64,
+    pub gas: u64,
 }
 
 /// Arguments for `kovanica contract call`.
@@ -290,6 +345,173 @@ pub fn build_get_storage_at_params(contract: &Address, slot_hex: &str) -> Value 
     json!([contract.to_string(), slot_hex])
 }
 
+/// Parse and validate a JSON array of [`BatchCallSpec`] entries fail-closed.
+///
+/// Rejects empty arrays, arrays larger than [`MAX_BATCH_CALL_SIZE`] (32), and
+/// any item with an invalid contract address, empty method, invalid hex data,
+/// or invalid `from` address before any network I/O is attempted.
+pub fn parse_batch_call_specs(raw_json: &str) -> Result<Vec<BatchCallSpec>> {
+    let specs: Vec<BatchCallSpec> = serde_json::from_str(raw_json)
+        .context("batch call file must be a JSON array of call specifications")?;
+    validate_batch_call_specs(&specs)?;
+    Ok(specs)
+}
+
+fn validate_batch_call_specs(specs: &[BatchCallSpec]) -> Result<()> {
+    if specs.is_empty() {
+        bail!("batch call file must contain at least 1 call specification");
+    }
+    if specs.len() > MAX_BATCH_CALL_SIZE {
+        bail!(
+            "batch call count {} exceeds maximum JSON-RPC batch size of {MAX_BATCH_CALL_SIZE}",
+            specs.len()
+        );
+    }
+    for (idx, spec) in specs.iter().enumerate() {
+        let call_args = ContractCallArgs {
+            contract: spec.contract.clone(),
+            method: spec.method.clone(),
+            data: spec.data.clone(),
+            from: spec.from.clone(),
+            value: spec.value,
+            gas: spec.gas,
+        };
+        build_call_params(&call_args)
+            .with_context(|| format!("invalid batch call item at index {idx}"))?;
+    }
+    Ok(())
+}
+
+/// Build a JSON-RPC 2.0 batch request payload for `kovanica_call` from validated specs.
+pub fn build_batch_call_payload(
+    specs: &[BatchCallSpec],
+) -> Result<(Vec<PreparedBatchCall>, Vec<Value>)> {
+    if specs.is_empty() {
+        bail!("batch call file must contain at least 1 call specification");
+    }
+    if specs.len() > MAX_BATCH_CALL_SIZE {
+        bail!(
+            "batch call count {} exceeds maximum JSON-RPC batch size of {MAX_BATCH_CALL_SIZE}",
+            specs.len()
+        );
+    }
+
+    let mut prepared = Vec::with_capacity(specs.len());
+    let mut payload = Vec::with_capacity(specs.len());
+
+    for (idx, spec) in specs.iter().enumerate() {
+        let call_args = ContractCallArgs {
+            contract: spec.contract.clone(),
+            method: spec.method.clone(),
+            data: spec.data.clone(),
+            from: spec.from.clone(),
+            value: spec.value,
+            gas: spec.gas,
+        };
+        let (contract, from, data, params) = build_call_params(&call_args)
+            .with_context(|| format!("invalid batch call item at index {idx}"))?;
+        let id = idx + 1;
+        prepared.push(PreparedBatchCall {
+            id,
+            contract,
+            method: spec.method.trim().to_string(),
+            data,
+            from,
+            value: spec.value,
+            gas: spec.gas,
+        });
+        payload.push(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "kovanica_call",
+            "params": params,
+        }));
+    }
+
+    Ok((prepared, payload))
+}
+
+/// Match JSON-RPC 2.0 batch responses by `id` and format per-item results.
+pub fn format_batch_call_results(
+    prepared: &[PreparedBatchCall],
+    responses: &[Value],
+) -> Result<Value> {
+    let mut by_id: HashMap<u64, &Value> = HashMap::with_capacity(responses.len());
+    for resp in responses {
+        if let Some(id) = resp.get("id").and_then(Value::as_u64) {
+            by_id.insert(id, resp);
+        }
+    }
+
+    let mut results = Vec::with_capacity(prepared.len());
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+
+    for item in prepared {
+        let id_u64 = item.id as u64;
+        let Some(resp) = by_id.get(&id_u64).copied() else {
+            failed += 1;
+            results.push(json!({
+                "id": item.id,
+                "contract": item.contract.to_string(),
+                "method": item.method,
+                "ok": false,
+                "error": { "message": format!("missing JSON-RPC response for id {}", item.id) },
+            }));
+            continue;
+        };
+
+        if let Some(err) = resp.get("error").filter(|v| !v.is_null()) {
+            failed += 1;
+            results.push(json!({
+                "id": item.id,
+                "contract": item.contract.to_string(),
+                "method": item.method,
+                "ok": false,
+                "error": err,
+            }));
+            continue;
+        }
+
+        let raw_output = resp.get("result").and_then(Value::as_str).unwrap_or("0x");
+        match format_call_json(
+            &item.contract,
+            &item.method,
+            &item.data,
+            item.from.as_ref(),
+            item.value,
+            item.gas,
+            raw_output,
+        ) {
+            Ok(mut entry) => {
+                succeeded += 1;
+                if let Value::Object(ref mut map) = entry {
+                    map.insert("id".to_string(), json!(item.id));
+                    map.insert("ok".to_string(), json!(true));
+                }
+                results.push(entry);
+            }
+            Err(err) => {
+                failed += 1;
+                results.push(json!({
+                    "id": item.id,
+                    "contract": item.contract.to_string(),
+                    "method": item.method,
+                    "ok": false,
+                    "error": { "message": err.to_string() },
+                }));
+            }
+        }
+    }
+
+    Ok(json!({
+        "count": prepared.len(),
+        "succeeded": succeeded,
+        "failed": failed,
+        "results": results,
+    }))
+}
+
 /// Decode a hex string returned by RPC (`0x...`) into raw bytes.
 fn decode_rpc_hex(raw: &str) -> Result<Vec<u8>> {
     let stripped = raw
@@ -374,8 +596,73 @@ pub async fn run(
 ) -> Result<()> {
     match command {
         ContractInspectCommand::Call(args) => run_call(client, args, json_output).await,
+        ContractInspectCommand::BatchCall(args) => run_batch_call(client, args, json_output).await,
         ContractInspectCommand::Storage(args) => run_storage(client, args, json_output).await,
     }
+}
+
+async fn run_batch_call(
+    client: &RpcClient,
+    args: ContractBatchCallArgs,
+    json_output: bool,
+) -> Result<()> {
+    let raw = std::fs::read_to_string(&args.file)
+        .with_context(|| format!("failed to read batch call file `{}`", args.file.display()))?;
+    let specs = parse_batch_call_specs(&raw)?;
+    let (prepared, payload) = build_batch_call_payload(&specs)?;
+    let responses = client.call_batch(&payload).await?;
+    let formatted = format_batch_call_results(&prepared, &responses)?;
+
+    if json_output {
+        return output::print_json(&formatted);
+    }
+
+    let empty = Vec::new();
+    let items = formatted["results"].as_array().unwrap_or(&empty);
+    let mut rows = Vec::with_capacity(items.len());
+    for item in items {
+        let id = item["id"].as_u64().unwrap_or(0).to_string();
+        let contract = item["contract"].as_str().unwrap_or("").to_string();
+        let method = item["method"].as_str().unwrap_or("").to_string();
+        let ok = item["ok"].as_bool().unwrap_or(false);
+        if ok {
+            let bytes_len = item["bytes_len"].as_u64().unwrap_or(0);
+            let display = if bytes_len == 0 {
+                "(empty)".to_string()
+            } else if let Some(utf8) = item["utf8"].as_str() {
+                format!("{} (\"{}\")", item["output"].as_str().unwrap_or("0x"), utf8)
+            } else {
+                item["output"].as_str().unwrap_or("0x").to_string()
+            };
+            rows.push(vec![
+                id,
+                contract,
+                method,
+                "ok".to_string(),
+                display,
+                bytes_len.to_string(),
+            ]);
+        } else {
+            let err_msg = item["error"]["message"]
+                .as_str()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| item["error"].to_string());
+            rows.push(vec![
+                id,
+                contract,
+                method,
+                "error".to_string(),
+                err_msg,
+                "-".to_string(),
+            ]);
+        }
+    }
+
+    output::print_table(
+        &["ID", "Contract", "Method", "Status", "Output", "Bytes"],
+        &rows,
+    );
+    Ok(())
 }
 
 async fn run_call(client: &RpcClient, args: ContractCallArgs, json_output: bool) -> Result<()> {
@@ -747,5 +1034,261 @@ mod tests {
         assert_eq!(non_empty_json["value"], "0xdeadbeef");
         assert_eq!(non_empty_json["bytes_len"], 4);
         assert!(non_empty_json["utf8"].is_null());
+    }
+
+    #[test]
+    fn parse_batch_call_specs_validates_bounds_and_fields() {
+        let contract = sample_address().to_string();
+        let caller = Address([0x11; 32]).to_string();
+
+        // Valid batch with defaults and explicit overrides
+        let valid_json = json!([
+            {
+                "contract": contract,
+                "method": "symbol"
+            },
+            {
+                "contract": format!("0x{}", hex::encode(sample_address().0)),
+                "method": "balance_of",
+                "data": "0xDEADBEEF",
+                "from": caller,
+                "value": 10,
+                "gas": 200000
+            }
+        ])
+        .to_string();
+        let specs = parse_batch_call_specs(&valid_json).unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].data, "0x");
+        assert_eq!(specs[0].value, 0);
+        assert_eq!(specs[0].gas, DEFAULT_CALL_GAS);
+        assert_eq!(specs[1].gas, 200_000);
+
+        // Exact boundary (MAX_BATCH_CALL_SIZE = 32) is accepted
+        let max_specs: Vec<Value> = (0..MAX_BATCH_CALL_SIZE)
+            .map(|i| {
+                json!({
+                    "contract": contract,
+                    "method": format!("m_{i}"),
+                    "data": "0x"
+                })
+            })
+            .collect();
+        let parsed_max = parse_batch_call_specs(&Value::Array(max_specs).to_string()).unwrap();
+        assert_eq!(parsed_max.len(), MAX_BATCH_CALL_SIZE);
+
+        // Empty batch rejected fail-closed
+        let empty_err = parse_batch_call_specs("[]").unwrap_err().to_string();
+        assert!(empty_err.contains("at least 1"), "{empty_err}");
+
+        // Oversized batch (> 32 items) rejected fail-closed
+        let oversized: Vec<Value> = (0..=MAX_BATCH_CALL_SIZE)
+            .map(|i| {
+                json!({
+                    "contract": contract,
+                    "method": format!("m_{i}"),
+                    "data": "0x"
+                })
+            })
+            .collect();
+        let over_err = parse_batch_call_specs(&Value::Array(oversized).to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(over_err.contains("exceeds maximum"), "{over_err}");
+
+        // Invalid contract rejected fail-closed
+        let bad_contract = json!([
+            {
+                "contract": "not-a-valid-contract",
+                "method": "symbol",
+                "data": "0x"
+            }
+        ])
+        .to_string();
+        assert!(parse_batch_call_specs(&bad_contract).is_err());
+
+        // Empty method rejected
+        let bad_method = json!([
+            {
+                "contract": contract,
+                "method": "   ",
+                "data": "0x"
+            }
+        ])
+        .to_string();
+        assert!(parse_batch_call_specs(&bad_method).is_err());
+
+        // Invalid hex data rejected
+        let bad_data = json!([
+            {
+                "contract": contract,
+                "method": "symbol",
+                "data": "0xzzzz"
+            }
+        ])
+        .to_string();
+        assert!(parse_batch_call_specs(&bad_data).is_err());
+    }
+
+    #[test]
+    fn build_batch_call_payload_emits_jsonrpc_2_0_array_with_1_based_ids() {
+        let contract = sample_address();
+        let caller = Address([0x77; 32]);
+        let specs = vec![
+            BatchCallSpec {
+                contract: contract.to_string(),
+                method: "name".to_string(),
+                data: "0x".to_string(),
+                from: None,
+                value: 0,
+                gas: DEFAULT_CALL_GAS,
+            },
+            BatchCallSpec {
+                contract: format!("0x{}", hex::encode(contract.0)),
+                method: "balance_of".to_string(),
+                data: "0xABCD".to_string(),
+                from: Some(caller.to_string()),
+                value: 5,
+                gas: 150_000,
+            },
+        ];
+
+        let (prepared, payload) = build_batch_call_payload(&specs).unwrap();
+        assert_eq!(prepared.len(), 2);
+        assert_eq!(payload.len(), 2);
+
+        assert_eq!(
+            payload[0],
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "kovanica_call",
+                "params": [{
+                    "to": contract.to_string(),
+                    "method": "name",
+                    "data": "0x",
+                    "value": "0x0",
+                    "gas": "0x186a0",
+                }]
+            })
+        );
+        assert_eq!(
+            payload[1],
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "kovanica_call",
+                "params": [{
+                    "to": contract.to_string(),
+                    "from": caller.to_string(),
+                    "method": "balance_of",
+                    "data": "0xabcd",
+                    "value": "0x5",
+                    "gas": "0x249f0",
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn format_batch_call_results_matches_by_id_and_handles_mixed_outcomes() {
+        let contract = sample_address();
+        let specs = vec![
+            BatchCallSpec {
+                contract: contract.to_string(),
+                method: "symbol".to_string(),
+                data: "0x".to_string(),
+                from: None,
+                value: 0,
+                gas: DEFAULT_CALL_GAS,
+            },
+            BatchCallSpec {
+                contract: contract.to_string(),
+                method: "failing_call".to_string(),
+                data: "0x".to_string(),
+                from: None,
+                value: 0,
+                gas: DEFAULT_CALL_GAS,
+            },
+        ];
+        let (prepared, _payload) = build_batch_call_payload(&specs).unwrap();
+
+        // Out-of-order responses: id 2 first, then id 1
+        let responses = vec![
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "error": { "code": -32000, "message": "execution reverted" }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": "0x4b564e43"
+            }),
+        ];
+
+        let formatted = format_batch_call_results(&prepared, &responses).unwrap();
+        assert_eq!(formatted["count"], 2);
+        assert_eq!(formatted["succeeded"], 1);
+        assert_eq!(formatted["failed"], 1);
+
+        let items = formatted["results"].as_array().unwrap();
+        assert_eq!(items[0]["id"], 1);
+        assert_eq!(items[0]["ok"], true);
+        assert_eq!(items[0]["utf8"], "KVNC");
+        assert_eq!(items[1]["id"], 2);
+        assert_eq!(items[1]["ok"], false);
+        assert_eq!(items[1]["error"]["message"], "execution reverted");
+    }
+
+    #[tokio::test]
+    async fn run_batch_call_sends_single_jsonrpc_batch_request() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let contract = sample_address();
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("batch.json");
+        std::fs::write(
+            &file_path,
+            json!([
+                { "contract": contract.to_string(), "method": "symbol", "data": "0x" },
+                { "contract": contract.to_string(), "method": "decimals", "data": "0x" }
+            ])
+            .to_string(),
+        )
+        .unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let body_start = req.find("\r\n\r\n").unwrap() + 4;
+            let sent: Value = serde_json::from_str(&req[body_start..]).unwrap();
+            assert!(sent.is_array(), "expected JSON-RPC batch array, got {sent}");
+            assert_eq!(sent.as_array().unwrap().len(), 2);
+
+            let resp_body = json!([
+                { "jsonrpc": "2.0", "id": 1, "result": "0x4b564e43" },
+                { "jsonrpc": "2.0", "id": 2, "result": "0x09" }
+            ])
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                resp_body.len(),
+                resp_body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let client = RpcClient::new(format!("http://{addr}"));
+        run_batch_call(&client, ContractBatchCallArgs { file: file_path }, true)
+            .await
+            .unwrap();
+
+        server.await.unwrap();
     }
 }

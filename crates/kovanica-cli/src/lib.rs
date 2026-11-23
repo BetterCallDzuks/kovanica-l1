@@ -16,6 +16,7 @@ pub mod stake;
 pub mod stratum_client;
 pub mod tui;
 pub mod tx;
+pub mod tx_inspect;
 pub mod wallet;
 
 #[cfg(test)]
