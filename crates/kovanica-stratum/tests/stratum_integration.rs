@@ -1652,6 +1652,7 @@ async fn test_observability_workers_endpoint_e2e() {
     assert_eq!(w0["session_id"], 1);
     assert_eq!(w0["worker_name"], "rig_01");
     assert_eq!(w0["authorized"], true);
+    assert_eq!(w0["extranonce_subscribed"], false);
     assert_eq!(w0["difficulty"], 0.0);
     assert_eq!(w0["shares_accepted"], 0);
     assert_eq!(w0["shares_rejected"], 0);
@@ -1730,6 +1731,120 @@ async fn test_observability_workers_endpoint_e2e() {
     })
     .await
     .expect("/workers active_workers must decrement to 0 after disconnect");
+
+    gateway.shutdown();
+}
+
+#[tokio::test]
+async fn test_extranonce_subscribe_and_set_extranonce_e2e() {
+    let (gateway, stratum_addr) = start_test_gateway(0.0).await;
+
+    // Start observability HTTP server on ephemeral port
+    let obs_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind observability listener");
+    let obs_addr = obs_listener.local_addr().expect("observability local addr");
+    let obs_gateway = Arc::clone(&gateway);
+    tokio::spawn(async move {
+        let _ = obs_gateway.serve_observability(obs_listener).await;
+    });
+
+    let http = reqwest::Client::new();
+    let mut client = TestClient::connect(stratum_addr).await;
+
+    // 1. mining.subscribe
+    client
+        .send_line(
+            &json!({"id": 1, "method": "mining.subscribe", "params": ["NiceHash/1.0.0"]})
+                .to_string(),
+        )
+        .await;
+    let sub_resp = client.read_json().await;
+    assert_eq!(sub_resp["id"], 1);
+    assert!(sub_resp["error"].is_null());
+    let initial_en1 = sub_resp["result"][1]
+        .as_str()
+        .expect("initial extranonce1")
+        .to_string();
+    assert_eq!(initial_en1, "00000001");
+
+    // 2. Verify /workers initially shows extranonce_subscribed: false
+    let workers_before: Value = http
+        .get(format!("http://{obs_addr}/workers"))
+        .send()
+        .await
+        .expect("GET /workers before extranonce.subscribe")
+        .json()
+        .await
+        .expect("parse /workers JSON");
+    assert_eq!(workers_before["active_workers"], 1);
+    assert_eq!(workers_before["workers"][0]["extranonce_subscribed"], false);
+
+    // Verify rotating extranonce before subscription returns None and pushes nothing
+    assert!(gateway
+        .set_session_extranonce("sess_00000001", "00000099")
+        .is_none());
+
+    // 3. Send mining.extranonce.subscribe
+    client
+        .send_line(
+            &json!({"id": 2, "method": "mining.extranonce.subscribe", "params": []}).to_string(),
+        )
+        .await;
+    let en_sub_resp = client.read_json().await;
+    assert_eq!(en_sub_resp["id"], 2);
+    assert_eq!(en_sub_resp["result"], true);
+    assert!(en_sub_resp["error"].is_null());
+
+    // 4. Verify /workers updates to extranonce_subscribed: true
+    let workers_after: Value = http
+        .get(format!("http://{obs_addr}/workers"))
+        .send()
+        .await
+        .expect("GET /workers after extranonce.subscribe")
+        .json()
+        .await
+        .expect("parse /workers JSON");
+    assert_eq!(workers_after["active_workers"], 1);
+    assert_eq!(workers_after["workers"][0]["extranonce_subscribed"], true);
+
+    // 5. Verify /metrics increments stratum_extranonce_subscriptions_total
+    let metrics_body = http
+        .get(format!("http://{obs_addr}/metrics"))
+        .send()
+        .await
+        .expect("GET /metrics")
+        .text()
+        .await
+        .expect("read /metrics body");
+    assert!(
+        metrics_body.contains("stratum_extranonce_subscriptions_total 1"),
+        "expected stratum_extranonce_subscriptions_total 1 in:\n{metrics_body}"
+    );
+
+    // 6. Trigger mining.set_extranonce via StratumGateway helper and verify client receives notification
+    let pushed_notif = gateway
+        .set_session_extranonce("sess_00000001", "deadbeef")
+        .expect("must format and push mining.set_extranonce when subscribed");
+    assert_eq!(pushed_notif.id, Value::Null);
+    assert_eq!(pushed_notif.method, "mining.set_extranonce");
+    assert_eq!(pushed_notif.params, json!(["deadbeef", 4]));
+
+    let client_notif = client.read_json().await;
+    assert!(client_notif["id"].is_null());
+    assert_eq!(client_notif["method"], "mining.set_extranonce");
+    assert_eq!(client_notif["params"], json!(["deadbeef", 4]));
+
+    // 7. Also verify rotate_session_extranonce allocates a fresh extranonce1 and notifies client
+    let rotated_notif = gateway
+        .rotate_session_extranonce("sess_00000001")
+        .expect("must rotate extranonce1 for subscribed session");
+    let client_rotated = client.read_json().await;
+    assert!(client_rotated["id"].is_null());
+    assert_eq!(client_rotated["method"], "mining.set_extranonce");
+    assert_eq!(client_rotated["params"], rotated_notif.params);
+    assert_eq!(client_rotated["params"][0], "00000002");
+    assert_eq!(client_rotated["params"][1], 4);
 
     gateway.shutdown();
 }

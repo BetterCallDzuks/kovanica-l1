@@ -708,6 +708,7 @@ pub struct GatewayMetrics {
 
     // Request metrics
     pub request_rate_limit_hits: Counter,
+    pub extranonce_subscriptions: Counter,
 
     // RPC metrics
     pub rpc_getwork_latency: Histogram,
@@ -924,6 +925,13 @@ impl GatewayMetrics {
             request_rate_limit_hits.clone(),
         );
 
+        let extranonce_subscriptions = Counter::default();
+        registry.register(
+            "stratum_extranonce_subscriptions",
+            "Total mining.extranonce.subscribe requests processed",
+            extranonce_subscriptions.clone(),
+        );
+
         // RPC metrics
         let rpc_getwork_latency =
             Histogram::new(exponential_buckets(0.001, 2.0, 20).collect::<Vec<f64>>());
@@ -1058,6 +1066,7 @@ impl GatewayMetrics {
             worker_difficulty_avg,
             worker_hashrate,
             request_rate_limit_hits,
+            extranonce_subscriptions,
             rpc_getwork_latency,
             rpc_submitwork_latency,
             rpc_getwork_errors,
@@ -1511,6 +1520,32 @@ impl StratumGateway {
         self.metrics
             .job_broadcast_latency
             .observe(broadcast_start.elapsed().as_secs_f64());
+    }
+
+    /// Update a connected session's `extranonce1` and push a `mining.set_extranonce` JSON-RPC
+    /// notification (`{"id":null,"method":"mining.set_extranonce","params":[extranonce1, extranonce2_size]}`)
+    /// if the session has subscribed via `mining.extranonce.subscribe`.
+    ///
+    /// Returns the formatted `StratumNotification` when the session is extranonce-subscribed,
+    /// or `None` if the session is unknown or not extranonce-subscribed.
+    pub fn set_session_extranonce(
+        &self,
+        session_id: &str,
+        new_extranonce1: impl Into<String>,
+    ) -> Option<StratumNotification> {
+        let session = self.active_sessions.read().get(session_id).cloned()?;
+        let notif = session.update_extranonce1(new_extranonce1)?;
+        if let Some(tx) = self.active_subscribers.read().get(session_id) {
+            let _ = tx.try_send(notif.to_wire_line());
+        }
+        Some(notif)
+    }
+
+    /// Allocate a fresh unique `extranonce1` from the session registry, update the given session,
+    /// and push a `mining.set_extranonce` notification if the session is extranonce-subscribed.
+    pub fn rotate_session_extranonce(&self, session_id: &str) -> Option<StratumNotification> {
+        let next_en1 = self.session_registry.allocate_extranonce1();
+        self.set_session_extranonce(session_id, next_en1)
     }
 
     /// Start the Stratum TCP listener and upstream background polling loop.
@@ -2032,7 +2067,7 @@ impl StratumGateway {
                                 ["mining.set_difficulty", session.session_id.clone()],
                                 ["mining.notify", session.session_id.clone()]
                             ],
-                            session.extranonce1.clone(),
+                            session.current_extranonce1(),
                             session.extranonce2_size,
                             {
                                 "algorithm": KOVANICA_STRATUM_ALGORITHM,
@@ -2595,6 +2630,13 @@ impl StratumGateway {
                 // mining.extranonce.subscribe
                 // -------------------------------------------------------------
                 "mining.extranonce.subscribe" => {
+                    session.set_extranonce_subscribed(true);
+                    metrics.extranonce_subscriptions.inc();
+                    debug!(
+                        %remote_addr,
+                        session_id = %session.session_id,
+                        "client subscribed to mining.extranonce.subscribe"
+                    );
                     let _ = outbound_tx
                         .send(StratumResponse::ok(req_id, Value::Bool(true)).to_wire_line())
                         .await;
@@ -2787,6 +2829,7 @@ mod tests {
         metrics.record_tls_handshake_failure();
         metrics.ip_bans.inc();
         metrics.banned_ips_active.set(1);
+        metrics.extranonce_subscriptions.inc();
         metrics
             .shares_by_difficulty_bucket
             .get_or_create(&DifficultyBucketLabel { bucket: "1" })
@@ -2832,6 +2875,7 @@ mod tests {
         assert!(encoded.contains("stratum_tls_handshakes_total{result=\"failure\"} 1"));
         assert!(encoded.contains("stratum_ip_bans_total 1"));
         assert!(encoded.contains("stratum_banned_ips_active 1"));
+        assert!(encoded.contains("stratum_extranonce_subscriptions_total 1"));
         assert!(encoded.contains("stratum_shares_by_difficulty_bucket_total{bucket=\"1\"} 1"));
         assert!(encoded.contains("stratum_worker_hashrate{worker=\"rig1\"} 4200"));
         assert!(encoded.contains("stratum_rpc_getwork_latency_seconds_count 1"));
@@ -3094,6 +3138,7 @@ mod tests {
         assert_eq!(snap.workers[0].session_id, 1);
         assert_eq!(snap.workers[0].worker_name, "miner_01");
         assert!(snap.workers[0].authorized);
+        assert!(!snap.workers[0].extranonce_subscribed);
         assert!((snap.workers[0].difficulty - 4.0).abs() < 1e-9);
         assert_eq!(snap.workers[0].shares_accepted, 3);
         assert_eq!(snap.workers[0].shares_rejected, 1);
@@ -3101,6 +3146,7 @@ mod tests {
         assert_eq!(snap.workers[1].session_id, 2);
         assert_eq!(snap.workers[1].worker_name, "unauthorized");
         assert!(!snap.workers[1].authorized);
+        assert!(!snap.workers[1].extranonce_subscribed);
         assert!((snap.workers[1].difficulty - 8.0).abs() < 1e-9);
         assert_eq!(snap.workers[1].shares_accepted, 0);
         assert_eq!(snap.workers[1].shares_rejected, 2);

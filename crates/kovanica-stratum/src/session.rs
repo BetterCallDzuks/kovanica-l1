@@ -1,7 +1,7 @@
 //! Miner session and authorization management.
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use kovanica_types::Address;
 
 use crate::config::VarDiffConfig;
+use crate::protocol::StratumNotification;
 
 /// Maximum length of a worker identifier suffix (e.g. `rig_01`).
 pub const MAX_WORKER_NAME_LEN: usize = 32;
@@ -103,6 +104,8 @@ pub struct WorkerSessionSummary {
     pub worker_name: String,
     /// Whether the worker has completed `mining.authorize`.
     pub authorized: bool,
+    /// Whether the worker has subscribed to dynamic extranonce updates via `mining.extranonce.subscribe`.
+    pub extranonce_subscribed: bool,
     /// Current assigned share difficulty.
     pub difficulty: f64,
     /// Count of shares accepted in this session.
@@ -151,8 +154,12 @@ pub struct WorkerSession {
     pub numeric_session_id: u64,
     /// Unique allocated `extranonce1` hex string (e.g. 8 hex characters).
     pub extranonce1: String,
+    /// Current dynamic `extranonce1` value (updated on `mining.set_extranonce` rotation).
+    extranonce1_state: RwLock<String>,
     /// Size of `extranonce2` in bytes (4).
     pub extranonce2_size: usize,
+    /// Whether the client subscribed to `mining.extranonce.subscribe` (NiceHash/proxy support).
+    pub extranonce_subscribed: AtomicBool,
     /// Authorized worker info (set upon `mining.authorize`).
     pub authorized_worker: RwLock<Option<AuthorizedWorker>>,
     /// Current assigned share difficulty.
@@ -195,11 +202,14 @@ impl WorkerSession {
         created_at: u64,
     ) -> Self {
         let numeric_session_id = parse_numeric_session_id(&session_id);
+        let extranonce1_state = RwLock::new(extranonce1.clone());
         Self {
             session_id,
             numeric_session_id,
             extranonce1,
+            extranonce1_state,
             extranonce2_size: 4,
+            extranonce_subscribed: AtomicBool::new(false),
             authorized_worker: RwLock::new(None),
             difficulty: RwLock::new(initial_difficulty),
             submitted_shares: Mutex::new(HashSet::new()),
@@ -248,11 +258,47 @@ impl WorkerSession {
             session_id: self.numeric_session_id,
             worker_name,
             authorized,
+            extranonce_subscribed: self.is_extranonce_subscribed(),
             difficulty: self.get_difficulty(),
             shares_accepted: self.shares_accepted(),
             shares_rejected: self.shares_rejected(),
             connected_secs: self.connected_secs(),
         }
+    }
+
+    /// Check whether this session has subscribed to `mining.extranonce.subscribe`.
+    pub fn is_extranonce_subscribed(&self) -> bool {
+        self.extranonce_subscribed.load(Ordering::Relaxed)
+    }
+
+    /// Update whether this session is subscribed to `mining.extranonce.subscribe`.
+    pub fn set_extranonce_subscribed(&self, subscribed: bool) {
+        self.extranonce_subscribed
+            .store(subscribed, Ordering::Relaxed);
+    }
+
+    /// Return the session's current `extranonce1` hex string.
+    pub fn current_extranonce1(&self) -> String {
+        self.extranonce1_state.read().clone()
+    }
+
+    /// Rotate or update this session's `extranonce1` and build a `mining.set_extranonce`
+    /// JSON-RPC notification if `is_extranonce_subscribed()` is `true`.
+    ///
+    /// Returns `None` if the session has not subscribed via `mining.extranonce.subscribe`.
+    pub fn update_extranonce1(
+        &self,
+        new_extranonce1: impl Into<String>,
+    ) -> Option<StratumNotification> {
+        if !self.is_extranonce_subscribed() {
+            return None;
+        }
+        let next = new_extranonce1.into();
+        *self.extranonce1_state.write() = next.clone();
+        Some(StratumNotification::set_extranonce(
+            &next,
+            self.extranonce2_size,
+        ))
     }
 
     /// Check if this session is authorized.
@@ -561,6 +607,12 @@ impl SessionRegistry {
             initial_difficulty,
         ))
     }
+
+    /// Allocate the next unique 8-character hex `extranonce1` value for dynamic extranonce rotation.
+    pub fn allocate_extranonce1(&self) -> String {
+        let id_val = self.counter.fetch_add(1, Ordering::SeqCst);
+        format!("{:08x}", id_val as u32)
+    }
 }
 
 #[cfg(test)]
@@ -847,17 +899,19 @@ mod tests {
         assert_eq!(initial_summary.session_id, 1);
         assert_eq!(initial_summary.worker_name, "unauthorized");
         assert!(!initial_summary.authorized);
+        assert!(!initial_summary.extranonce_subscribed);
         assert!((initial_summary.difficulty - 2.5).abs() < 1e-9);
         assert_eq!(initial_summary.shares_accepted, 0);
         assert_eq!(initial_summary.shares_rejected, 0);
 
-        // Authorize worker and record accepted/rejected shares
+        // Authorize worker, subscribe extranonce, and record accepted/rejected shares
         let (_sk, pk) = kovanica_crypto::generate_keypair();
         let addr = Address(pk.0);
         let addr_str = addr.encode();
         let username = format!("{addr_str}.rig_alpha");
         let auth = parse_and_validate_username(&username).expect("valid username");
         session.authorize(auth);
+        session.set_extranonce_subscribed(true);
         session.record_accepted_share();
         session.record_accepted_share();
         session.record_rejected_share();
@@ -866,14 +920,43 @@ mod tests {
         assert_eq!(summary.session_id, 1);
         assert_eq!(summary.worker_name, "rig_alpha");
         assert!(summary.authorized);
+        assert!(summary.extranonce_subscribed);
         assert!((summary.difficulty - 2.5).abs() < 1e-9);
         assert_eq!(summary.shares_accepted, 2);
         assert_eq!(summary.shares_rejected, 1);
 
         let serialized = serde_json::to_string(&summary).expect("serialize summary");
         assert!(
+            serialized.contains(r#""extranonce_subscribed":true"#),
+            "summary JSON must include extranonce_subscribed: {serialized}"
+        );
+        assert!(
             !serialized.contains(&addr_str),
             "summary must not expose payout address: {serialized}"
         );
+    }
+
+    #[test]
+    fn test_worker_session_extranonce_subscribe_and_rotation() {
+        let session = WorkerSession::new("sess_00000001".into(), "00000001".into(), 1.0);
+        assert!(!session.is_extranonce_subscribed());
+        assert_eq!(session.current_extranonce1(), "00000001");
+
+        // When not subscribed, update_extranonce1 must be a no-op and return None
+        assert!(session.update_extranonce1("00000002").is_none());
+        assert_eq!(session.current_extranonce1(), "00000001");
+
+        // Subscribe to extranonce updates
+        session.set_extranonce_subscribed(true);
+        assert!(session.is_extranonce_subscribed());
+
+        // Rotating extranonce1 now updates session state and produces mining.set_extranonce
+        let notif = session
+            .update_extranonce1("000000aa")
+            .expect("must return set_extranonce notification when subscribed");
+        assert_eq!(session.current_extranonce1(), "000000aa");
+        assert_eq!(notif.id, serde_json::Value::Null);
+        assert_eq!(notif.method, "mining.set_extranonce");
+        assert_eq!(notif.params, serde_json::json!(["000000aa", 4]));
     }
 }
