@@ -1,7 +1,7 @@
 name: Release node desktop
 
 # MOVED: client apps (including node-desktop) now live in
-# https://github.com/KovanicaProtokol/kovanica-apps
+# https://github.com/BetterCallDzuks/kovanica-apps
 # Re-home this workflow there (it still needs a kovanica-node build from L1).
 # Kept as a failing stub so a stray v*-node-desktop tag on this repo is obvious.
 
@@ -16,5 +16,5 @@ jobs:
     steps:
       - name: Apps moved to kovanica-apps
         run: |
-          echo "::error::node-desktop lives in https://github.com/KovanicaProtokol/kovanica-apps — re-home release CI there."
+          echo "::error::node-desktop lives in https://github.com/BetterCallDzuks/kovanica-apps — re-home release CI there."
           exit 1
