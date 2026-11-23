@@ -13,14 +13,44 @@ groups:
           description: "Prometheus cannot scrape the kovanica-stratum target {{ $labels.instance }} for more than 1 minute."
 
       - alert: StratumHighShareRejectionRatio
-        expr: (sum(rate(stratum_shares_rejected_total[5m])) / clamp_min(sum(rate(stratum_shares_submitted_total[5m])), 1e-9)) > 0.20 and sum(increase(stratum_shares_submitted_total[5m])) > 20
+        expr: (sum(rate(stratum_shares_rejected_total[5m])) / clamp_min(sum(rate(stratum_shares_accepted_total[5m])) + sum(rate(stratum_shares_rejected_total[5m])), 1e-9)) > 0.10 and sum(increase(stratum_shares_submitted_total[5m])) > 20
         for: 5m
         labels:
           severity: warning
           service: kovanica-stratum
         annotations:
-          summary: "High Stratum share rejection ratio (>20% over 5m)"
-          description: "Share rejection ratio has exceeded 20% for 5 minutes (current ratio: {{ $value | humanizePercentage }}). Inspect stratum_shares_rejected_by_reason_total for root cause."
+          summary: "High Stratum share rejection/stale ratio (>10% over 5m)"
+          description: "Share rejection ratio (including stale, duplicate, low-difficulty, and invalid shares) has exceeded 10% for 5 minutes (current ratio: {{ $value | humanizePercentage }}). Inspect stratum_shares_rejected_by_reason_total for root cause."
+
+      - alert: StratumZeroActiveWorkers
+        expr: stratum_active_workers == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: kovanica-stratum
+        annotations:
+          summary: "Zero active Stratum workers for 10 minutes ({{ $labels.instance }})"
+          description: "stratum_active_workers has remained 0 for at least 10 minutes on {{ $labels.instance }}. Verify Stratum TCP/TLS listener availability, DNS/firewall routing, and miner connectivity."
+
+      - alert: StratumGracefulDrainStuck
+        expr: stratum_graceful_drain_active == 1
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-stratum
+        annotations:
+          summary: "Stratum gateway graceful drain active/stuck ({{ $labels.instance }})"
+          description: "Kovanica Stratum gateway on {{ $labels.instance }} has remained in graceful drain mode (stratum_graceful_drain_active == 1) for more than 5 minutes. Inspect remaining worker connections and shutdown orchestration."
+
+      - alert: StratumHighVarDiffChurn
+        expr: sum by (instance) (rate(stratum_vardiff_adjustments_total[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-stratum
+        annotations:
+          summary: "High Stratum VarDiff adjustment churn ({{ $labels.instance }})"
+          description: "VarDiff difficulty adjustments are occurring at {{ $value | printf \"%.2f\" }}/s over 5m on {{ $labels.instance }}. Review vardiff_target_share_secs, vardiff_retarget_interval_secs, vardiff_variance_percent, or unstable miner hashrate."
 
       - alert: StratumTlsHandshakeFailureSpike
         expr: sum(rate(stratum_tls_handshakes_total{result="failure"}[5m])) > 0.5 or ((sum(rate(stratum_tls_handshakes_total{result="failure"}[5m])) / clamp_min(sum(rate(stratum_tls_handshakes_total[5m])), 1e-9)) > 0.25 and sum(increase(stratum_tls_handshakes_total[5m])) > 10)

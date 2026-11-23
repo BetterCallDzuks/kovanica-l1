@@ -31,7 +31,10 @@ use kovanica_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 /// Default number of rounds returned by `kovanica_getLeaderSchedule` when the
 /// caller does not specify a count.
@@ -53,6 +56,27 @@ pub const MAX_GET_LOGS_RESULTS: usize = 2_000;
 /// Maximum time (in milliseconds) to spend scanning logs before returning
 /// a partial result. Prevents long-running queries from blocking the server.
 pub const MAX_GET_LOGS_SCAN_MS: u64 = 200;
+
+/// Process-wide `kovanica_getLogs` telemetry counters (exported on `/metrics`).
+static RPC_GET_LOGS_BLOCKS_SCANNED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_GET_LOGS_RESULTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_GET_LOGS_TRUNCATED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Total blocks scanned across `kovanica_getLogs` calls.
+pub fn rpc_get_logs_blocks_scanned_total() -> u64 {
+    RPC_GET_LOGS_BLOCKS_SCANNED_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Total log entries returned across `kovanica_getLogs` calls.
+pub fn rpc_get_logs_results_total() -> u64 {
+    RPC_GET_LOGS_RESULTS_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Total `kovanica_getLogs` calls rejected or truncated due to range, result,
+/// or scan-time limits.
+pub fn rpc_get_logs_truncated_total() -> u64 {
+    RPC_GET_LOGS_TRUNCATED_TOTAL.load(Ordering::Relaxed)
+}
 
 // ============================================================================
 // Helpers
@@ -1167,10 +1191,11 @@ pub async fn handle_get_logs(params: Value, state: RpcState) -> Result<Value, Rp
     if from > to {
         return Ok(json!([]));
     }
-    if to - from + 1 > MAX_GET_LOGS_BLOCK_RANGE {
+    let block_span = to - from + 1;
+    if block_span > MAX_GET_LOGS_BLOCK_RANGE {
+        RPC_GET_LOGS_TRUNCATED_TOTAL.fetch_add(1, Ordering::Relaxed);
         return Err(RpcError::InvalidParams(format!(
-            "getLogs: block range {} exceeds the maximum of {MAX_GET_LOGS_BLOCK_RANGE} blocks",
-            to - from + 1
+            "getLogs: block range {block_span} exceeds the maximum of {MAX_GET_LOGS_BLOCK_RANGE} blocks",
         )));
     }
 
@@ -1179,12 +1204,14 @@ pub async fn handle_get_logs(params: Value, state: RpcState) -> Result<Value, Rp
 
     let scanned =
         kovanica_execution::receipts_in_height_range(&state.storage, from, to).map_err(internal)?;
+    RPC_GET_LOGS_BLOCKS_SCANNED_TOTAL.fetch_add(block_span, Ordering::Relaxed);
 
     let mut logs: Vec<Value> = Vec::new();
     let scan_start = std::time::Instant::now();
     for (height, receipts) in scanned {
         // Timeout check to prevent long-running queries from blocking the server
         if scan_start.elapsed().as_millis() > MAX_GET_LOGS_SCAN_MS as u128 {
+            RPC_GET_LOGS_TRUNCATED_TOTAL.fetch_add(1, Ordering::Relaxed);
             return Err(RpcError::InvalidParams(format!(
                 "getLogs: scan timeout after {} ms; narrow the block range or filters",
                 MAX_GET_LOGS_SCAN_MS
@@ -1215,6 +1242,7 @@ pub async fn handle_get_logs(params: Value, state: RpcState) -> Result<Value, Rp
                 }));
                 log_index += 1;
                 if logs.len() > MAX_GET_LOGS_RESULTS {
+                    RPC_GET_LOGS_TRUNCATED_TOTAL.fetch_add(1, Ordering::Relaxed);
                     return Err(RpcError::InvalidParams(format!(
                         "getLogs: more than {MAX_GET_LOGS_RESULTS} logs match; narrow the block range or filters"
                     )));
@@ -1223,6 +1251,7 @@ pub async fn handle_get_logs(params: Value, state: RpcState) -> Result<Value, Rp
         }
     }
 
+    RPC_GET_LOGS_RESULTS_TOTAL.fetch_add(logs.len() as u64, Ordering::Relaxed);
     Ok(Value::Array(logs))
 }
 
@@ -4199,6 +4228,10 @@ mod tests {
             executed.receipts[0].error
         );
 
+        let scanned_before = rpc_get_logs_blocks_scanned_total();
+        let results_before = rpc_get_logs_results_total();
+        let truncated_before = rpc_get_logs_truncated_total();
+
         // Unfiltered range query returns the native transfer log.
         let logs = handle_get_logs(
             json!([{ "fromBlock": "0x0", "toBlock": "0x1" }]),
@@ -4208,6 +4241,8 @@ mod tests {
         .unwrap();
         let logs = logs.as_array().unwrap();
         assert_eq!(logs.len(), 1);
+        assert!(rpc_get_logs_blocks_scanned_total() >= scanned_before + 2);
+        assert!(rpc_get_logs_results_total() > results_before);
         assert_eq!(logs[0]["address"], json!(sender.to_string()));
         assert_eq!(
             logs[0]["topics"],
@@ -4259,6 +4294,7 @@ mod tests {
         )
         .await;
         assert!(matches!(too_wide, Err(RpcError::InvalidParams(_))));
+        assert!(rpc_get_logs_truncated_total() > truncated_before);
 
         // A malformed filter is rejected.
         assert!(matches!(

@@ -576,6 +576,10 @@ fn allow_origin(headers: &mut HeaderMap, origin: &'static str) {
         axum::http::HeaderValue::from_static(origin),
     );
     headers.insert(
+        axum::http::header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        axum::http::HeaderValue::from_static("X-Kovanica-Rpc-Version, X-Kovanica-Network-Tag"),
+    );
+    headers.insert(
         axum::http::header::VARY,
         axum::http::HeaderValue::from_static("Origin"),
     );

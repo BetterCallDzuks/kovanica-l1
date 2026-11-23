@@ -22,7 +22,9 @@ use kovanica_cli::contracts::{
 use kovanica_cli::miner::{run_miner, run_miner_bench, MinerBenchArgs, MinerCommand, MinerRunArgs};
 use kovanica_cli::rpc::RpcClient;
 use kovanica_cli::tx_inspect::{self, TxInspectCommand};
-use kovanica_cli::{comms, contracts, mining, node, node_doctor, output, tui, tx, wallet};
+use kovanica_cli::{
+    comms, contracts, mining, node, node_doctor, output, snapshot_verify, tui, tx, wallet,
+};
 use kovanica_types::transaction::TransactionKind;
 use kovanica_types::{crypto::PublicKey, crypto::SigningKey, Address};
 use kovanica_wallet_core::BalanceProvider;
@@ -170,6 +172,11 @@ enum Commands {
     Dag {
         #[command(subcommand)]
         command: DagCommand,
+    },
+    /// Offline snapshot integrity verification subcommands
+    Snapshot {
+        #[command(subcommand)]
+        command: snapshot_verify::SnapshotCommand,
     },
 }
 
@@ -587,6 +594,9 @@ async fn main() -> Result<()> {
         },
         Commands::Dag { command } => match command {
             DagCommand::Tips => mining::dag_tips(&client, json).await,
+        },
+        Commands::Snapshot { command } => match command {
+            snapshot_verify::SnapshotCommand::Verify(args) => snapshot_verify::run(args, json),
         },
     }
 }
@@ -2458,6 +2468,42 @@ mod wallet_cli_security_tests {
                 assert_eq!(args.expected_chain_id, Some(2));
             }
             _ => panic!("expected node doctor"),
+        }
+    }
+
+    #[test]
+    fn snapshot_verify_subcommand_parses_path_and_flags() {
+        let cli = Cli::try_parse_from(["kovanica", "snapshot", "verify", "./snap-dir"]).unwrap();
+        assert!(!cli.json);
+        match cli.command {
+            Commands::Snapshot {
+                command: snapshot_verify::SnapshotCommand::Verify(args),
+            } => {
+                assert_eq!(args.path, PathBuf::from("./snap-dir"));
+                assert_eq!(args.expected_chain_id, None);
+            }
+            _ => panic!("expected snapshot verify"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "snapshot",
+            "verify",
+            "./snap-dir/manifest.json",
+            "--expected-chain-id",
+            "2",
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Snapshot {
+                command: snapshot_verify::SnapshotCommand::Verify(args),
+            } => {
+                assert_eq!(args.path, PathBuf::from("./snap-dir/manifest.json"));
+                assert_eq!(args.expected_chain_id, Some(2));
+            }
+            _ => panic!("expected snapshot verify"),
         }
     }
 }
