@@ -21,6 +21,7 @@ use kovanica_cli::contracts::{
 };
 use kovanica_cli::miner::{run_miner, run_miner_bench, MinerBenchArgs, MinerCommand, MinerRunArgs};
 use kovanica_cli::rpc::RpcClient;
+use kovanica_cli::tx_inspect::{self, TxInspectCommand};
 use kovanica_cli::{comms, contracts, mining, node, output, tui, tx, wallet};
 use kovanica_types::transaction::TransactionKind;
 use kovanica_types::{crypto::PublicKey, crypto::SigningKey, Address};
@@ -124,6 +125,11 @@ enum Commands {
     Contract {
         #[command(subcommand)]
         command: ContractInspectCommand,
+    },
+    /// Read-only transaction inspection subcommands
+    Tx {
+        #[command(subcommand)]
+        command: TxInspectCommand,
     },
     /// HTLC atomic swaps (KVP-104)
     Htlc {
@@ -540,6 +546,7 @@ async fn main() -> Result<()> {
         Commands::Deploy(args) => cmd_deploy(&client, chain_id, args, json).await,
         Commands::Call(args) => cmd_call(&client, chain_id, args, json).await,
         Commands::Contract { command } => contract_inspect::run(&client, command, json).await,
+        Commands::Tx { command } => tx_inspect::run(&client, command, json).await,
         Commands::Htlc { command } => {
             contracts::run(&client, chain_id, ContractCommand::Htlc { command }, json).await
         }
@@ -2332,5 +2339,78 @@ mod wallet_cli_security_tests {
         assert!(
             Cli::try_parse_from(["kovanica", "contract", "call", "--contract", &addr,]).is_err()
         );
+    }
+
+    #[test]
+    fn contract_batch_call_and_tx_receipt_subcommands_parse() {
+        // 1. contract batch-call --file <path>
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "contract",
+            "batch-call",
+            "--file",
+            "calls.json",
+            "--json",
+            "--rpc-url",
+            "http://127.0.0.1:9545",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        assert_eq!(cli.rpc_url, "http://127.0.0.1:9545");
+        match cli.command {
+            Commands::Contract {
+                command: ContractInspectCommand::BatchCall(args),
+            } => {
+                assert_eq!(args.file, PathBuf::from("calls.json"));
+            }
+            _ => panic!("expected contract batch-call"),
+        }
+        assert!(Cli::try_parse_from(["kovanica", "contract", "batch-call"]).is_err());
+
+        // 2. tx receipt <tx-hash> defaults
+        let tx_hash = format!("0x{}", "ab".repeat(32));
+        let cli = Cli::try_parse_from(["kovanica", "tx", "receipt", &tx_hash]).unwrap();
+        assert!(!cli.json);
+        match cli.command {
+            Commands::Tx {
+                command: TxInspectCommand::Receipt(args),
+            } => {
+                assert_eq!(args.tx_hash, tx_hash);
+                assert!(!args.wait);
+                assert_eq!(args.timeout_secs, tx_inspect::DEFAULT_WAIT_TIMEOUT_SECS);
+                assert_eq!(args.poll_interval_ms, tx_inspect::DEFAULT_POLL_INTERVAL_MS);
+            }
+            _ => panic!("expected tx receipt"),
+        }
+
+        // 3. tx receipt with --wait, --timeout-secs, --poll-interval-ms, --json
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "tx",
+            "receipt",
+            &tx_hash,
+            "--wait",
+            "--timeout-secs",
+            "15",
+            "--poll-interval-ms",
+            "250",
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Tx {
+                command: TxInspectCommand::Receipt(args),
+            } => {
+                assert_eq!(args.tx_hash, tx_hash);
+                assert!(args.wait);
+                assert_eq!(args.timeout_secs, 15);
+                assert_eq!(args.poll_interval_ms, 250);
+            }
+            _ => panic!("expected tx receipt"),
+        }
+
+        // 4. Missing tx-hash fails
+        assert!(Cli::try_parse_from(["kovanica", "tx", "receipt"]).is_err());
     }
 }

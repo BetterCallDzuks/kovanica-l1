@@ -80,7 +80,11 @@ pub fn rpc_batch_items_total() -> u64 {
 pub fn rpc_batch_rejected_total() -> u64 {
     RPC_BATCH_REJECTED_TOTAL.load(Ordering::Relaxed)
 }
-pub use subscriptions::{EventBus, SubscriptionKind};
+pub use subscriptions::{
+    rpc_ws_active_connections, rpc_ws_lagged_messages_total, rpc_ws_rejected_connections_total,
+    EventBus, SubscriptionKind, WsConnectionGuard, WsConnectionLimitExceeded, WsConnectionLimiter,
+    DEFAULT_MAX_WS_CONNECTIONS_PER_IP,
+};
 
 #[derive(Error, Debug)]
 pub enum RpcError {
@@ -298,6 +302,7 @@ pub struct RpcServer {
     addr: SocketAddr,
     state: RpcState,
     activity: ActivityTracker,
+    ws_limiter: Arc<WsConnectionLimiter>,
 }
 
 impl RpcServer {
@@ -321,9 +326,21 @@ impl RpcServer {
             addr,
             state,
             activity: ActivityTracker::new(),
+            ws_limiter: Arc::new(WsConnectionLimiter::default()),
         };
         server.register_default_methods().await;
         server
+    }
+
+    /// Override the maximum concurrent WebSocket connections permitted per client IP.
+    pub fn with_max_ws_connections_per_ip(mut self, max_per_ip: usize) -> Self {
+        self.ws_limiter = Arc::new(WsConnectionLimiter::new(max_per_ip));
+        self
+    }
+
+    /// Returns a handle to the server's [`WsConnectionLimiter`].
+    pub fn ws_limiter(&self) -> Arc<WsConnectionLimiter> {
+        Arc::clone(&self.ws_limiter)
     }
 
     /// Returns a handle to the server's [`ActivityTracker`].
@@ -518,6 +535,7 @@ impl RpcServer {
             .layer(Extension(self.state.peer_count.clone()))
             .layer(Extension(self.state.clone()))
             .layer(Extension(self.activity.clone()))
+            .layer(Extension(self.ws_limiter.clone()))
             // Outermost, so a browser preflight is answered before the
             // rate limiter and before routing.
             .layer(axum::middleware::from_fn(console_cors))
@@ -625,15 +643,53 @@ fn adopt_systemd_listener() -> Result<Option<TcpListener>, std::io::Error> {
 }
 
 /// Upgrades an HTTP request to a WebSocket and drives the subscription loop.
+///
+/// Enforces the per-IP concurrent WebSocket connection cap before upgrading,
+/// returning HTTP `429 Too Many Requests` when the cap is exceeded and
+/// releasing the slot via RAII [`WsConnectionGuard`] when the socket closes.
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Extension(state): Extension<RpcState>,
+    Extension(rate_limiter): Extension<Arc<RateLimiterState>>,
+    Extension(ws_limiter): Extension<Arc<WsConnectionLimiter>>,
     Extension(activity): Extension<ActivityTracker>,
+    resolved_ip: Option<Extension<ResolvedClientIp>>,
+    headers: HeaderMap,
 ) -> Response {
     activity.touch();
+    let client_ip = match resolved_ip {
+        Some(Extension(ResolvedClientIp(ip))) => ip,
+        None => {
+            let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+            rate_limiter.resolve_client_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED), xff)
+        }
+    };
+    let guard = match ws_limiter.try_acquire(client_ip) {
+        Ok(guard) => guard,
+        Err(err) => {
+            warn!(
+                ip = %client_ip,
+                max_per_ip = err.max_per_ip,
+                "rejecting WebSocket upgrade: per-IP connection cap exceeded"
+            );
+            let mut response = Response::new(
+                format!(
+                    "Too many WebSocket connections (max {} per IP)",
+                    err.max_per_ip
+                )
+                .into(),
+            );
+            *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+            return response;
+        }
+    };
+
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
-        .on_upgrade(move |socket| subscriptions::serve_connection(socket, state))
+        .on_upgrade(move |socket| async move {
+            let _guard = guard;
+            subscriptions::serve_connection(socket, state).await;
+        })
 }
 
 /// Fixed set of JSON-RPC method names the default server registers.
@@ -944,9 +1000,10 @@ async fn health_check(Extension(state): Extension<RpcState>) -> (StatusCode, Jso
     )
 }
 
-/// Append RPC batch telemetry counters to the Prometheus exposition text,
-/// preserving any trailing `# EOF\n` marker required by OpenMetrics scrapers.
-fn append_rpc_batch_metrics(mut base: String) -> String {
+/// Append RPC batch and WebSocket telemetry counters/gauges to the Prometheus
+/// exposition text, preserving any trailing `# EOF\n` marker required by
+/// OpenMetrics scrapers.
+fn append_rpc_metrics(mut base: String) -> String {
     let has_eof = base.ends_with("# EOF\n");
     if has_eof {
         base.truncate(base.len() - "# EOF\n".len());
@@ -965,10 +1022,22 @@ fn append_rpc_batch_metrics(mut base: String) -> String {
          rpc_batch_items_total {}\n\
          # HELP rpc_batch_rejected_total Total number of rejected JSON-RPC 2.0 batch requests.\n\
          # TYPE rpc_batch_rejected_total counter\n\
-         rpc_batch_rejected_total {}",
+         rpc_batch_rejected_total {}\n\
+         # HELP rpc_ws_active_connections Current number of active WebSocket subscription connections.\n\
+         # TYPE rpc_ws_active_connections gauge\n\
+         rpc_ws_active_connections {}\n\
+         # HELP rpc_ws_rejected_connections_total Total number of WebSocket connections rejected due to per-IP connection cap.\n\
+         # TYPE rpc_ws_rejected_connections_total counter\n\
+         rpc_ws_rejected_connections_total {}\n\
+         # HELP rpc_ws_lagged_messages_total Total number of WebSocket broadcast notifications dropped due to slow consumers.\n\
+         # TYPE rpc_ws_lagged_messages_total counter\n\
+         rpc_ws_lagged_messages_total {}",
         rpc_batch_requests_total(),
         rpc_batch_items_total(),
         rpc_batch_rejected_total(),
+        rpc_ws_active_connections(),
+        rpc_ws_rejected_connections_total(),
+        rpc_ws_lagged_messages_total(),
     );
     if has_eof {
         base.push_str("# EOF\n");
@@ -978,7 +1047,7 @@ fn append_rpc_batch_metrics(mut base: String) -> String {
 
 /// Prometheus /metrics endpoint (text format).
 async fn metrics_handler() -> (StatusCode, String) {
-    (StatusCode::OK, append_rpc_batch_metrics(metrics_text()))
+    (StatusCode::OK, append_rpc_metrics(metrics_text()))
 }
 
 fn build_success_object(id: Option<Value>, result: Value) -> JsonRpcResponse {

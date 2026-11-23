@@ -48,11 +48,18 @@
 //! Subscription ids are scoped to a single WebSocket connection.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use crate::chain_methods::{block_to_json, transaction_to_json};
+use crate::rpc_middleware::normalize_bucket_ip;
 use crate::{JsonRpcErrorObject, JsonRpcRequest, JsonRpcResponse, RpcError};
 use kovanica_execution::TransactionReceipt;
 use kovanica_types::{
@@ -61,8 +68,163 @@ use kovanica_types::{
 
 /// Capacity of each broadcast channel. Slow consumers that fall further than
 /// this behind simply drop missed notifications (a `Lagged` receive error is
-/// treated as "no event") rather than stalling the publisher.
+/// treated as "no event" and counted in `rpc_ws_lagged_messages_total`) rather
+/// than stalling the publisher.
 const CHANNEL_CAPACITY: usize = 1024;
+
+/// Default maximum concurrent WebSocket connections allowed per client IP
+/// (IPv6 clients are grouped by `/64`, matching HTTP rate limiting).
+pub const DEFAULT_MAX_WS_CONNECTIONS_PER_IP: usize = 16;
+
+/// Process-wide WebSocket telemetry metrics (exported on `/metrics`).
+static RPC_WS_ACTIVE_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
+static RPC_WS_REJECTED_CONNECTIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_WS_LAGGED_MESSAGES_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Current number of active WebSocket subscription connections.
+pub fn rpc_ws_active_connections() -> u64 {
+    RPC_WS_ACTIVE_CONNECTIONS.load(Ordering::Relaxed)
+}
+
+/// Total number of WebSocket connection attempts rejected due to the per-IP cap.
+pub fn rpc_ws_rejected_connections_total() -> u64 {
+    RPC_WS_REJECTED_CONNECTIONS_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Total number of WebSocket broadcast notifications dropped due to slow consumers.
+pub fn rpc_ws_lagged_messages_total() -> u64 {
+    RPC_WS_LAGGED_MESSAGES_TOTAL.load(Ordering::Relaxed)
+}
+
+fn record_ws_lagged_messages(skipped: u64) {
+    RPC_WS_LAGGED_MESSAGES_TOTAL.fetch_add(skipped, Ordering::Relaxed);
+}
+
+/// Error returned when a client IP exceeds its concurrent WebSocket connection cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WsConnectionLimitExceeded {
+    pub max_per_ip: usize,
+}
+
+impl std::fmt::Display for WsConnectionLimitExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "WebSocket per-IP connection limit ({}) exceeded",
+            self.max_per_ip
+        )
+    }
+}
+
+impl std::error::Error for WsConnectionLimitExceeded {}
+
+/// Bounded per-IP concurrent WebSocket connection tracker.
+///
+/// IPv6 addresses are normalized to their `/64` prefix so rotating host bits
+/// within an allocation cannot bypass the per-IP cap. Slots are released
+/// automatically when the returned [`WsConnectionGuard`] is dropped.
+#[derive(Debug)]
+pub struct WsConnectionLimiter {
+    max_per_ip: usize,
+    active: Mutex<HashMap<IpAddr, usize>>,
+}
+
+impl Default for WsConnectionLimiter {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_WS_CONNECTIONS_PER_IP)
+    }
+}
+
+impl WsConnectionLimiter {
+    /// Create a limiter permitting at most `max_per_ip` concurrent WebSocket
+    /// connections per client IP (`0` rejects all connections fail-closed).
+    pub fn new(max_per_ip: usize) -> Self {
+        Self {
+            max_per_ip,
+            active: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Configured maximum concurrent connections per client IP.
+    pub fn max_per_ip(&self) -> usize {
+        self.max_per_ip
+    }
+
+    /// Attempt to reserve a WebSocket connection slot for `ip`.
+    ///
+    /// On success, increments both the per-IP counter and the process-wide
+    /// `rpc_ws_active_connections` gauge, returning an RAII [`WsConnectionGuard`]
+    /// that releases both on [`Drop`]. On failure, increments
+    /// `rpc_ws_rejected_connections_total` and returns
+    /// [`WsConnectionLimitExceeded`].
+    pub fn try_acquire(
+        self: &Arc<Self>,
+        ip: IpAddr,
+    ) -> Result<WsConnectionGuard, WsConnectionLimitExceeded> {
+        let bucket_ip = normalize_bucket_ip(ip);
+        let mut active = self.active.lock();
+        let current = active.get(&bucket_ip).copied().unwrap_or(0);
+        if current >= self.max_per_ip {
+            RPC_WS_REJECTED_CONNECTIONS_TOTAL.fetch_add(1, Ordering::Relaxed);
+            return Err(WsConnectionLimitExceeded {
+                max_per_ip: self.max_per_ip,
+            });
+        }
+        active.insert(bucket_ip, current + 1);
+        drop(active);
+
+        RPC_WS_ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+        Ok(WsConnectionGuard {
+            limiter: Arc::clone(self),
+            bucket_ip,
+        })
+    }
+
+    /// Current active WebSocket connections tracked for `ip` by this limiter.
+    pub fn active_for(&self, ip: IpAddr) -> usize {
+        let bucket_ip = normalize_bucket_ip(ip);
+        self.active.lock().get(&bucket_ip).copied().unwrap_or(0)
+    }
+
+    /// Total active WebSocket connections across all IPs tracked by this limiter.
+    pub fn total_active(&self) -> usize {
+        self.active.lock().values().sum()
+    }
+
+    /// Number of distinct IP buckets currently holding at least one connection.
+    pub fn tracked_ips(&self) -> usize {
+        self.active.lock().len()
+    }
+
+    fn release(&self, bucket_ip: IpAddr) {
+        let mut active = self.active.lock();
+        if let Some(count) = active.get_mut(&bucket_ip) {
+            if *count <= 1 {
+                active.remove(&bucket_ip);
+            } else {
+                *count -= 1;
+            }
+        }
+        drop(active);
+        RPC_WS_ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// RAII guard holding one per-IP WebSocket connection slot.
+///
+/// Automatically decrements the per-IP count and `rpc_ws_active_connections`
+/// when dropped (e.g. when the socket closes or the upgrade is aborted).
+#[derive(Debug)]
+pub struct WsConnectionGuard {
+    limiter: Arc<WsConnectionLimiter>,
+    bucket_ip: IpAddr,
+}
+
+impl Drop for WsConnectionGuard {
+    fn drop(&mut self) {
+        self.limiter.release(self.bucket_ip);
+    }
+}
 
 /// The set of events a client can subscribe to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -490,8 +652,20 @@ fn notifications_for(
     kind: SubscriptionKind,
     received: Result<Value, broadcast::error::RecvError>,
 ) -> Vec<Value> {
-    let Ok(event) = received else {
-        return Vec::new();
+    let event = match received {
+        Ok(event) => event,
+        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+            record_ws_lagged_messages(skipped);
+            tracing::warn!(
+                subscription = kind.as_str(),
+                skipped,
+                "WebSocket subscriber lagged behind event bus; dropped missed notifications"
+            );
+            return Vec::new();
+        }
+        Err(broadcast::error::RecvError::Closed) => {
+            return Vec::new();
+        }
     };
 
     let mut ids: Vec<u64> = connection
@@ -821,5 +995,89 @@ mod tests {
             "33rd subscription must be rejected"
         );
         assert_eq!(overflow["error"]["code"], json!(-32600));
+    }
+
+    #[test]
+    fn ws_connection_limiter_enforces_cap_and_releases_on_drop() {
+        let limiter = Arc::new(WsConnectionLimiter::new(2));
+        let ip: IpAddr = "198.51.100.10".parse().unwrap();
+
+        let rejected_before = rpc_ws_rejected_connections_total();
+
+        let g1 = limiter.try_acquire(ip).expect("1st connection allowed");
+        let g2 = limiter.try_acquire(ip).expect("2nd connection allowed");
+        assert_eq!(limiter.active_for(ip), 2);
+        assert_eq!(limiter.total_active(), 2);
+        assert_eq!(limiter.tracked_ips(), 1);
+
+        let err = limiter
+            .try_acquire(ip)
+            .expect_err("3rd connection must be rejected");
+        assert_eq!(err, WsConnectionLimitExceeded { max_per_ip: 2 });
+        assert!(rpc_ws_rejected_connections_total() > rejected_before);
+        assert_eq!(limiter.active_for(ip), 2);
+
+        // Dropping one guard frees its slot cleanly.
+        drop(g1);
+        assert_eq!(limiter.active_for(ip), 1);
+        assert_eq!(limiter.total_active(), 1);
+
+        let g3 = limiter
+            .try_acquire(ip)
+            .expect("slot released after drop must be reusable");
+        assert_eq!(limiter.active_for(ip), 2);
+
+        // Dropping all guards cleans up the map entry completely.
+        drop(g2);
+        drop(g3);
+        assert_eq!(limiter.active_for(ip), 0);
+        assert_eq!(limiter.total_active(), 0);
+        assert_eq!(limiter.tracked_ips(), 0);
+    }
+
+    #[test]
+    fn ws_connection_limiter_isolates_distinct_ips_and_groups_ipv6_slash64() {
+        let limiter = Arc::new(WsConnectionLimiter::new(1));
+        let ip_a: IpAddr = "10.0.0.1".parse().unwrap();
+        let ip_b: IpAddr = "10.0.0.2".parse().unwrap();
+        let v6_a: IpAddr = "2001:db8:abcd:1234::1".parse().unwrap();
+        let v6_b: IpAddr = "2001:db8:abcd:1234::9999".parse().unwrap();
+        let v6_other: IpAddr = "2001:db8:abcd:5678::1".parse().unwrap();
+
+        let _ga = limiter.try_acquire(ip_a).expect("ip_a allowed");
+        assert!(
+            limiter.try_acquire(ip_a).is_err(),
+            "ip_a reached its cap of 1"
+        );
+        let _gb = limiter
+            .try_acquire(ip_b)
+            .expect("ip_b has an independent cap");
+
+        let _gv6 = limiter.try_acquire(v6_a).expect("v6_a allowed");
+        assert!(
+            limiter.try_acquire(v6_b).is_err(),
+            "same IPv6 /64 must share connection cap"
+        );
+        let _gv6_other = limiter
+            .try_acquire(v6_other)
+            .expect("different IPv6 /64 has independent cap");
+        assert_eq!(limiter.total_active(), 4);
+        assert_eq!(limiter.tracked_ips(), 4);
+    }
+
+    #[test]
+    fn lagged_broadcast_increments_lag_metric() {
+        let connection = Connection::default();
+        let before = rpc_ws_lagged_messages_total();
+        let frames = notifications_for(
+            &connection,
+            SubscriptionKind::NewHeads,
+            Err(broadcast::error::RecvError::Lagged(7)),
+        );
+        assert!(frames.is_empty());
+        assert!(
+            rpc_ws_lagged_messages_total() >= before + 7,
+            "lagged counter should increase by skipped count"
+        );
     }
 }

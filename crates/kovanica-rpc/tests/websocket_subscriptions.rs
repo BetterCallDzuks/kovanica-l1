@@ -389,6 +389,171 @@ async fn websocket_eth_subscribe_logs_with_filter() {
     handle.abort();
 }
 
+async fn fetch_metrics(addr: SocketAddr) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = TcpStream::connect(addr).await.expect("connect to /metrics");
+    stream
+        .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("write GET /metrics");
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await.expect("read /metrics");
+    String::from_utf8(buf).expect("metrics response utf8")
+}
+
+fn parse_metric_u64(metrics_text: &str, name: &str) -> u64 {
+    let prefix = format!("{name} ");
+    metrics_text
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .and_then(|val| val.trim().parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("metric `{name}` not found in /metrics:\n{metrics_text}"))
+}
+
+#[tokio::test]
+async fn websocket_enforces_per_ip_cap_releases_slots_and_exposes_metrics() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = Arc::new(Storage::new(dir.path().join("state.db")).expect("storage"));
+    let events = EventBus::new();
+    let state = test_state(storage, events.clone());
+    let addr = SocketAddr::from(([127, 0, 0, 1], free_port()));
+    let server = RpcServer::new(
+        addr,
+        state,
+        Some(RateLimitConfig::from_requests_per_minute(0)),
+        None,
+    )
+    .await
+    .with_max_ws_connections_per_ip(2);
+    let ws_limiter = server.ws_limiter();
+    let handle = server.start().await.expect("start rpc server");
+
+    let url = format!("ws://{addr}/ws");
+
+    // 1. Open 2 connections (reaches cap = 2).
+    let mut ws1 = connect(&url).await;
+    let ws2 = connect(&url).await;
+    assert_eq!(ws_limiter.total_active(), 2);
+
+    let rejected_before = parse_metric_u64(
+        &fetch_metrics(addr).await,
+        "rpc_ws_rejected_connections_total",
+    );
+
+    // 2. 3rd concurrent connection from the same IP is rejected with HTTP 429.
+    let err = connect_async(&url)
+        .await
+        .expect_err("3rd concurrent WebSocket from same IP must be rejected");
+    match err {
+        tokio_tungstenite::tungstenite::Error::Http(resp) => {
+            assert_eq!(
+                resp.status(),
+                tokio_tungstenite::tungstenite::http::StatusCode::TOO_MANY_REQUESTS,
+                "expected 429 Too Many Requests on per-IP WS cap overflow"
+            );
+        }
+        other => panic!("expected HTTP 429 rejection, got: {other:?}"),
+    }
+
+    // 3. Trigger broadcast lag on ws1 by publishing > CHANNEL_CAPACITY (1024) events
+    //    synchronously without yielding so the subscriber channel wraps around.
+    send_json(
+        &mut ws1,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "subscribe", "params": ["newHeads"]}),
+    )
+    .await;
+    let sub_resp = next_json(&mut ws1).await;
+    assert_eq!(sub_resp["result"], json!("0x1"));
+
+    let lagged_before =
+        parse_metric_u64(&fetch_metrics(addr).await, "rpc_ws_lagged_messages_total");
+
+    let block = StatementBlock {
+        author: 0,
+        round: 1,
+        parents: Vec::new(),
+        transactions: Vec::new(),
+        statements: Vec::new(),
+        signature: Signature([0u8; 64]),
+        digest: Hash([0x55; 32]),
+        merkle_root: Default::default(),
+    };
+    for _ in 0..1100 {
+        events.publish_new_head(&block);
+    }
+
+    // Wait briefly for serve_connection to observe RecvError::Lagged.
+    let mut lagged_after = lagged_before;
+    for _ in 0..25 {
+        lagged_after = parse_metric_u64(&fetch_metrics(addr).await, "rpc_ws_lagged_messages_total");
+        if lagged_after > lagged_before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        lagged_after > lagged_before,
+        "expected rpc_ws_lagged_messages_total to increment after broadcast overflow ({lagged_before} -> {lagged_after})"
+    );
+
+    // Verify /metrics exposes all three WS metrics before any # EOF marker.
+    let metrics_body = fetch_metrics(addr).await;
+    let active_now = parse_metric_u64(&metrics_body, "rpc_ws_active_connections");
+    let rejected_after = parse_metric_u64(&metrics_body, "rpc_ws_rejected_connections_total");
+    assert!(
+        active_now >= 2,
+        "expected rpc_ws_active_connections >= 2 while two sockets are open, got {active_now}"
+    );
+    assert!(
+        rejected_after > rejected_before,
+        "expected rpc_ws_rejected_connections_total to increment ({rejected_before} -> {rejected_after})"
+    );
+    if let Some(eof_pos) = metrics_body.find("# EOF") {
+        assert!(
+            metrics_body.find("rpc_ws_active_connections").unwrap() < eof_pos
+                && metrics_body
+                    .find("rpc_ws_rejected_connections_total")
+                    .unwrap()
+                    < eof_pos
+                && metrics_body.find("rpc_ws_lagged_messages_total").unwrap() < eof_pos,
+            "WS metrics must appear before # EOF"
+        );
+    }
+
+    // 4. Closing ws2 releases its RAII slot so a replacement connection succeeds.
+    drop(ws2);
+    for _ in 0..50 {
+        if ws_limiter.total_active() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        ws_limiter.total_active(),
+        1,
+        "dropping ws2 must release its per-IP slot"
+    );
+
+    let ws3 = connect(&url).await;
+    assert_eq!(ws_limiter.total_active(), 2);
+
+    drop(ws1);
+    drop(ws3);
+    for _ in 0..50 {
+        if ws_limiter.total_active() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        ws_limiter.total_active(),
+        0,
+        "dropping all sockets must release all slots"
+    );
+
+    handle.abort();
+}
+
 fn sample_transaction() -> kovanica_types::Transaction {
     use kovanica_types::{Transaction, TransactionKind};
 
