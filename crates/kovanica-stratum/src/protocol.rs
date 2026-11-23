@@ -110,6 +110,12 @@ impl StratumNotification {
         )
     }
 
+    /// Create `client.reconnect` notification instructing miners to reconnect (optionally to a new
+    /// host/port after `wait_time_secs` seconds).
+    pub fn client_reconnect(host: Option<&str>, port: Option<u16>, wait_time_secs: u64) -> Self {
+        Self::new("client.reconnect", json!([host, port, wait_time_secs]))
+    }
+
     /// Create `mining.notify` notification matching the 9-parameter Stratum V1 format.
     #[allow(clippy::too_many_arguments)]
     pub fn notify(
@@ -218,6 +224,31 @@ mod tests {
         assert_eq!(
             wire,
             "{\"id\":null,\"method\":\"mining.set_extranonce\",\"params\":[\"0000002a\",4]}\n"
+        );
+    }
+
+    #[test]
+    fn test_serialize_client_reconnect_notification() {
+        let notif_default = StratumNotification::client_reconnect(None, None, 0);
+        assert_eq!(notif_default.id, Value::Null);
+        assert_eq!(notif_default.method, "client.reconnect");
+        assert_eq!(notif_default.params, json!([null, null, 0]));
+        assert_eq!(
+            notif_default.to_wire_line(),
+            "{\"id\":null,\"method\":\"client.reconnect\",\"params\":[null,null,0]}\n"
+        );
+
+        let notif_target =
+            StratumNotification::client_reconnect(Some("pool2.kovanica.online"), Some(3334), 5);
+        assert_eq!(notif_target.id, Value::Null);
+        assert_eq!(notif_target.method, "client.reconnect");
+        assert_eq!(
+            notif_target.params,
+            json!(["pool2.kovanica.online", 3334, 5])
+        );
+        assert_eq!(
+            notif_target.to_wire_line(),
+            "{\"id\":null,\"method\":\"client.reconnect\",\"params\":[\"pool2.kovanica.online\",3334,5]}\n"
         );
     }
 }

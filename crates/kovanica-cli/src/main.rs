@@ -22,7 +22,7 @@ use kovanica_cli::contracts::{
 use kovanica_cli::miner::{run_miner, run_miner_bench, MinerBenchArgs, MinerCommand, MinerRunArgs};
 use kovanica_cli::rpc::RpcClient;
 use kovanica_cli::tx_inspect::{self, TxInspectCommand};
-use kovanica_cli::{comms, contracts, mining, node, output, tui, tx, wallet};
+use kovanica_cli::{comms, contracts, mining, node, node_doctor, output, tui, tx, wallet};
 use kovanica_types::transaction::TransactionKind;
 use kovanica_types::{crypto::PublicKey, crypto::SigningKey, Address};
 use kovanica_wallet_core::BalanceProvider;
@@ -179,6 +179,8 @@ pub enum NodeCommand {
     Sync,
     /// Inspect connected peers
     Peers,
+    /// Run read-only pre-flight diagnostics against a node (and optional Stratum gateway)
+    Doctor(node_doctor::NodeDoctorArgs),
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
@@ -514,6 +516,7 @@ async fn main() -> Result<()> {
         Commands::Node { command } => match command {
             NodeCommand::Sync => node::sync(&client, chain_id, json).await,
             NodeCommand::Peers => node::peers(&client, chain_id, json).await,
+            NodeCommand::Doctor(args) => node_doctor::run(&client, args, json).await,
         },
         Commands::Sync => node::sync(&client, chain_id, json).await,
         Commands::Peers => node::peers(&client, chain_id, json).await,
@@ -2412,5 +2415,49 @@ mod wallet_cli_security_tests {
 
         // 4. Missing tx-hash fails
         assert!(Cli::try_parse_from(["kovanica", "tx", "receipt"]).is_err());
+    }
+
+    #[test]
+    fn node_doctor_subcommand_parses_defaults_and_custom_flags() {
+        let cli = Cli::try_parse_from(["kovanica", "node", "doctor"]).unwrap();
+        assert_eq!(cli.rpc_url, "http://127.0.0.1:8545");
+        assert!(!cli.json);
+        match cli.command {
+            Commands::Node {
+                command: NodeCommand::Doctor(args),
+            } => {
+                assert_eq!(args.stratum_health_url, None);
+                assert_eq!(args.expected_chain_id, None);
+            }
+            _ => panic!("expected node doctor"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "node",
+            "doctor",
+            "--rpc-url",
+            "http://127.0.0.1:9545",
+            "--stratum-health-url",
+            "http://127.0.0.1:9100/health",
+            "--expected-chain-id",
+            "2",
+            "--json",
+        ])
+        .unwrap();
+        assert_eq!(cli.rpc_url, "http://127.0.0.1:9545");
+        assert!(cli.json);
+        match cli.command {
+            Commands::Node {
+                command: NodeCommand::Doctor(args),
+            } => {
+                assert_eq!(
+                    args.stratum_health_url.as_deref(),
+                    Some("http://127.0.0.1:9100/health")
+                );
+                assert_eq!(args.expected_chain_id, Some(2));
+            }
+            _ => panic!("expected node doctor"),
+        }
     }
 }

@@ -131,6 +131,22 @@ async fn main() -> Result<()> {
             let _ = tokio::signal::ctrl_c().await;
             info!("received SIGINT (Ctrl-C), initiating graceful Stratum gateway shutdown");
         }
+        let notified = signal_gateway.begin_graceful_drain(None, None, 0);
+        if notified > 0 && signal_gateway.config().drain_timeout_secs > 0 {
+            let drain_timeout =
+                std::time::Duration::from_secs(signal_gateway.config().drain_timeout_secs);
+            info!(
+                notified_sessions = notified,
+                drain_timeout_secs = signal_gateway.config().drain_timeout_secs,
+                "waiting for connected Stratum workers to drain before shutdown"
+            );
+            let deadline = tokio::time::Instant::now() + drain_timeout;
+            while signal_gateway.metrics().active_connections.get() > 0
+                && tokio::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
         signal_gateway.shutdown();
     });
 
