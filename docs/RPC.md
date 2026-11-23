@@ -150,3 +150,35 @@ Block object with header fields, round, height (if committed), parents, parent_h
 ## `kovanica_getLogs`
 
 `fromBlock` and `toBlock` are committed-leader heights: a JSON integer, a `0x` hex quantity, or a tag. `"latest"` is the default. `"earliest"` is height 0. `"pending"`, `"safe"`, and `"finalized"` alias the committed tip (`"latest"`). There is no separate uncommitted log range.
+
+## `kovanica_mempoolStats`
+
+Read-only fee-percentile snapshot of the local mempool (`Mempool::fee_stats()`). Works in both single POST `/rpc` and JSON-RPC 2.0 batch requests.
+
+### Parameters
+
+Empty array `[]` or omitted.
+
+### Result
+
+```json
+{
+  "pending_count": 12,
+  "total_bytes": 4820,
+  "min_fee_per_byte": 1000,
+  "p50_fee_per_byte": 1500,
+  "p90_fee_per_byte": 2400,
+  "max_fee_per_byte": 5000
+}
+```
+
+When the mempool is empty (`pending_count == 0`), `min_fee_per_byte`, `p50_fee_per_byte`, `p90_fee_per_byte`, and `max_fee_per_byte` are `null`.
+
+## Identity Headers, JSON-RPC 2.0 Batching & OpenMetrics
+
+- **HTTP Identity Headers** (attached to `/rpc` and `/health` and exposed via `Access-Control-Expose-Headers`):
+  - `X-Kovanica-Chain-Id`: decimal chain ID (`1` Mainnet, `2` Testnet, `3` Devnet)
+  - `X-Kovanica-Network-Tag`: canonical network tag (`1-f35df34c92001436` for Chain 1, `2-24cdb5fadd98b207` for Chain 2)
+  - `X-Kovanica-Rpc-Version`: `kovanica-rpc` crate version
+- **JSON-RPC 2.0 Batching**: `POST /rpc` accepts bounded JSON-RPC 2.0 batch arrays (up to 32 items) with per-item error isolation.
+- **OpenMetrics (`/metrics`)**: Exports `rpc_handler_duration_seconds`, `rpc_slow_requests_total`, `rpc_get_logs_blocks_scanned_total`, `rpc_get_logs_results_total`, `rpc_get_logs_truncated_total`, `rpc_tx_submitted_total`, `rpc_tx_rejected_total`, `rpc_batch_requests_total`, and `rpc_batch_items_total` (see `ops/monitoring/kovanica-rpc-dashboard.json` and `ops/monitoring/kovanica-rpc-alerts.yml`).

@@ -15,6 +15,7 @@ use crate::contract_inspect::parse_bytes32_hex;
 use crate::output;
 use crate::rpc::{parse_quantity, RpcClient};
 use crate::tx_decode::{self, TxDecodeArgs};
+use crate::tx_envelope::{self, TxEnvelopeCommand};
 
 /// Default timeout in seconds when `--wait` is passed to `kovanica tx receipt`.
 pub const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 60;
@@ -29,6 +30,11 @@ pub enum TxInspectCommand {
     Receipt(TxReceiptArgs),
     /// Decode and verify a raw Bincode-encoded transaction offline (no RPC calls)
     Decode(TxDecodeArgs),
+    /// Encode or decode offline air-gapped transaction envelopes (`kvnc-tx:v1:...`)
+    Envelope {
+        #[command(subcommand)]
+        command: TxEnvelopeCommand,
+    },
 }
 
 /// Arguments for `kovanica tx receipt`.
@@ -189,6 +195,7 @@ pub async fn run(
     match command {
         TxInspectCommand::Receipt(args) => run_receipt(client, args, json_output).await,
         TxInspectCommand::Decode(args) => tx_decode::run_decode(args, chain_id, json_output),
+        TxInspectCommand::Envelope { command } => tx_envelope::run(command, chain_id, json_output),
     }
 }
 

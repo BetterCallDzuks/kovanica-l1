@@ -21,6 +21,7 @@ pub mod stratum_client;
 pub mod tui;
 pub mod tx;
 pub mod tx_decode;
+pub mod tx_envelope;
 pub mod tx_inspect;
 pub mod wallet;
 

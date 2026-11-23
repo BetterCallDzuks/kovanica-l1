@@ -662,6 +662,8 @@ impl RpcServer {
         .await;
         self.register_stateful("kovanica_estimateFee", handle_estimate_fee)
             .await;
+        self.register_stateful("kovanica_mempoolStats", handle_mempool_stats)
+            .await;
         self.register_stateful("kovanica_estimateGas", handle_estimate_gas)
             .await;
         self.register_stateful("eth_estimateGas", handle_estimate_gas)
@@ -953,6 +955,7 @@ const KNOWN_RPC_METHODS: &[&str] = &[
     "kovanica_getRewards",
     "kovanica_getPendingTransactions",
     "kovanica_estimateFee",
+    "kovanica_mempoolStats",
     "kovanica_estimateGas",
     "eth_estimateGas",
     "kovanica_call",
@@ -2723,5 +2726,117 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn mempool_stats_empty_nonempty_and_batch() {
+        let (_dir, srv) = server(unlimited(), open_auth()).await;
+
+        let expected_empty = json!({
+            "pending_count": 0,
+            "total_bytes": 0,
+            "min_fee_per_byte": null,
+            "p50_fee_per_byte": null,
+            "p90_fee_per_byte": null,
+            "max_fee_per_byte": null,
+        });
+
+        // 1. Empty mempool with explicit empty params `[]`.
+        let (status, body) = call(srv.router(), "kovanica_mempoolStats", json!([]), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["error"].is_null(), "unexpected error: {body}");
+        assert_eq!(body["result"], expected_empty);
+
+        // 2. Empty mempool with omitted `params`.
+        let (status, body) = call_raw(
+            srv.router(),
+            json!({"jsonrpc": "2.0", "id": 7, "method": "kovanica_mempoolStats"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["error"].is_null(), "unexpected error: {body}");
+        assert_eq!(body["result"], expected_empty);
+
+        // 3. Submit a valid signed devnet transfer so the mempool is non-empty.
+        let (sk, pk) = kovanica_crypto::generate_keypair();
+        let sender = kovanica_types::Address::from_public_key(&pk);
+        let (_, recipient_pk) = kovanica_crypto::generate_keypair();
+        let recipient = kovanica_types::Address::from_public_key(&recipient_pk);
+
+        let (airdrop_status, airdrop_body) = call(
+            srv.router(),
+            "kovanica_requestAirdrop",
+            json!([sender.to_string(), 100_000u64]),
+            None,
+        )
+        .await;
+        assert_eq!(airdrop_status, StatusCode::OK);
+        assert!(
+            airdrop_body["error"].is_null(),
+            "airdrop failed: {airdrop_body}"
+        );
+
+        let mut tx = kovanica_types::Transaction {
+            sender,
+            nonce: 0,
+            kind: kovanica_types::TransactionKind::Transfer {
+                to: recipient,
+                amount: 1_000,
+            },
+            fee: 10_000,
+            signature: kovanica_types::Signature([0; 64]),
+            hash: kovanica_types::Hash::zero(),
+        };
+        let signing_ctx =
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
+        let signing_hash = tx.signing_hash(&signing_ctx);
+        tx.signature = kovanica_crypto::sign(&sk, signing_hash.as_ref());
+        tx.hash = signing_hash;
+        let raw_hex = format!("0x{}", hex::encode(bincode::serialize(&tx).unwrap()));
+
+        let (tx_status, tx_body) = call(
+            srv.router(),
+            "kovanica_sendRawTransaction",
+            json!([raw_hex]),
+            None,
+        )
+        .await;
+        assert_eq!(tx_status, StatusCode::OK);
+        assert!(
+            tx_body["error"].is_null(),
+            "tx submission failed: {tx_body}"
+        );
+
+        // 4. Single POST `/rpc` on non-empty mempool.
+        let (status, single_body) =
+            call(srv.router(), "kovanica_mempoolStats", json!([]), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            single_body["error"].is_null(),
+            "unexpected error: {single_body}"
+        );
+        let res = &single_body["result"];
+        assert_eq!(res["pending_count"].as_u64(), Some(1));
+        assert!(res["total_bytes"].as_u64().unwrap_or(0) > 0);
+        let min_fee = res["min_fee_per_byte"].as_u64().expect("min_fee_per_byte");
+        assert!(min_fee > 0);
+        assert_eq!(res["p50_fee_per_byte"].as_u64(), Some(min_fee));
+        assert_eq!(res["p90_fee_per_byte"].as_u64(), Some(min_fee));
+        assert_eq!(res["max_fee_per_byte"].as_u64(), Some(min_fee));
+
+        // 5. JSON-RPC 2.0 batch request containing `kovanica_mempoolStats`.
+        let batch = json!([
+            {"jsonrpc": "2.0", "id": 1, "method": "kovanica_mempoolStats", "params": []},
+            {"jsonrpc": "2.0", "id": 2, "method": "kovanica_mempoolStats"}
+        ]);
+        let (batch_status, batch_body) = call_raw(srv.router(), batch, None).await;
+        assert_eq!(batch_status, StatusCode::OK);
+        let items = batch_body.as_array().expect("batch response array");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], json!(1));
+        assert_eq!(items[0]["result"], single_body["result"]);
+        assert_eq!(items[1]["id"], json!(2));
+        assert_eq!(items[1]["result"], single_body["result"]);
     }
 }
