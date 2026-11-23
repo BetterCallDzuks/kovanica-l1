@@ -220,6 +220,31 @@ key derives to those addresses either.
          http://127.0.0.1:18500/faucet
        ```
 
+## Faucet Telemetry, Headers & Monitoring
+
+### OpenMetrics (`GET /metrics`)
+
+`kovanica-faucet` exposes OpenMetrics counters and gauges at `GET /metrics` on its HTTP listener:
+
+| Metric | Type | Description |
+|---|---|---|
+| `faucet_drips_succeeded_total` | Counter | Total number of successful faucet drips. |
+| `faucet_drips_rejected_total` | Counter | Total number of rejected faucet drip requests (e.g., invalid address, RPC error, or balance below floor). |
+| `faucet_rate_limited_total` | Counter | Total number of faucet drip requests rejected by IP or per-address rate limits. |
+| `faucet_balance_atoms` | Gauge | Last known faucet account balance in atoms (`1 KVNC = 10^9` atoms). |
+
+### Identity Headers (`GET /health` & `POST /faucet`)
+
+Both `GET /health` and `POST /faucet` return network identity headers (also exposed via CORS `Access-Control-Expose-Headers`):
+
+- `X-Kovanica-Chain-Id`: active chain ID (`2` on testnet).
+- `X-Kovanica-Network-Tag`: canonical network tag (`2-24cdb5fadd98b207` on Chain 2).
+
+### Prometheus Alerting & Cluster Monitor
+
+- Prometheus alert rules for the faucet (and indexer) live in [`ops/monitoring/kovanica-faucet-indexer-alerts.yml`](../ops/monitoring/kovanica-faucet-indexer-alerts.yml), including `FaucetLowBalance` (`faucet_balance_atoms < 100000000000`, i.e. 100 KVNC), `FaucetHighRejectionRate`, and `FaucetRateLimitSpike`.
+- Automated health verification can be run with [`ops/monitoring/check-cluster.py`](../ops/monitoring/check-cluster.py) using `--faucet-health-url <url>`, which checks `/health` status, `X-Kovanica-Chain-Id`, canonical tag `2-24cdb5fadd98b207`, and the minimum balance floor.
+
 ## Secret hygiene findings (resolved in P3-6)
 
 - `ops/docker/chain2/faucet.keystore`, `ops/docker/chain2/faucet_passphrase`, and `ops/docker/chain2/node1_p2p.key` have been **untracked from git** and ignored via `.gitignore`, with local operator instructions in `ops/docker/chain2/README.md`.

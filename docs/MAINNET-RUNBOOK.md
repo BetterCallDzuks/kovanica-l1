@@ -243,6 +243,40 @@ There is no required peer count for consensus. The alert rules in [`ops/promethe
 
 `ops/monitoring/check-cluster.sh` is the chain ID 2 monitor (it queries `seed1` and `seed3`). It is not the mainnet check. Use the commands in this section against mainnet binds.
 
+### 8.1 Operator CLI pre-flight & recovery reference
+
+Use `kovanica` (`kovanica-cli`) for pre-flight verification, incident triage, and offline recovery checks. Canonical network tags are `1-f35df34c92001436` (Chain 1 mainnet) and `2-24cdb5fadd98b207` (Chain 2 testnet).
+
+| Command | Purpose |
+|---|---|
+| `kovanica node doctor` | Runs consolidated node diagnostics: RPC reachability, chain ID, canonical network tag verification, sync progress, and peer health. |
+| `kovanica rpc probe <url> [--expected-chain-id <id>] [--json]` | Probes a JSON-RPC endpoint for JSON-RPC 2.0 batch support, `X-Kovanica-Network-Tag` and `X-Kovanica-Rpc-Version` identity headers, canonical tag match, and latency. |
+| `kovanica snapshot verify <path> [--expected-chain-id <id>] [--json]` | Verifies a state/chain snapshot archive offline (integrity, checksums, and expected chain ID) before restoring a node. |
+| `kovanica address inspect <addr> [--expected-chain-id <id>] [--json]` | Validates and inspects a PRO-21 (`kvnc...dag` / `tknc...dag`) or 32-byte hex address offline, checking checksum and chain compatibility. |
+| `kovanica tx decode <hex> [--json]` | Decodes a raw signed/unsigned transaction hex payload offline for operator inspection prior to broadcast or incident analysis. |
+| `kovanica tx envelope encode\|decode` | Encodes or decodes compact air-gapped transaction envelopes (`kvnc-tx:v1:<base64url>`) with BLAKE3 integrity verification and canonical network-tag pinning (`1-f35df34c92001436` / `2-24cdb5fadd98b207`). |
+
+### 8.2 Cluster monitor & Prometheus alert rules
+
+- **Python cluster monitor ([`ops/monitoring/check-cluster.py`](../ops/monitoring/check-cluster.py)):** Checks Chain 2 seed `/health`, JSON-RPC 2.0 batch responses, and RPC identity headers (`X-Kovanica-Network-Tag`, `X-Kovanica-Rpc-Version`). Optional sidecar checks can be enabled with:
+  - `--stratum-health-url <url>`: alerts on `"draining"` status or share rejection ratio > 10%, and warns when `active_workers == 0`.
+  - `--indexer-health-url <url>`: checks `sync_state` (`synced` / `lagging` / `stalled`) and `lag_blocks` (> 10 warning, > 50 alert).
+  - `--faucet-health-url <url>`: verifies faucet `/health`, `X-Kovanica-Chain-Id`, canonical Chain 2 tag `2-24cdb5fadd98b207`, and balance floor.
+- **Prometheus alert rule files:**
+  - [`ops/monitoring/kovanica-rpc-alerts.yml`](../ops/monitoring/kovanica-rpc-alerts.yml) — RPC availability, p95 latency, slow requests, batch rejections, WebSocket connection caps, and subscriber lag.
+  - [`ops/monitoring/kovanica-stratum-alerts.yml`](../ops/monitoring/kovanica-stratum-alerts.yml) — Stratum gateway availability, share rejection ratio, zero workers, stuck graceful drain, VarDiff churn, TLS failures, stale templates, IP ban storms, and idle evictions.
+  - [`ops/monitoring/kovanica-faucet-indexer-alerts.yml`](../ops/monitoring/kovanica-faucet-indexer-alerts.yml) — Faucet low balance, rejection rate, and rate-limit spikes; Indexer lagging, stalled, and zero-progress alerts.
+
+### 8.3 Lightnode verification & sync states
+
+`kovanica-lightnode` verifies committed-leader headers and enforces fail-closed canonical network tag checks before accepting headers:
+
+- **Canonical network tag verification:** On Chain 1 (`1-f35df34c92001436`) and Chain 2 (`2-24cdb5fadd98b207`), any mismatched or empty tag is rejected. Custom devnets require a non-empty network tag.
+- **Sync states (`LightnodeSyncState`):**
+  - `Synced`: within 2 headers of the network head (`lag_headers <= 2`) with at least one verified peer.
+  - `CatchingUp`: between 3 and 50 headers behind the network head (`3 <= lag_headers <= 50`) with at least one verified peer.
+  - `Stalled`: more than 50 headers behind the network head (`lag_headers > 50`) or zero verified peers.
+
 ---
 
 ## 9. Alerts
