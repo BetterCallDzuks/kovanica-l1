@@ -1683,10 +1683,100 @@ pub async fn handle_estimate_fee(_params: Value, state: RpcState) -> Result<Valu
     Ok(quantity(rate))
 }
 
+/// Overflow-safe nearest-rank percentile over an ascending-sorted `u64` slice.
+///
+/// Uses `u128` intermediate arithmetic so large slice lengths and `u64::MAX`
+/// fee rates never overflow. Percentiles above `100` are clamped to `100`, and
+/// `0` selects the minimum element when non-empty.
+pub(crate) fn compute_nearest_rank_percentile(sorted: &[u64], percentile: u8) -> Option<u64> {
+    let n = sorted.len();
+    if n == 0 {
+        return None;
+    }
+    if percentile == 0 {
+        return sorted.first().copied();
+    }
+    let p = u128::from(percentile.min(100));
+    let rank = (n as u128).saturating_mul(p).div_ceil(100);
+    let idx = usize::try_from(rank.saturating_sub(1))
+        .unwrap_or(n - 1)
+        .min(n - 1);
+    sorted.get(idx).copied()
+}
+
+/// Summary fee-per-byte percentiles derived from a slice of fee rates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct FeeRatePercentiles {
+    pub min: Option<u64>,
+    pub p50: Option<u64>,
+    pub p90: Option<u64>,
+    pub max: Option<u64>,
+}
+
+/// Compute `min`, `p50`, `p90`, and `max` fee-per-byte statistics over an
+/// arbitrary (possibly unsorted) slice of fee rates using overflow-safe
+/// nearest-rank percentiles.
+#[allow(dead_code)]
+pub(crate) fn summarize_fee_rates(rates: &[u64]) -> FeeRatePercentiles {
+    if rates.is_empty() {
+        return FeeRatePercentiles::default();
+    }
+    let mut sorted = rates.to_vec();
+    sorted.sort_unstable();
+    let min = sorted.first().copied();
+    let max = sorted.last().copied();
+    let p50 = compute_nearest_rank_percentile(&sorted, 50);
+    let p90 = compute_nearest_rank_percentile(&sorted, 90);
+    FeeRatePercentiles { min, p50, p90, max }
+}
+
+/// Normalize a [`kovanica_mempool::MempoolFeeStats`] snapshot before returning
+/// it over JSON-RPC, guaranteeing empty-pool nullability and monotonic
+/// `min <= p50 <= p90 <= max` bounds without integer overflow.
+fn normalize_mempool_fee_stats(
+    stats: kovanica_mempool::MempoolFeeStats,
+) -> kovanica_mempool::MempoolFeeStats {
+    if stats.pending_count == 0 {
+        return kovanica_mempool::MempoolFeeStats {
+            pending_count: 0,
+            total_bytes: 0,
+            min_fee_per_byte: None,
+            p50_fee_per_byte: None,
+            p90_fee_per_byte: None,
+            max_fee_per_byte: None,
+        };
+    }
+
+    let min = stats.min_fee_per_byte;
+    let max = stats.max_fee_per_byte.map(|mx| match min {
+        Some(mn) => mx.max(mn),
+        None => mx,
+    });
+    let p50 = stats.p50_fee_per_byte.or(min).map(|v| {
+        let lo = min.unwrap_or(0);
+        let hi = max.unwrap_or(u64::MAX);
+        v.clamp(lo, hi)
+    });
+    let p90 = stats.p90_fee_per_byte.or(p50).or(max).map(|v| {
+        let lo = p50.or(min).unwrap_or(0);
+        let hi = max.unwrap_or(u64::MAX);
+        v.clamp(lo, hi)
+    });
+
+    kovanica_mempool::MempoolFeeStats {
+        pending_count: stats.pending_count,
+        total_bytes: stats.total_bytes,
+        min_fee_per_byte: min,
+        p50_fee_per_byte: p50,
+        p90_fee_per_byte: p90,
+        max_fee_per_byte: max,
+    }
+}
+
 /// `kovanica_mempoolStats()` — read-only mempool size and fee-per-byte
 /// percentile snapshot.
 pub async fn handle_mempool_stats(_params: Value, state: RpcState) -> Result<Value, RpcError> {
-    let stats = state.mempool.fee_stats();
+    let stats = normalize_mempool_fee_stats(state.mempool.fee_stats());
     Ok(json!({
         "pending_count": stats.pending_count,
         "total_bytes": stats.total_bytes,
@@ -6331,5 +6421,150 @@ mod tests {
         }
         samples.sort();
         samples[1]
+    }
+
+    #[test]
+    fn mempool_percentile_edge_cases_empty_single_two_uniform_and_extreme() {
+        // 0 elements (empty)
+        assert_eq!(
+            summarize_fee_rates(&[]),
+            FeeRatePercentiles {
+                min: None,
+                p50: None,
+                p90: None,
+                max: None,
+            }
+        );
+        assert_eq!(compute_nearest_rank_percentile(&[], 0), None);
+        assert_eq!(compute_nearest_rank_percentile(&[], 50), None);
+        assert_eq!(compute_nearest_rank_percentile(&[], 90), None);
+        assert_eq!(compute_nearest_rank_percentile(&[], 100), None);
+
+        // 1 element
+        assert_eq!(
+            summarize_fee_rates(&[42]),
+            FeeRatePercentiles {
+                min: Some(42),
+                p50: Some(42),
+                p90: Some(42),
+                max: Some(42),
+            }
+        );
+        assert_eq!(compute_nearest_rank_percentile(&[42], 0), Some(42));
+        assert_eq!(compute_nearest_rank_percentile(&[42], 100), Some(42));
+        assert_eq!(compute_nearest_rank_percentile(&[42], 255), Some(42));
+
+        // 2 elements: nearest-rank p50 = ceil(2*50/100) = 1 -> index 0; p90 = ceil(2*90/100) = 2 -> index 1
+        assert_eq!(
+            summarize_fee_rates(&[100, 10]),
+            FeeRatePercentiles {
+                min: Some(10),
+                p50: Some(10),
+                p90: Some(100),
+                max: Some(100),
+            }
+        );
+
+        // Uniform / identical fees
+        assert_eq!(
+            summarize_fee_rates(&[7, 7, 7, 7, 7]),
+            FeeRatePercentiles {
+                min: Some(7),
+                p50: Some(7),
+                p90: Some(7),
+                max: Some(7),
+            }
+        );
+
+        // Extreme u64::MAX fees (no overflow)
+        assert_eq!(
+            summarize_fee_rates(&[u64::MAX]),
+            FeeRatePercentiles {
+                min: Some(u64::MAX),
+                p50: Some(u64::MAX),
+                p90: Some(u64::MAX),
+                max: Some(u64::MAX),
+            }
+        );
+        assert_eq!(
+            summarize_fee_rates(&[0, u64::MAX]),
+            FeeRatePercentiles {
+                min: Some(0),
+                p50: Some(0),
+                p90: Some(u64::MAX),
+                max: Some(u64::MAX),
+            }
+        );
+        assert_eq!(
+            summarize_fee_rates(&[u64::MAX, u64::MAX - 2, u64::MAX - 1]),
+            FeeRatePercentiles {
+                min: Some(u64::MAX - 2),
+                p50: Some(u64::MAX - 1),
+                p90: Some(u64::MAX),
+                max: Some(u64::MAX),
+            }
+        );
+        assert_eq!(
+            summarize_fee_rates(&[u64::MAX; 5]),
+            FeeRatePercentiles {
+                min: Some(u64::MAX),
+                p50: Some(u64::MAX),
+                p90: Some(u64::MAX),
+                max: Some(u64::MAX),
+            }
+        );
+
+        // Multi-element unsorted distribution (10 elements: 10..=100)
+        assert_eq!(
+            summarize_fee_rates(&[100, 10, 50, 20, 90, 30, 80, 40, 70, 60]),
+            FeeRatePercentiles {
+                min: Some(10),
+                p50: Some(50),
+                p90: Some(90),
+                max: Some(100),
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_mempool_fee_stats_enforces_empty_and_monotonic_invariants() {
+        // Empty pool must zero total_bytes and null all fee fields.
+        let empty = normalize_mempool_fee_stats(kovanica_mempool::MempoolFeeStats {
+            pending_count: 0,
+            total_bytes: 999,
+            min_fee_per_byte: Some(1),
+            p50_fee_per_byte: Some(2),
+            p90_fee_per_byte: Some(3),
+            max_fee_per_byte: Some(4),
+        });
+        assert_eq!(empty, kovanica_mempool::MempoolFeeStats::default());
+
+        // Extreme u64::MAX values stay exact and monotonic.
+        let extreme = normalize_mempool_fee_stats(kovanica_mempool::MempoolFeeStats {
+            pending_count: 2,
+            total_bytes: 512,
+            min_fee_per_byte: Some(u64::MAX),
+            p50_fee_per_byte: Some(u64::MAX),
+            p90_fee_per_byte: Some(u64::MAX),
+            max_fee_per_byte: Some(u64::MAX),
+        });
+        assert_eq!(extreme.min_fee_per_byte, Some(u64::MAX));
+        assert_eq!(extreme.p50_fee_per_byte, Some(u64::MAX));
+        assert_eq!(extreme.p90_fee_per_byte, Some(u64::MAX));
+        assert_eq!(extreme.max_fee_per_byte, Some(u64::MAX));
+
+        // Out-of-order percentile bounds are clamped monotonically without overflow.
+        let clamped = normalize_mempool_fee_stats(kovanica_mempool::MempoolFeeStats {
+            pending_count: 3,
+            total_bytes: 300,
+            min_fee_per_byte: Some(50),
+            p50_fee_per_byte: Some(10),
+            p90_fee_per_byte: Some(200),
+            max_fee_per_byte: Some(100),
+        });
+        assert_eq!(clamped.min_fee_per_byte, Some(50));
+        assert_eq!(clamped.p50_fee_per_byte, Some(50));
+        assert_eq!(clamped.p90_fee_per_byte, Some(100));
+        assert_eq!(clamped.max_fee_per_byte, Some(100));
     }
 }
