@@ -22,10 +22,10 @@ pub use envelope::{
 };
 pub use payload::{pad_payload, trim_payload, MAX_PAYLOAD, PAYLOAD_BUCKETS};
 #[cfg(feature = "server")]
-pub use server::{router, RelayServer};
+pub use server::{router, RelayServer, OPENMETRICS_CONTENT_TYPE};
 pub use store::{
-    Credit, InsertOutcome, Store, StoreError, DEFAULT_INBOX_LIMIT, DEFAULT_TTL_MS, MAX_INBOX_LIMIT,
-    MAX_PER_RECIPIENT, MAX_TTL_MS,
+    Credit, InsertOutcome, Store, StoreError, StoreStats, DEFAULT_INBOX_LIMIT, DEFAULT_TTL_MS,
+    MAX_INBOX_LIMIT, MAX_PER_RECIPIENT, MAX_TTL_MS,
 };
 
 /// Algorithm id string for E2E crypto v1 (§2), re-exported from the crypto lane
