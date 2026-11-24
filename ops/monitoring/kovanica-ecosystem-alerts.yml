@@ -1,0 +1,112 @@
+groups:
+  - name: kovanica_ecosystem_indexer_alerts
+    interval: 30s
+    rules:
+      - alert: IndexerStoreIntegrityFailed
+        expr: indexer_store_integrity_ok == 0 and indexer_store_integrity_checks_total > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: kovanica-indexer
+        annotations:
+          summary: "Kovanica indexer store integrity check failed ({{ $labels.instance }})"
+          description: "kovanica-indexer reported indexer_store_integrity_ok == 0 after completing an integrity check on {{ $labels.instance }}. Inspect indexer_store_integrity_issues, indexer_store_integrity_check_failures_total, and indexer storage logs before serving queries."
+
+      - alert: IndexerPruneBacklogHigh
+        expr: indexer_prune_dry_run_prunable_bytes > 536870912 or indexer_prune_dry_run_prunable_heights > 50000
+        for: 10m
+        labels:
+          severity: warning
+          service: kovanica-indexer
+        annotations:
+          summary: "Kovanica indexer prune dry-run backlog is high ({{ $labels.instance }})"
+          description: "kovanica-indexer prune dry-run reports more than 512 MiB or 50,000 height buckets eligible for pruning on {{ $labels.instance }} (value: {{ $value }}). Schedule a maintenance prune window to reclaim disk space."
+
+  - name: kovanica_ecosystem_comms_relay_alerts
+    interval: 30s
+    rules:
+      - alert: CommsRelayEnvelopeQueueBacklog
+        expr: kovanica_comms_relay_envelopes_queued > 1000 or kovanica_comms_relay_max_mailbox_depth > 200
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-comms-relay
+        annotations:
+          summary: "Kovanica comms relay envelope queue backlog ({{ $labels.instance }})"
+          description: "kovanica-comms-relay has sustained >1,000 queued undelivered envelopes or >200 envelopes in a single mailbox on {{ $labels.instance }} (value: {{ $value }}). Check recipient polling, TTL sweep throughput, and potential spam."
+
+      - alert: CommsRelayRateLimitSpike
+        expr: sum by (instance) (rate(kovanica_comms_relay_envelopes_rate_limited_total[5m])) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+          service: kovanica-comms-relay
+        annotations:
+          summary: "Kovanica comms relay rate-limit rejection spike ({{ $labels.instance }})"
+          description: "kovanica-comms-relay is rate-limiting envelope submissions at {{ $value | printf \"%.2f\" }}/s over the last 5 minutes on {{ $labels.instance }}. Investigate abuse, PoW replay attempts, or misconfigured clients."
+
+      - alert: CommsRelayHighRejectionRate
+        expr: sum by (instance) (rate(kovanica_comms_relay_envelopes_rejected_total[5m])) > 0.5 or sum by (instance) (rate(kovanica_comms_relay_ack_rejected_total[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-comms-relay
+        annotations:
+          summary: "Kovanica comms relay elevated envelope or ack rejections ({{ $labels.instance }})"
+          description: "kovanica-comms-relay is rejecting malformed/oversized envelopes or unauthorized acks at {{ $value | printf \"%.2f\" }}/s over 5 minutes on {{ $labels.instance }}. Inspect relay logs for protocol mismatches or abusive traffic."
+
+  - name: kovanica_ecosystem_faucet_alerts
+    interval: 30s
+    rules:
+      - alert: EcosystemFaucetLowBalance
+        expr: kovanica_faucet_balance_atoms < 100000000000
+        for: 5m
+        labels:
+          severity: warning
+          service: kovanica-faucet
+        annotations:
+          summary: "Kovanica faucet balance is low ({{ $labels.instance }})"
+          description: "kovanica_faucet_balance_atoms has remained below 100000000000 atoms (100 KVNC) for 5 minutes on {{ $labels.instance }} (current: {{ $value }} atoms). Refill the faucet wallet before drips are rejected."
+
+      - alert: EcosystemFaucetDrainDetected
+        expr: kovanica_faucet_balance_atoms < 20000000000 or increase(kovanica_faucet_low_balance_rejected_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: kovanica-faucet
+        annotations:
+          summary: "Kovanica faucet critically low or actively rejecting drips ({{ $labels.instance }})"
+          description: "kovanica-faucet on {{ $labels.instance }} has fallen below 20 KVNC (20000000000 atoms) or is rejecting requests via the low-balance guard (value: {{ $value }}). Refill immediately and review dispensed volume."
+
+      - alert: EcosystemFaucetRateLimitSpike
+        expr: sum by (instance) (rate(kovanica_faucet_rate_limited_total[5m])) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+          service: kovanica-faucet
+        annotations:
+          summary: "Kovanica faucet rate-limit spike ({{ $labels.instance }})"
+          description: "kovanica-faucet requests are being rate-limited at {{ $value | printf \"%.2f\" }}/s over the last 5 minutes on {{ $labels.instance }}. Inspect IP rate-limiters, address cooldowns, and reverse-proxy forwarding headers."
+
+      - alert: EcosystemFaucetRpcErrorSpike
+        expr: sum by (instance) (rate(kovanica_faucet_rpc_errors_total[5m])) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+          service: kovanica-faucet
+        annotations:
+          summary: "Kovanica faucet upstream RPC error spike ({{ $labels.instance }})"
+          description: "kovanica-faucet is encountering upstream node RPC errors at {{ $value | printf \"%.2f\" }}/s over the last 5 minutes on {{ $labels.instance }}. Check kovanica-node RPC availability and nonce synchronization."
+
+  - name: kovanica_ecosystem_rpc_alerts
+    interval: 30s
+    rules:
+      - alert: RpcGetLogsMaxSpanRejectionSpike
+        expr: sum by (instance) (rate(rpc_get_logs_max_span_rejected_total[5m])) > 0.2 and sum by (instance) (increase(rpc_get_logs_max_span_rejected_total[5m])) > 10
+        for: 3m
+        labels:
+          severity: warning
+          service: kovanica-rpc
+        annotations:
+          summary: "Elevated kovanica_getLogs max-span rejections ({{ $labels.instance }})"
+          description: "kovanica_getLogs calls exceeding MAX_GET_LOGS_BLOCK_RANGE are being rejected at {{ $value | printf \"%.2f\" }}/s over 5 minutes on {{ $labels.instance }}. Check downstream indexers or SDK clients for unpaginated log queries."

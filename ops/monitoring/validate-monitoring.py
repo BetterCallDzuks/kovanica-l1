@@ -9,6 +9,11 @@ Uses Python standard library only.
   IDs, valid gridPos, templating datasource variable, minimum panel count,
   balanced non-empty PromQL targets, and every referenced metric against all
   metrics exported by the `kovanica-l1` codebase).
+- Cross-checks `kovanica-ecosystem-alerts.yml` (YAML structure, required fields
+  `alert`/`expr`/`for`/`labels.severity`/`annotations.summary`/`annotations.description`,
+  minimum alert rule count, required coverage metrics, and zero unknown metrics
+  against all metrics exported by the `kovanica-l1` codebase including
+  `kovanica-comms-relay`).
 """
 
 from __future__ import annotations
@@ -25,16 +30,29 @@ CONSENSUS_METRICS_RS = REPO_ROOT / "crates" / "kovanica-consensus" / "src" / "me
 RPC_LIB_RS = REPO_ROOT / "crates" / "kovanica-rpc" / "src" / "lib.rs"
 INDEXER_RS = REPO_ROOT / "crates" / "kovanica-indexer" / "src" / "indexer.rs"
 FAUCET_RS = REPO_ROOT / "crates" / "kovanica-faucet" / "src" / "main.rs"
+COMMS_RELAY_SERVER_RS = REPO_ROOT / "crates" / "kovanica-comms-relay" / "src" / "server.rs"
 
 DASHBOARD_JSON = SCRIPT_DIR / "kovanica-stratum-dashboard.json"
 ALERTS_YML = SCRIPT_DIR / "kovanica-stratum-alerts.yml"
 ECOSYSTEM_DASHBOARD_JSON = SCRIPT_DIR / "kovanica-ecosystem-overview.json"
+ECOSYSTEM_ALERTS_YML = SCRIPT_DIR / "kovanica-ecosystem-alerts.yml"
 
 MIN_ECOSYSTEM_PANELS = 12
+MIN_ECOSYSTEM_ALERT_RULES = 6
 REQUIRED_ECOSYSTEM_METRICS = (
     "rpc_get_logs_max_span_rejected_total",
     "rpc_get_logs_cursor_requests_total",
 )
+REQUIRED_ECOSYSTEM_ALERT_METRICS = (
+    "indexer_store_integrity_ok",
+    "kovanica_comms_relay_envelopes_queued",
+    "kovanica_comms_relay_envelopes_rate_limited_total",
+    "kovanica_faucet_balance_atoms",
+    "kovanica_faucet_rate_limited_total",
+    "rpc_get_logs_max_span_rejected_total",
+)
+VALID_ALERT_SEVERITIES = frozenset({"info", "warning", "critical"})
+PROM_DURATION_RE = re.compile(r"^\d+[smhdwy]$")
 
 METRIC_RE = re.compile(r"\bstratum_[a-z0-9_]+\b")
 PROMQL_IDENT_RE = re.compile(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b")
@@ -196,7 +214,10 @@ def extract_text_exposition_metrics(source_path: Path) -> set[str]:
     for match in type_pattern.finditer(source):
         name, kind = match.group(1), match.group(2)
         exported.add(name)
-        if kind == "histogram":
+        if kind == "counter" and not name.endswith("_total"):
+            # OpenMetrics 1.0 declares `# TYPE <family> counter` and emits `<family>_total` samples.
+            exported.add(f"{name}_total")
+        elif kind == "histogram":
             exported.add(f"{name}_bucket")
             exported.add(f"{name}_sum")
             exported.add(f"{name}_count")
@@ -214,6 +235,7 @@ def extract_all_codebase_metrics() -> set[str]:
     exported |= extract_text_exposition_metrics(RPC_LIB_RS)
     exported |= extract_text_exposition_metrics(INDEXER_RS)
     exported |= extract_text_exposition_metrics(FAUCET_RS)
+    exported |= extract_text_exposition_metrics(COMMS_RELAY_SERVER_RS)
     return exported
 
 
@@ -494,6 +516,156 @@ def validate_alerts(alerts_path: Path, exported_metrics: set[str]) -> tuple[list
     return alert_names, referenced_metrics, errors
 
 
+def validate_ecosystem_alerts(
+    alerts_path: Path,
+    all_exported_metrics: set[str],
+) -> tuple[list[str], set[str], list[str]]:
+    """Validate ecosystem Prometheus alerting rules YAML (stdlib-only) against all codebase metrics."""
+    errors: list[str] = []
+    raw = alerts_path.read_text(encoding="utf-8")
+    lines = raw.splitlines()
+
+    if "\t" in raw:
+        errors.append("Ecosystem alerts YAML contains tab characters (YAML requires spaces)")
+
+    if not any(line.strip() == "groups:" for line in lines):
+        errors.append("Ecosystem alerts YAML missing top-level 'groups:' key")
+
+    group_names: list[str] = []
+    rules: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
+    current_section: str | None = None
+    section_indent = -1
+
+    for lineno, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+
+        group_match = re.match(r"^\s*-\s+name:\s+(\S+)\s*$", line)
+        if group_match:
+            group_names.append(group_match.group(1))
+            current_section = None
+            section_indent = -1
+            continue
+
+        alert_match = re.match(r"^\s*-\s+alert:\s+(\S+)\s*$", line)
+        if alert_match:
+            if current is not None:
+                rules.append(current)
+            current = {
+                "alert": alert_match.group(1),
+                "line": str(lineno),
+                "labels": {},
+                "annotations": {},
+            }
+            current_section = None
+            section_indent = -1
+            continue
+
+        if current is None:
+            continue
+
+        if current_section is not None and indent <= section_indent:
+            current_section = None
+            section_indent = -1
+
+        if stripped in ("labels:", "annotations:"):
+            current_section = stripped[:-1]
+            section_indent = indent
+            continue
+
+        if current_section in ("labels", "annotations"):
+            kv_match = re.match(r"^\s*([a-zA-Z0-9_]+):\s*(.+?)\s*$", line)
+            if kv_match:
+                section_map = current[current_section]
+                assert isinstance(section_map, dict)
+                section_map[kv_match.group(1)] = kv_match.group(2).strip().strip("\"'")
+            continue
+
+        for field in ("expr", "for"):
+            field_match = re.match(rf"^\s*{field}:\s*(.+?)\s*$", line)
+            if field_match:
+                current[field] = field_match.group(1)
+
+    if current is not None:
+        rules.append(current)
+
+    if not group_names:
+        errors.append("Ecosystem alerts YAML contains no rule groups ('- name: ...')")
+
+    if not rules:
+        errors.append("Ecosystem alerts YAML contains no alert rules")
+        return [], set(), errors
+
+    if len(rules) < MIN_ECOSYSTEM_ALERT_RULES:
+        errors.append(
+            f"Ecosystem alerts YAML has {len(rules)} rules; minimum required is {MIN_ECOSYSTEM_ALERT_RULES}"
+        )
+
+    alert_names: list[str] = []
+    referenced_metrics: set[str] = set()
+    seen_alerts: set[str] = set()
+
+    for rule in rules:
+        name = str(rule["alert"])
+        lineno_str = str(rule["line"])
+        if name in seen_alerts:
+            errors.append(f"Ecosystem alerts duplicate rule name: '{name}'")
+        seen_alerts.add(name)
+        alert_names.append(name)
+
+        expr = str(rule.get("expr", "")).strip()
+        if not expr:
+            errors.append(f"Ecosystem alert '{name}' (line {lineno_str}) missing required field 'expr'")
+        else:
+            if not check_balanced_delimiters(expr):
+                errors.append(f"Ecosystem alert '{name}' has unbalanced PromQL expr: {expr}")
+            expr_metrics = extract_promql_metrics(expr)
+            if not expr_metrics:
+                errors.append(f"Ecosystem alert '{name}' expr references no metrics: {expr}")
+            for metric in sorted(expr_metrics):
+                referenced_metrics.add(metric)
+                if metric not in all_exported_metrics:
+                    errors.append(f"Ecosystem alert '{name}' references unknown metric '{metric}'")
+
+        for_dur = str(rule.get("for", "")).strip().strip("\"'")
+        if not for_dur:
+            errors.append(f"Ecosystem alert '{name}' (line {lineno_str}) missing required field 'for'")
+        elif not PROM_DURATION_RE.match(for_dur):
+            errors.append(f"Ecosystem alert '{name}' has invalid 'for' duration: '{for_dur}'")
+
+        labels = rule["labels"]
+        assert isinstance(labels, dict)
+        severity = str(labels.get("severity", "")).strip()
+        if not severity:
+            errors.append(f"Ecosystem alert '{name}' (line {lineno_str}) missing required field 'labels.severity'")
+        elif severity not in VALID_ALERT_SEVERITIES:
+            errors.append(
+                f"Ecosystem alert '{name}' has invalid labels.severity '{severity}' "
+                f"(expected one of {sorted(VALID_ALERT_SEVERITIES)})"
+            )
+
+        annotations = rule["annotations"]
+        assert isinstance(annotations, dict)
+        if not str(annotations.get("summary", "")).strip():
+            errors.append(f"Ecosystem alert '{name}' (line {lineno_str}) missing required field 'annotations.summary'")
+        if not str(annotations.get("description", "")).strip():
+            errors.append(
+                f"Ecosystem alert '{name}' (line {lineno_str}) missing required field 'annotations.description'"
+            )
+
+    for required_metric in REQUIRED_ECOSYSTEM_ALERT_METRICS:
+        if required_metric not in referenced_metrics:
+            errors.append(
+                f"Ecosystem alerts YAML missing required coverage metric '{required_metric}'"
+            )
+
+    return alert_names, referenced_metrics, errors
+
+
 def main() -> int:
     required_paths = (
         GATEWAY_RS,
@@ -501,9 +673,11 @@ def main() -> int:
         RPC_LIB_RS,
         INDEXER_RS,
         FAUCET_RS,
+        COMMS_RELAY_SERVER_RS,
         DASHBOARD_JSON,
         ALERTS_YML,
         ECOSYSTEM_DASHBOARD_JSON,
+        ECOSYSTEM_ALERTS_YML,
     )
     for path in required_paths:
         if not path.is_file():
@@ -519,15 +693,21 @@ def main() -> int:
         ECOSYSTEM_DASHBOARD_JSON,
         all_codebase_metrics,
     )
+    eco_alert_names, eco_alert_metrics, eco_alert_errors = validate_ecosystem_alerts(
+        ECOSYSTEM_ALERTS_YML,
+        all_codebase_metrics,
+    )
 
-    all_errors = dash_errors + alert_errors + eco_errors
+    all_errors = dash_errors + alert_errors + eco_errors + eco_alert_errors
 
     print(f"Exported stratum_* metrics in gateway.rs : {len(exported_stratum_metrics)}")
     print(f"Exported metrics across kovanica-l1      : {len(all_codebase_metrics)}")
     print(f"Stratum dashboard panels validated       : {panel_count} ({len(dash_metrics)} unique metrics)")
     print(f"Ecosystem dashboard panels validated     : {eco_panels} ({len(eco_metrics)} unique metrics)")
-    print(f"Prometheus alert rules validated         : {len(alert_names)} ({len(alert_metrics)} unique metrics)")
-    print(f"Alert rules                              : {', '.join(alert_names)}")
+    print(f"Stratum alert rules validated            : {len(alert_names)} ({len(alert_metrics)} unique metrics)")
+    print(f"Stratum alert rules                      : {', '.join(alert_names)}")
+    print(f"Ecosystem alert rules validated          : {len(eco_alert_names)} ({len(eco_alert_metrics)} unique metrics)")
+    print(f"Ecosystem alert rules                    : {', '.join(eco_alert_names)}")
 
     if all_errors:
         print("\nVALIDATION FAILED:", file=sys.stderr)
@@ -536,8 +716,8 @@ def main() -> int:
         return 1
 
     print(
-        "\nVALIDATION PASSED: Stratum dashboard, Ecosystem Overview dashboard, Prometheus alerts YAML, "
-        "and all referenced metrics verified."
+        "\nVALIDATION PASSED: Stratum dashboard, Ecosystem Overview dashboard, Stratum alerts YAML, "
+        "Ecosystem alerts YAML, and all referenced metrics verified."
     )
     return 0
 
