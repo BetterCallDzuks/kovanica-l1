@@ -12,7 +12,24 @@
 #![deny(unsafe_code)]
 
 /// Per-byte module compile floor (mirrors `kovanica_runtime::GAS_PER_MODULE_BYTE`).
-pub use kovanica_params::GAS_PER_MODULE_BYTE;
+pub use kovanica_params::{
+    FIXED_FEES_ACTIVE_FROM_ROUND, FIXED_FEE_CONTRACT_DEPLOY, FIXED_FEE_NFT_CREATE_COLLECTION,
+    FIXED_FEE_NFT_MINT, FIXED_FEE_RWA_CREATE, FIXED_FEE_RWA_MINT, FIXED_FEE_TOKEN_CREATE,
+    GAS_PER_MODULE_BYTE,
+};
+
+/// Returns the canonical fixed minimum fee (in atoms) for a contract `Call`
+/// entry point, or `0` if the method has no fixed fee floor.
+pub fn fixed_min_fee_for_call_method(method: &str) -> u64 {
+    match method {
+        "token_create" => FIXED_FEE_TOKEN_CREATE,
+        "nft_create_collection" => FIXED_FEE_NFT_CREATE_COLLECTION,
+        "nft_mint" => FIXED_FEE_NFT_MINT,
+        "rwa_create" => FIXED_FEE_RWA_CREATE,
+        "rwa_mint" => FIXED_FEE_RWA_MINT,
+        _ => 0,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Intrinsic / base costs (GAS_SCHEDULE.md §6)

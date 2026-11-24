@@ -2608,6 +2608,7 @@ dependencies = [
  "kovanica-nft",
  "kovanica-params",
  "kovanica-runtime",
+ "kovanica-rwa",
  "kovanica-staking",
  "kovanica-storage",
  "kovanica-token",
@@ -2813,6 +2814,8 @@ version = "0.3.0"
 dependencies = [
  "bincode",
  "kovanica-crypto",
+ "kovanica-fee",
+ "kovanica-params",
  "kovanica-storage",
  "kovanica-types",
  "parking_lot",
@@ -3002,6 +3005,15 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "wasmi",
+]
+
+[[package]]
+name = "kovanica-rwa"
+version = "0.3.0"
+dependencies = [
+ "bincode",
+ "kovanica-common",
+ "serde",
 ]
 
 [[package]]

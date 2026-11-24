@@ -148,6 +148,26 @@ pub const CONTRACT_HARDENING_ACTIVE_FROM_ROUND: u64 = GENESIS_ROUND;
 pub const SLASHING_ACTIVE_FROM_ROUND: u64 = GENESIS_ROUND;
 pub const STATE_COMMITMENT_ACTIVE_FROM_ROUND: u64 = 500_000;
 pub const SIZE_LIMITS_ACTIVE_FROM_ROUND: u64 = GENESIS_ROUND;
+/// Activation round for fixed operation fee floors on testnet/devnet (500,000),
+/// matching `STATE_COMMITMENT_ACTIVE_FROM_ROUND` so the live seed1 testnet never forks.
+/// Mainnet (chain 1) enforces fixed fees from genesis (round 0).
+pub const FIXED_FEES_ACTIVE_FROM_ROUND: u64 = 500_000;
+
+// ============================================================
+// Fixed operation fee floors (Balanced tier; 75% burn / 25% miner)
+// ============================================================
+/// Minimum fee to deploy a WASM contract (1 KVNC).
+pub const FIXED_FEE_CONTRACT_DEPLOY: u64 = ONE_KVNC;
+/// Minimum fee to create a KVP-102 token via `token_create` (5 KVNC).
+pub const FIXED_FEE_TOKEN_CREATE: u64 = 5 * ONE_KVNC;
+/// Minimum fee to create an NFT collection via `nft_create_collection` (2 KVNC).
+pub const FIXED_FEE_NFT_CREATE_COLLECTION: u64 = 2 * ONE_KVNC;
+/// Minimum fee to mint an NFT via `nft_mint` (0.1 KVNC).
+pub const FIXED_FEE_NFT_MINT: u64 = ONE_KVNC / 10;
+/// Minimum fee to register a KVP-106 RWA asset via `rwa_create` (10 KVNC).
+pub const FIXED_FEE_RWA_CREATE: u64 = 10 * ONE_KVNC;
+/// Minimum fee to mint KVP-106 RWA shares via `rwa_mint` (0.5 KVNC).
+pub const FIXED_FEE_RWA_MINT: u64 = ONE_KVNC / 2;
 
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn gas_hardening_active_from(round: u64) -> bool {
@@ -181,6 +201,24 @@ pub const fn state_commitment_active_from_round_for_chain(chain_id: u64) -> u64 
 /// Whether `round` enforces the full-state commitment on `chain_id`.
 pub const fn state_commitment_active_from_for_chain(chain_id: u64, round: u64) -> bool {
     round >= state_commitment_active_from_round_for_chain(chain_id)
+}
+
+/// Chain-scoped fixed-fee activation round.
+///
+/// Mainnet (chain 1) enforces fixed operation fee floors from genesis (round 0);
+/// public Testnet (chain 2) and Devnet (chain 3) activate at `FIXED_FEES_ACTIVE_FROM_ROUND`
+/// (500,000) so the live seed1 testnet never forks.
+pub const fn fixed_fees_active_from_round_for_chain(chain_id: u64) -> u64 {
+    if chain_id == CHAIN_ID_MAINNET {
+        GENESIS_ROUND
+    } else {
+        FIXED_FEES_ACTIVE_FROM_ROUND
+    }
+}
+
+/// Whether `round` enforces fixed operation fee floors on `chain_id`.
+pub const fn fixed_fees_active_from_for_chain(chain_id: u64, round: u64) -> bool {
+    round >= fixed_fees_active_from_round_for_chain(chain_id)
 }
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn size_limits_active_from(round: u64) -> bool {
@@ -262,5 +300,30 @@ mod tests {
     fn era_math() {
         assert!(SUBSIDY_ERA_BLOCKS > 0);
         assert!(DECAY_DEN > 0);
+    }
+
+    #[test]
+    fn fixed_fee_schedule_and_activation_gate() {
+        assert_eq!(FIXED_FEE_CONTRACT_DEPLOY, ONE_KVNC);
+        assert_eq!(FIXED_FEE_TOKEN_CREATE, 5 * ONE_KVNC);
+        assert_eq!(FIXED_FEE_NFT_CREATE_COLLECTION, 2 * ONE_KVNC);
+        assert_eq!(FIXED_FEE_NFT_MINT, ONE_KVNC / 10);
+        assert_eq!(FIXED_FEE_RWA_CREATE, 10 * ONE_KVNC);
+        assert_eq!(FIXED_FEE_RWA_MINT, ONE_KVNC / 2);
+
+        assert_eq!(
+            fixed_fees_active_from_round_for_chain(CHAIN_ID_MAINNET),
+            GENESIS_ROUND
+        );
+        assert!(fixed_fees_active_from_for_chain(CHAIN_ID_MAINNET, 0));
+        assert_eq!(
+            fixed_fees_active_from_round_for_chain(CHAIN_ID_TESTNET),
+            FIXED_FEES_ACTIVE_FROM_ROUND
+        );
+        assert!(!fixed_fees_active_from_for_chain(CHAIN_ID_TESTNET, 0));
+        assert!(fixed_fees_active_from_for_chain(
+            CHAIN_ID_TESTNET,
+            FIXED_FEES_ACTIVE_FROM_ROUND
+        ));
     }
 }

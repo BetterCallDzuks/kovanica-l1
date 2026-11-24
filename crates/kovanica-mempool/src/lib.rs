@@ -440,6 +440,31 @@ impl Mempool {
                     min_fee_rate: self.config.min_fee_rate,
                 });
             }
+            // Round-gated fixed operation fee floors (Balanced tier).
+            let tip_height = self
+                .storage
+                .begin_read()
+                .ok()
+                .and_then(|txn| self.storage.consensus().get_committed_leader_height(&txn).ok())
+                .unwrap_or(0);
+            if kovanica_params::fixed_fees_active_from_for_chain(
+                self.signing_ctx.chain_id,
+                tip_height,
+            ) {
+                let min_fixed_fee = match &tx.kind {
+                    TransactionKind::Deploy { .. } => kovanica_params::FIXED_FEE_CONTRACT_DEPLOY,
+                    TransactionKind::Call { method, .. } => {
+                        kovanica_fee::fixed_min_fee_for_call_method(method)
+                    }
+                    _ => 0,
+                };
+                if tx.fee < min_fixed_fee {
+                    return Err(MempoolError::FixedFeeTooLow {
+                        fee: tx.fee,
+                        min_fee: min_fixed_fee,
+                    });
+                }
+            }
         }
 
         // --- 2. hash binding --------------------------------------------
@@ -953,6 +978,8 @@ pub enum MempoolError {
     HashMismatch,
     #[error("Fee rate {fee_rate} below minimum {min_fee_rate}")]
     FeeTooLow { fee_rate: u64, min_fee_rate: u64 },
+    #[error("Fee {fee} below fixed minimum {min_fee} for this operation")]
+    FixedFeeTooLow { fee: u64, min_fee: u64 },
     #[error("Replacement fee {fee} too low, need at least {min_fee}")]
     ReplacementUnderpriced { fee: u64, min_fee: u64 },
     #[error("Nonce {nonce} is already in a proposed block")]

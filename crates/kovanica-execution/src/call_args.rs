@@ -278,6 +278,75 @@ pub fn encode_name_update_endpoints(
     enc(&(name.to_string(), relay_endpoints.to_vec()))
 }
 
+/// `rwa_create(...)` — KVP-106 Real-World Asset registration.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_rwa_create(
+    name: &str,
+    symbol: &str,
+    asset_class: &str,
+    unique_id: &str,
+    version: u32,
+    jurisdiction: &str,
+    metadata_hash: [u8; 32],
+    metadata_uri: &str,
+    legal_uri: &str,
+    custody_uri: &str,
+    decimals: u8,
+    max_supply: Amount,
+    initial_supply: Amount,
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(
+        name.to_string(),
+        symbol.to_string(),
+        asset_class.to_string(),
+        unique_id.to_string(),
+        version,
+        jurisdiction.to_string(),
+        metadata_hash,
+        metadata_uri.to_string(),
+        legal_uri.to_string(),
+        custody_uri.to_string(),
+        decimals,
+        max_supply,
+        initial_supply,
+    ))
+}
+
+/// `rwa_mint(to, amount)`.
+pub fn encode_rwa_mint(to: [u8; 32], amount: Amount) -> Result<Vec<u8>, EncodeError> {
+    enc(&(to, amount))
+}
+
+/// `rwa_transfer(to, amount)`.
+pub fn encode_rwa_transfer(to: [u8; 32], amount: Amount) -> Result<Vec<u8>, EncodeError> {
+    enc(&(to, amount))
+}
+
+/// `rwa_burn(amount)`.
+pub fn encode_rwa_burn(amount: Amount) -> Result<Vec<u8>, EncodeError> {
+    enc(&amount)
+}
+
+/// `rwa_freeze(account, frozen)`.
+pub fn encode_rwa_freeze(account: [u8; 32], frozen: bool) -> Result<Vec<u8>, EncodeError> {
+    enc(&(account, frozen))
+}
+
+/// `rwa_update_metadata(metadata_hash, metadata_uri, legal_uri, custody_uri)`.
+pub fn encode_rwa_update_metadata(
+    metadata_hash: [u8; 32],
+    metadata_uri: &str,
+    legal_uri: &str,
+    custody_uri: &str,
+) -> Result<Vec<u8>, EncodeError> {
+    enc(&(
+        metadata_hash,
+        metadata_uri.to_string(),
+        legal_uri.to_string(),
+        custody_uri.to_string(),
+    ))
+}
+
 /// `name_transfer(name, new_owner)`.
 pub fn encode_name_transfer(name: &str, new_owner: [u8; 32]) -> Result<Vec<u8>, EncodeError> {
     enc(&(name.to_string(), new_owner))

@@ -45,7 +45,9 @@ pub use call_args::{
     encode_multisig_create, encode_multisig_execute, encode_multisig_propose, encode_name_register,
     encode_name_resolve, encode_name_transfer, encode_name_update_endpoints, encode_nft_approve,
     encode_nft_burn, encode_nft_create_collection, encode_nft_mint, encode_nft_set_base_uri,
-    encode_nft_transfer, encode_nft_transfer_from, encode_token_approve, encode_token_burn,
+    encode_nft_transfer, encode_nft_transfer_from, encode_rwa_burn, encode_rwa_create,
+    encode_rwa_freeze, encode_rwa_mint, encode_rwa_transfer, encode_rwa_update_metadata,
+    encode_token_approve, encode_token_burn,
     encode_token_buy, encode_token_create, encode_token_init_pool, encode_token_mint,
     encode_token_sell, encode_token_transfer, encode_token_transfer_from, encode_vault_cancel,
     encode_vault_claim, encode_vault_create,
@@ -848,6 +850,37 @@ impl ExecutionContext {
                 },
                 0,
             ));
+        }
+
+        // Fixed operation fee floors (Balanced tier; 75% burn / 25% miner).
+        // Round-gated via `fixed_fees_active_from_for_chain` so live testnet
+        // (seed1) never forks before round 500,000 while mainnet enforces from genesis.
+        if kovanica_params::fixed_fees_active_from_for_chain(
+            self.signing_ctx.chain_id,
+            leader_round,
+        ) {
+            let min_fixed_fee = match &tx.kind {
+                TransactionKind::Deploy { .. } => kovanica_params::FIXED_FEE_CONTRACT_DEPLOY,
+                TransactionKind::Call { method, .. } => {
+                    kovanica_fee::fixed_min_fee_for_call_method(method)
+                }
+                _ => 0,
+            };
+            if tx.fee < min_fixed_fee {
+                return Ok((
+                    TransactionReceipt {
+                        tx_hash: tx.hash,
+                        success: false,
+                        gas_used: 0,
+                        error: Some(format!(
+                            "Fee {} below fixed minimum {} for operation",
+                            tx.fee, min_fixed_fee
+                        )),
+                        events: Vec::new(),
+                    },
+                    0,
+                ));
+            }
         }
 
         // Load sender account and validate nonce, deduct fee, increment nonce in one table access

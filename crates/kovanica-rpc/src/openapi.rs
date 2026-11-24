@@ -760,6 +760,19 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             }),
         ),
         (
+            "kovanica_getFeeSchedule",
+            "Get canonical fixed operation fee floors, fee split, and activation status",
+            "Mempool",
+            json!({
+                "type": "array",
+                "items": {},
+                "maxItems": 0
+            }),
+            json!({
+                "type": "object"
+            }),
+        ),
+        (
             "kovanica_mempoolStats",
             "Get mempool pending count, total bytes, and fee-per-byte percentiles",
             "Mempool",

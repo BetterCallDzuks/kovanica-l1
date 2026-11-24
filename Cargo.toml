@@ -30,6 +30,7 @@ members = [
     "crates/kovanica-hw-signer",
     "crates/kovanica-devnet",
     "crates/kovanica-nft",
+    "crates/kovanica-rwa",
     "crates/kovanica-oracle",
     "crates/kovanica-token",
     "crates/kovanica-comms-core",

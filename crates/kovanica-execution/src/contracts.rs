@@ -182,9 +182,15 @@ pub const ENTRY_POINTS: &[&str] = &[
     "name_resolve",
     "name_update_endpoints",
     "name_transfer",
+    "rwa_create",
+    "rwa_mint",
+    "rwa_transfer",
+    "rwa_burn",
+    "rwa_freeze",
+    "rwa_update_metadata",
 ];
 
-/// Returns whether `name` is one of the 34 dispatchable entry points.
+/// Returns whether `name` is one of the 40 dispatchable entry points.
 pub fn is_entry_point(name: &str) -> bool {
     ENTRY_POINTS.contains(&name)
 }
@@ -1045,6 +1051,91 @@ fn dispatch_entry(
         "name_transfer" => {
             let (name, new_owner): (String, [u8; 32]) = dec(args)?;
             kovanica_name_registry::NameRegistry::transfer(host, name, new_owner)?;
+            enc(&())
+        }
+
+        // --- kovanica-rwa (KVP-106) --------------------------------------------
+        "rwa_create" => {
+            let (
+                name,
+                symbol,
+                asset_class,
+                unique_id,
+                version,
+                jurisdiction,
+                metadata_hash,
+                metadata_uri,
+                legal_uri,
+                custody_uri,
+                decimals,
+                max_supply,
+                initial_supply,
+            ): (
+                String,
+                String,
+                String,
+                String,
+                u32,
+                String,
+                [u8; 32],
+                String,
+                String,
+                String,
+                u8,
+                kovanica_common::Amount,
+                kovanica_common::Amount,
+            ) = dec(args)?;
+            enc(&kovanica_rwa::Rwa::create(
+                host,
+                name,
+                symbol,
+                asset_class,
+                unique_id,
+                version,
+                jurisdiction,
+                metadata_hash,
+                metadata_uri,
+                legal_uri,
+                custody_uri,
+                decimals,
+                max_supply,
+                initial_supply,
+            )?)
+        }
+        "rwa_mint" => {
+            let (to, amount): ([u8; 32], kovanica_common::Amount) = dec(args)?;
+            kovanica_rwa::Rwa::mint(host, to, amount)?;
+            enc(&())
+        }
+        "rwa_transfer" => {
+            let (to, amount): ([u8; 32], kovanica_common::Amount) = dec(args)?;
+            kovanica_rwa::Rwa::transfer(host, to, amount)?;
+            enc(&())
+        }
+        "rwa_burn" => {
+            let amount: kovanica_common::Amount = dec(args)?;
+            kovanica_rwa::Rwa::burn(host, amount)?;
+            enc(&())
+        }
+        "rwa_freeze" => {
+            let (account, frozen): ([u8; 32], bool) = dec(args)?;
+            kovanica_rwa::Rwa::freeze(host, account, frozen)?;
+            enc(&())
+        }
+        "rwa_update_metadata" => {
+            let (metadata_hash, metadata_uri, legal_uri, custody_uri): (
+                [u8; 32],
+                String,
+                String,
+                String,
+            ) = dec(args)?;
+            kovanica_rwa::Rwa::update_metadata(
+                host,
+                metadata_hash,
+                metadata_uri,
+                legal_uri,
+                custody_uri,
+            )?;
             enc(&())
         }
 
@@ -2213,10 +2304,10 @@ pub(crate) mod tests {
         let contract = addr(30);
         let caller = addr(1);
         deploy(&storage, &contract);
-        assert_eq!(ENTRY_POINTS.len(), 34);
+        assert_eq!(ENTRY_POINTS.len(), 40);
         assert_eq!(
             ENTRY_POINTS.iter().filter(|e| is_entry_point(e)).count(),
-            34
+            40
         );
         for entry in ENTRY_POINTS {
             let err = execute_contract_call(entry, contract, caller, 1, 100, &[], &storage)
