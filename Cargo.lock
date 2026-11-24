@@ -3029,9 +3029,13 @@ name = "kovanica-snapshot"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "clap",
+ "hex",
  "kovanica-storage",
  "kovanica-types",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
