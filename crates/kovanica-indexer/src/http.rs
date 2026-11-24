@@ -1,7 +1,9 @@
 //! HTTP + WebSocket server for the indexer.
 
 use crate::indexer::Indexer;
-use crate::types::{IndexedEvent, IndexerHealth, LogFilter, WsFilter};
+use crate::types::{
+    IndexedEvent, IndexerHealth, LogFilter, PruneDryRunReport, StoreIntegrityReport, WsFilter,
+};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -40,6 +42,12 @@ impl From<HttpFilter> for LogFilter {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PruneDryRunQuery {
+    #[serde(alias = "retention")]
+    pub keep_heights: u64,
+}
+
 pub fn router(indexer: Arc<Indexer>) -> Router {
     Router::new()
         .route("/logs", get(handle_logs))
@@ -48,6 +56,8 @@ pub fn router(indexer: Arc<Indexer>) -> Router {
         .route("/contracts/:address/events", get(handle_contract_logs))
         .route("/status", get(handle_status))
         .route("/health", get(handle_health))
+        .route("/integrity", get(handle_integrity))
+        .route("/prune/dry-run", get(handle_prune_dry_run))
         .route("/metrics", get(handle_metrics))
         .route("/ws", get(handle_ws))
         .with_state(indexer)
@@ -85,6 +95,30 @@ async fn handle_status(State(idx): State<Arc<Indexer>>) -> Json<crate::types::In
 
 async fn handle_health(State(idx): State<Arc<Indexer>>) -> Json<IndexerHealth> {
     Json(idx.health())
+}
+
+async fn handle_integrity(
+    State(idx): State<Arc<Indexer>>,
+) -> Result<(StatusCode, Json<StoreIntegrityReport>), StatusCode> {
+    let report = idx
+        .check_store_integrity()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let status = if report.ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    Ok((status, Json(report)))
+}
+
+async fn handle_prune_dry_run(
+    State(idx): State<Arc<Indexer>>,
+    Query(q): Query<PruneDryRunQuery>,
+) -> Result<Json<PruneDryRunReport>, StatusCode> {
+    let report = idx
+        .prune_dry_run(q.keep_heights)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(report))
 }
 
 async fn handle_metrics(State(idx): State<Arc<Indexer>>) -> impl IntoResponse {
@@ -335,5 +369,129 @@ mod tests {
         assert_eq!(stalled.node_head_height, 100);
         assert_eq!(stalled.lag_blocks, 80);
         assert_eq!(stalled.sync_state, "stalled");
+    }
+
+    #[tokio::test]
+    async fn integrity_and_prune_dry_run_endpoints_record_openmetrics() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(IndexerStore::new(dir.path().join("indexer.redb")).unwrap());
+        let mut events = vec![
+            IndexedEvent {
+                id: 0,
+                height: 1,
+                tx_hash: [1u8; 32],
+                tx_index: 0,
+                log_index: 0,
+                address: kovanica_types::Address([2u8; 32]),
+                topic: b"transfer".to_vec(),
+                data: vec![1, 2, 3],
+                success: true,
+            },
+            IndexedEvent {
+                id: 0,
+                height: 2,
+                tx_hash: [2u8; 32],
+                tx_index: 0,
+                log_index: 0,
+                address: kovanica_types::Address([2u8; 32]),
+                topic: b"transfer".to_vec(),
+                data: vec![4, 5, 6],
+                success: true,
+            },
+            IndexedEvent {
+                id: 0,
+                height: 3,
+                tx_hash: [3u8; 32],
+                tx_index: 0,
+                log_index: 0,
+                address: kovanica_types::Address([3u8; 32]),
+                topic: b"mint".to_vec(),
+                data: vec![7, 8, 9],
+                success: true,
+            },
+        ];
+        store.insert_events(&mut events).unwrap();
+        store.set_latest_indexed_height(3).unwrap();
+
+        let reader = Arc::new(StubNodeReader::new(3));
+        let indexer = Arc::new(Indexer::new(store.clone(), reader));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(indexer.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // Call GET /integrity
+        let integrity_resp = reqwest::get(format!("http://{addr}/integrity"))
+            .await
+            .unwrap();
+        assert_eq!(integrity_resp.status(), StatusCode::OK);
+        let integrity: StoreIntegrityReport = integrity_resp.json().await.unwrap();
+        assert!(integrity.ok);
+        assert_eq!(integrity.backend, "redb");
+        assert_eq!(integrity.event_count, 3);
+        assert_eq!(integrity.height_bucket_count, 3);
+
+        // Call GET /prune/dry-run?keep_heights=1 (retains height 3, prunes heights 1 and 2)
+        let prune_resp = reqwest::get(format!("http://{addr}/prune/dry-run?keep_heights=1"))
+            .await
+            .unwrap();
+        assert_eq!(prune_resp.status(), StatusCode::OK);
+        let prune: PruneDryRunReport = prune_resp.json().await.unwrap();
+        assert!(!prune.mutated);
+        assert_eq!(prune.cutoff_height, 3);
+        assert_eq!(prune.prunable_heights, 2);
+        assert_eq!(prune.prunable_events, 2);
+        assert_eq!(prune.prunable_txs, 2);
+        assert!(prune.prunable_bytes > 0);
+        assert_eq!(prune.retained_heights, 1);
+        assert_eq!(prune.retained_events, 1);
+
+        // Ensure zero mutation after HTTP dry-run
+        assert_eq!(store.event_count(), 3);
+
+        // Verify OpenMetrics exposition reflects integrity and prune dry-run counters/gauges
+        let metrics_body = reqwest::get(format!("http://{addr}/metrics"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(metrics_body.ends_with("# EOF\n"));
+        assert!(metrics_body.contains("indexer_store_integrity_checks_total 1\n"));
+        assert!(metrics_body.contains("indexer_store_integrity_check_failures_total 0\n"));
+        assert!(metrics_body.contains("indexer_store_integrity_ok 1\n"));
+        assert!(metrics_body.contains("indexer_store_integrity_issues 0\n"));
+        assert!(metrics_body.contains("indexer_prune_dry_runs_total 1\n"));
+        assert!(metrics_body.contains("indexer_prune_dry_run_prunable_heights 2\n"));
+        assert!(metrics_body.contains("indexer_prune_dry_run_prunable_events 2\n"));
+        assert!(metrics_body.contains("indexer_prune_dry_run_prunable_txs 2\n"));
+        assert!(metrics_body.contains(&format!(
+            "indexer_prune_dry_run_prunable_bytes {}\n",
+            prune.prunable_bytes
+        )));
+
+        // Also verify failure metrics increment when recording a failing report
+        let failing = StoreIntegrityReport {
+            ok: false,
+            checked_at_ms: 123_456,
+            backend: "redb".to_string(),
+            latest_indexed_height: 3,
+            next_id: 4,
+            event_count: 3,
+            height_bucket_count: 3,
+            address_bucket_count: 2,
+            topic_bucket_count: 2,
+            issues: vec!["synthetic issue 1".into(), "synthetic issue 2".into()],
+        };
+        indexer.metrics.record_integrity_report(&failing);
+        let snap = indexer.metrics.snapshot();
+        assert_eq!(snap.integrity_checks_total, 2);
+        assert_eq!(snap.integrity_check_failures_total, 1);
+        assert_eq!(snap.integrity_last_ok, 0);
+        assert_eq!(snap.integrity_last_issues, 2);
+        assert_eq!(snap.integrity_last_checked_at_ms, 123_456);
     }
 }

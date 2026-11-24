@@ -78,6 +78,68 @@ pub struct IndexerMetricsSnapshot {
     pub node_head_height: u64,
     pub lag_blocks: u64,
     pub blocks_processed_total: u64,
+    pub integrity_checks_total: u64,
+    pub integrity_check_failures_total: u64,
+    pub integrity_last_ok: u64,
+    pub integrity_last_issues: u64,
+    pub integrity_last_checked_at_ms: u64,
+    pub prune_dry_runs_total: u64,
+    pub prune_dry_run_prunable_heights: u64,
+    pub prune_dry_run_prunable_events: u64,
+    pub prune_dry_run_prunable_txs: u64,
+    pub prune_dry_run_prunable_bytes: u64,
+}
+
+/// Result of running a read-only structural integrity check on `IndexerStore`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StoreIntegrityReport {
+    /// True iff no structural, deserialization, or cross-index issues were found.
+    pub ok: bool,
+    /// Unix timestamp in milliseconds when the check completed.
+    pub checked_at_ms: u64,
+    /// Storage backend identifier (e.g. `"redb"`).
+    pub backend: String,
+    /// Latest indexed height recorded in metadata.
+    pub latest_indexed_height: u64,
+    /// Next monotonic event ID recorded in metadata (0 if unset).
+    pub next_id: u64,
+    /// Number of rows in `idx_events`.
+    pub event_count: u64,
+    /// Number of height buckets in `idx_heights`.
+    pub height_bucket_count: u64,
+    /// Number of address buckets in `idx_by_addr`.
+    pub address_bucket_count: u64,
+    /// Number of topic buckets in `idx_by_topic`.
+    pub topic_bucket_count: u64,
+    /// Human-readable descriptions of any detected issues (empty when `ok == true`).
+    pub issues: Vec<String>,
+}
+
+/// Read-only estimate of indexed data eligible for pruning under a height retention window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PruneDryRunReport {
+    /// Unix timestamp in milliseconds when the dry-run completed.
+    pub checked_at_ms: u64,
+    /// Requested number of recent heights to retain.
+    pub keep_heights: u64,
+    /// Latest indexed height recorded in store metadata.
+    pub latest_indexed_height: u64,
+    /// Heights strictly below `cutoff_height` would be pruned.
+    pub cutoff_height: u64,
+    /// Number of height buckets that would be pruned.
+    pub prunable_heights: u64,
+    /// Number of indexed events/logs that would be pruned.
+    pub prunable_events: u64,
+    /// Number of distinct `(height, tx_hash)` transactions represented in prunable events.
+    pub prunable_txs: u64,
+    /// Estimated serialized bytes across event and height tables that would be pruned.
+    pub prunable_bytes: u64,
+    /// Number of height buckets that would be retained.
+    pub retained_heights: u64,
+    /// Number of indexed events/logs that would be retained.
+    pub retained_events: u64,
+    /// Always `false` for dry-run checks, confirming the store was not mutated.
+    pub mutated: bool,
 }
 
 /// WS subscription filter.
