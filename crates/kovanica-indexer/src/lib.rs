@@ -14,8 +14,8 @@ pub mod types;
 pub use config::Config;
 pub use indexer::{Indexer, IndexerMetrics};
 pub use node_reader::{NodeReader, StorageNodeReader};
-pub use store::IndexerStore;
+pub use store::{IndexerStore, StoreError};
 pub use types::{
     classify_sync_lag, IndexedEvent, IndexerHealth, IndexerMetricsSnapshot, IndexerStatus,
-    LogFilter,
+    LogFilter, PruneDryRunReport, StoreIntegrityReport,
 };
