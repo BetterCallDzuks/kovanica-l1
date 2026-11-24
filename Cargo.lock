@@ -2747,6 +2747,8 @@ dependencies = [
  "kovanica-crypto",
  "kovanica-keystore",
  "kovanica-types",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 
