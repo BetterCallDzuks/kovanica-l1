@@ -39,5 +39,5 @@ pub use protocol::{StratumNotification, StratumRequest, StratumResponse};
 pub use rpc::{NodeRpcClient, WorkTemplate};
 pub use session::{
     parse_and_validate_username, parse_numeric_session_id, AuthorizedWorker, SessionRegistry,
-    WorkerSession, WorkerSessionSummary, WorkersResponse,
+    WorkerSession, WorkerSessionSummary, WorkersResponse, WorkersSummary,
 };

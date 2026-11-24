@@ -206,6 +206,61 @@ impl Default for VarDiffConfig {
     }
 }
 
+impl VarDiffConfig {
+    /// Validate VarDiff bounds and retargeting parameters.
+    ///
+    /// Enforces:
+    /// - `min_difficulty` and `max_difficulty` are finite and strictly positive (`> 0.0`)
+    /// - `min_difficulty <= max_difficulty`
+    /// - `target_share_secs` is finite and strictly positive (`> 0.0`)
+    /// - `retarget_interval_secs > 0`
+    /// - `variance_percent` is finite and in `[0.0, 100.0)`
+    pub fn validate(&self) -> Result<()> {
+        if !self.min_difficulty.is_finite() || self.min_difficulty <= 0.0 {
+            bail!("vardiff_min_difficulty must be finite and > 0");
+        }
+        if !self.max_difficulty.is_finite() || self.max_difficulty <= 0.0 {
+            bail!("vardiff_max_difficulty must be finite and > 0");
+        }
+        if self.min_difficulty > self.max_difficulty {
+            bail!("vardiff_min_difficulty must be <= vardiff_max_difficulty");
+        }
+        if !self.target_share_secs.is_finite() || self.target_share_secs <= 0.0 {
+            bail!("vardiff_target_share_secs must be finite and > 0");
+        }
+        if self.retarget_interval_secs == 0 {
+            bail!("vardiff_retarget_interval_secs must be > 0");
+        }
+        if !self.variance_percent.is_finite() || !(0.0..100.0).contains(&self.variance_percent) {
+            bail!("vardiff_variance_percent must be finite and in [0, 100)");
+        }
+        Ok(())
+    }
+
+    /// Validate VarDiff bounds together with the gateway's initial share difficulty.
+    ///
+    /// Always checks [`VarDiffConfig::validate`] and that `initial_difficulty` is finite and
+    /// non-negative. When `self.enabled` is `true`, also enforces
+    /// `self.min_difficulty <= initial_difficulty <= self.max_difficulty`.
+    pub fn validate_with_initial_difficulty(&self, initial_difficulty: f64) -> Result<()> {
+        self.validate()?;
+        if !initial_difficulty.is_finite() || initial_difficulty < 0.0 {
+            bail!("difficulty must be finite and non-negative");
+        }
+        if self.enabled
+            && (initial_difficulty < self.min_difficulty
+                || initial_difficulty > self.max_difficulty)
+        {
+            bail!(
+                "initial difficulty ({initial_difficulty}) must be within [vardiff_min_difficulty ({}), vardiff_max_difficulty ({})] when VarDiff is enabled",
+                self.min_difficulty,
+                self.max_difficulty
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Runtime configuration for `StratumGateway`.
 #[derive(Debug, Clone)]
 pub struct StratumConfig {
@@ -338,29 +393,8 @@ impl StratumConfig {
                 bail!("invalid payout address: {addr}");
             }
         }
-        if !self.difficulty.is_finite() || self.difficulty < 0.0 {
-            bail!("difficulty must be finite and non-negative");
-        }
-        if !self.vardiff_min_difficulty.is_finite() || self.vardiff_min_difficulty <= 0.0 {
-            bail!("vardiff_min_difficulty must be finite and > 0");
-        }
-        if !self.vardiff_max_difficulty.is_finite() || self.vardiff_max_difficulty <= 0.0 {
-            bail!("vardiff_max_difficulty must be finite and > 0");
-        }
-        if self.vardiff_min_difficulty > self.vardiff_max_difficulty {
-            bail!("vardiff_min_difficulty must be <= vardiff_max_difficulty");
-        }
-        if !self.vardiff_target_share_secs.is_finite() || self.vardiff_target_share_secs <= 0.0 {
-            bail!("vardiff_target_share_secs must be finite and > 0");
-        }
-        if self.vardiff_retarget_interval_secs == 0 {
-            bail!("vardiff_retarget_interval_secs must be > 0");
-        }
-        if !self.vardiff_variance_percent.is_finite()
-            || !(0.0..100.0).contains(&self.vardiff_variance_percent)
-        {
-            bail!("vardiff_variance_percent must be finite and in [0, 100)");
-        }
+        self.vardiff_config()
+            .validate_with_initial_difficulty(self.difficulty)?;
         if self.max_connections == 0 {
             bail!("max_connections must be > 0");
         }
@@ -760,5 +794,144 @@ mod tests {
         let cfg = StratumConfig::from(parsed);
         assert_eq!(cfg.drain_timeout_secs, 45);
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn vardiff_bounds_validation_valid_and_invalid_cases() {
+        // Default VarDiffConfig is valid
+        let default_vd = VarDiffConfig::default();
+        assert!(default_vd.validate().is_ok());
+        assert!(default_vd.validate_with_initial_difficulty(1.0).is_ok());
+        // Disabled VarDiff permits 0.0 initial difficulty (test mode)
+        assert!(default_vd.validate_with_initial_difficulty(0.0).is_ok());
+
+        // Enabled VarDiff with min <= initial <= max (including exact equality boundary)
+        let exact_bounds = VarDiffConfig {
+            enabled: true,
+            min_difficulty: 2.0,
+            max_difficulty: 2.0,
+            target_share_secs: 15.0,
+            retarget_interval_secs: 60,
+            variance_percent: 0.0,
+        };
+        assert!(exact_bounds.validate().is_ok());
+        assert!(exact_bounds.validate_with_initial_difficulty(2.0).is_ok());
+
+        // Enabled VarDiff rejects initial_difficulty outside [min_difficulty, max_difficulty]
+        assert!(exact_bounds.validate_with_initial_difficulty(1.99).is_err());
+        assert!(exact_bounds.validate_with_initial_difficulty(2.01).is_err());
+        assert!(exact_bounds.validate_with_initial_difficulty(0.0).is_err());
+
+        // Non-finite and negative initial difficulties are always rejected
+        for bad_init in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(default_vd
+                .validate_with_initial_difficulty(bad_init)
+                .is_err());
+            assert!(exact_bounds
+                .validate_with_initial_difficulty(bad_init)
+                .is_err());
+        }
+
+        // Invalid min_difficulty values
+        for bad_min in [0.0, -0.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let cfg = VarDiffConfig {
+                enabled: true,
+                min_difficulty: bad_min,
+                ..Default::default()
+            };
+            assert!(
+                cfg.validate().is_err(),
+                "min_difficulty={bad_min} must fail validation"
+            );
+        }
+
+        // Invalid max_difficulty values
+        for bad_max in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let cfg = VarDiffConfig {
+                enabled: true,
+                max_difficulty: bad_max,
+                ..Default::default()
+            };
+            assert!(
+                cfg.validate().is_err(),
+                "max_difficulty={bad_max} must fail validation"
+            );
+        }
+
+        // Inverted bounds: min_difficulty > max_difficulty
+        let inverted = VarDiffConfig {
+            enabled: true,
+            min_difficulty: 16.0,
+            max_difficulty: 8.0,
+            ..Default::default()
+        };
+        assert!(inverted.validate().is_err());
+
+        // Invalid target_share_secs
+        for bad_target in [0.0, -5.0, f64::NAN, f64::INFINITY] {
+            let cfg = VarDiffConfig {
+                target_share_secs: bad_target,
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_err());
+        }
+
+        // Invalid retarget_interval_secs
+        assert!(VarDiffConfig {
+            retarget_interval_secs: 0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+
+        // Invalid variance_percent
+        for bad_var in [-0.1, 100.0, 150.0, f64::NAN, f64::INFINITY] {
+            let cfg = VarDiffConfig {
+                variance_percent: bad_var,
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_err());
+        }
+
+        // StratumConfig::validate enforces initial difficulty within [min, max] when enabled
+        assert!(StratumConfig {
+            difficulty: 0.5,
+            vardiff_enabled: true,
+            vardiff_min_difficulty: 1.0,
+            vardiff_max_difficulty: 100.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+
+        assert!(StratumConfig {
+            difficulty: 200.0,
+            vardiff_enabled: true,
+            vardiff_min_difficulty: 1.0,
+            vardiff_max_difficulty: 100.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+
+        assert!(StratumConfig {
+            difficulty: 0.0,
+            vardiff_enabled: true,
+            vardiff_min_difficulty: 1.0,
+            vardiff_max_difficulty: 100.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+
+        assert!(StratumConfig {
+            difficulty: 1.0,
+            vardiff_enabled: true,
+            vardiff_min_difficulty: 1.0,
+            vardiff_max_difficulty: 100.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_ok());
     }
 }
