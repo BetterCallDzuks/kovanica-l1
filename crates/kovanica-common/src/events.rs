@@ -84,6 +84,26 @@ pub const NFT_TRANSFER: &[u8] = b"nft_transfer";
 pub const NFT_APPROVAL: &[u8] = b"nft_approval";
 pub const NFT_BURN: &[u8] = b"nft_burn";
 
+// ---------- RWA (KVP-106) ----------
+pub const RWA_CREATED: &[u8] = b"rwa_created";
+pub const RWA_MINT: &[u8] = b"rwa_mint";
+pub const RWA_TRANSFER: &[u8] = b"rwa_transfer";
+pub const RWA_BURN: &[u8] = b"rwa_burn";
+pub const RWA_FROZEN: &[u8] = b"rwa_frozen";
+pub const RWA_METADATA_UPDATED: &[u8] = b"rwa_metadata_updated";
+
+// ---------- Scheduler (Wave C #9) ----------
+pub const SCHEDULER_JOB_CREATED: &[u8] = b"scheduler_job_created";
+pub const SCHEDULER_JOB_EXECUTED: &[u8] = b"scheduler_job_executed";
+pub const SCHEDULER_JOB_CANCELLED: &[u8] = b"scheduler_job_cancelled";
+
+// ---------- Bridge (Wave D #10) ----------
+pub const BRIDGE_INITIALIZED: &[u8] = b"bridge_initialized";
+pub const BRIDGE_DEPOSIT_ATTESTED: &[u8] = b"bridge_deposit_attested";
+pub const BRIDGE_MINTED: &[u8] = b"bridge_minted";
+pub const BRIDGE_WITHDRAW_REQUESTED: &[u8] = b"bridge_withdraw_requested";
+pub const BRIDGE_PAUSED: &[u8] = b"bridge_paused";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +137,11 @@ mod tests {
         assert_eq!(NFT_TRANSFER, b"nft_transfer");
         assert_eq!(NFT_APPROVAL, b"nft_approval");
         assert_eq!(NFT_BURN, b"nft_burn");
+        assert_eq!(RWA_CREATED, b"rwa_created");
+        assert_eq!(RWA_MINT, b"rwa_mint");
+        assert_eq!(RWA_TRANSFER, b"rwa_transfer");
+        assert_eq!(RWA_BURN, b"rwa_burn");
+        assert_eq!(RWA_FROZEN, b"rwa_frozen");
+        assert_eq!(RWA_METADATA_UPDATED, b"rwa_metadata_updated");
     }
 }

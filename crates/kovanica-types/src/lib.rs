@@ -63,9 +63,11 @@ pub use pow::{
     KOVANICA_HASH_CHUNK_SIZE, KOVANICA_HASH_MEMORY_SIZE, KOVANICA_HASH_MIX_ROUNDS,
     KOVANICA_HASH_NUM_CHUNKS,
 };
+pub mod session;
+pub use session::{SessionError, SessionKeyPolicy};
 pub use signing::SigningContext;
 pub use timeout::{SkipCert, Timeout};
-pub use transaction::{Transaction, TransactionKind};
+pub use transaction::{BatchAction, Transaction, TransactionKind};
 pub use vote::Vote;
 
 /// Logical round number in the DAG.

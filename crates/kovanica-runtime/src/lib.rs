@@ -746,6 +746,56 @@ fn build_linker<'a>(engine: &Engine) -> Result<Linker<ExecState<'a>>, RuntimeErr
         Ok(())
     });
 
+    // kovanica_call_contract(tp, tl, mp, ml, ap, al: i32, value: i64, out_ptr, out_cap: i32) -> i32
+    // Cross-contract call (CPI). Returns >= 0 byte length written to `out_ptr`,
+    // or a negative packed ContractError code.
+    define!("kovanica_call_contract", |mut caller: Caller<
+        '_,
+        ExecState<'_>,
+    >,
+                                       tp: i32,
+                                       tl: i32,
+                                       mp: i32,
+                                       ml: i32,
+                                       ap: i32,
+                                       al: i32,
+                                       value: i64,
+                                       out_ptr: i32,
+                                       out_cap: i32|
+     -> Result<i32, wasmi::Error> {
+        charge_host_gas(&mut caller, kovanica_fee::GAS_KOVANICA_CALL_CONTRACT)?;
+        if value < 0 {
+            return Ok(pack_contract_error(
+                kovanica_common::ContractError::Overflow,
+            ));
+        }
+        let target = read_address(&caller, tp, tl)?;
+        let method_bytes = read_guest(&caller, mp, ml)?;
+        let Ok(method) = core::str::from_utf8(&method_bytes) else {
+            return Ok(pack_contract_error(
+                kovanica_common::ContractError::InvalidInput,
+            ));
+        };
+        let args = read_guest(&caller, ap, al)?;
+        match caller
+            .data_mut()
+            .host
+            .call_contract(&target, method, &args, value as u128)
+        {
+            Ok(ret) => {
+                if out_cap == 0 {
+                    return Ok(i32::try_from(ret.len()).unwrap_or(-1));
+                }
+                if out_cap < 0 || ret.len() > out_cap as usize {
+                    return Ok(-2);
+                }
+                write_guest(&mut caller, out_ptr, &ret)?;
+                Ok(i32::try_from(ret.len()).unwrap_or(-1))
+            }
+            Err(e) => Ok(pack_contract_error(e)),
+        }
+    });
+
     Ok(linker)
 }
 

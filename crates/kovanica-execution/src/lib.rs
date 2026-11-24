@@ -45,10 +45,11 @@ pub use call_args::{
     encode_multisig_create, encode_multisig_execute, encode_multisig_propose, encode_name_register,
     encode_name_resolve, encode_name_transfer, encode_name_update_endpoints, encode_nft_approve,
     encode_nft_burn, encode_nft_create_collection, encode_nft_mint, encode_nft_set_base_uri,
-    encode_nft_transfer, encode_nft_transfer_from, encode_token_approve, encode_token_burn,
-    encode_token_buy, encode_token_create, encode_token_init_pool, encode_token_mint,
-    encode_token_sell, encode_token_transfer, encode_token_transfer_from, encode_vault_cancel,
-    encode_vault_claim, encode_vault_create,
+    encode_nft_transfer, encode_nft_transfer_from, encode_rwa_burn, encode_rwa_create,
+    encode_rwa_freeze, encode_rwa_mint, encode_rwa_transfer, encode_rwa_update_metadata,
+    encode_token_approve, encode_token_burn, encode_token_buy, encode_token_create,
+    encode_token_init_pool, encode_token_mint, encode_token_sell, encode_token_transfer,
+    encode_token_transfer_from, encode_vault_cancel, encode_vault_claim, encode_vault_create,
 };
 pub use contracts::{
     execute_contract_call, execute_contract_call_in_txn, execute_contract_call_with_value,
@@ -850,8 +851,64 @@ impl ExecutionContext {
             ));
         }
 
-        // Load sender account and validate nonce, deduct fee, increment nonce in one table access
+        // Wave A gate (Atomic Batch, Sponsored Txs): round-gated so live seed1 never forks.
+        let is_wave_a_kind = matches!(
+            tx.kind,
+            TransactionKind::Batch { .. } | TransactionKind::Sponsored { .. }
+        );
+        if is_wave_a_kind
+            && !kovanica_params::wave_a_active_from_for_chain(
+                self.signing_ctx.chain_id,
+                leader_round,
+            )
+        {
+            return Ok((
+                TransactionReceipt {
+                    tx_hash: tx.hash,
+                    success: false,
+                    gas_used: 0,
+                    error: Some(format!(
+                        "Wave A transaction kind not active before round {}",
+                        kovanica_params::wave_a_active_from_round_for_chain(
+                            self.signing_ctx.chain_id
+                        )
+                    )),
+                    events: Vec::new(),
+                },
+                0,
+            ));
+        }
+
+        // Fixed operation fee floors (Balanced tier; 75% burn / 25% miner).
+        // Round-gated via `fixed_fees_active_from_for_chain` so live testnet
+        // (seed1) never forks before round 500,000 while mainnet enforces from genesis.
+        if kovanica_params::fixed_fees_active_from_for_chain(
+            self.signing_ctx.chain_id,
+            leader_round,
+        ) {
+            let min_fixed_fee = fixed_min_fee_for_kind(&tx.kind);
+            if tx.fee < min_fixed_fee {
+                return Ok((
+                    TransactionReceipt {
+                        tx_hash: tx.hash,
+                        success: false,
+                        gas_used: 0,
+                        error: Some(format!(
+                            "Fee {} below fixed minimum {} for operation",
+                            tx.fee, min_fixed_fee
+                        )),
+                        events: Vec::new(),
+                    },
+                    0,
+                ));
+            }
+        }
+
+        // Load sender account and validate nonce; debit fee from `tx.fee_payer()`
+        // (which is `fee_payer` for `Sponsored` txs, or `tx.sender` otherwise).
         let sender_key = address_to_bytes(&tx.sender);
+        let fee_payer = tx.fee_payer();
+        let fee_payer_key = address_to_bytes(&fee_payer);
         let mut sender_account = {
             let table = txn.open_table(tables::ACCOUNTS)?;
             let value = table.get(sender_key)?;
@@ -876,27 +933,49 @@ impl ExecutionContext {
             ));
         }
 
-        // Check fee balance
-        if sender_account.balance < tx.fee {
-            return Ok((
-                TransactionReceipt {
-                    tx_hash: tx.hash,
-                    success: false,
-                    gas_used: 0,
-                    error: Some("Insufficient balance for fee".to_string()),
-                    events: Vec::new(),
-                },
-                0,
-            ));
-        }
-
-        // Deduct fee upfront and increment nonce
-        sender_account.balance = sender_account.balance.saturating_sub(tx.fee);
-        sender_account.nonce = sender_account.nonce.saturating_add(1);
-
-        // Save updated sender account
-        {
+        if fee_payer == tx.sender {
+            // Check fee balance on sender
+            if sender_account.balance < tx.fee {
+                return Ok((
+                    TransactionReceipt {
+                        tx_hash: tx.hash,
+                        success: false,
+                        gas_used: 0,
+                        error: Some("Insufficient balance for fee".to_string()),
+                        events: Vec::new(),
+                    },
+                    0,
+                ));
+            }
+            sender_account.balance = sender_account.balance.saturating_sub(tx.fee);
+            sender_account.nonce = sender_account.nonce.saturating_add(1);
             let mut table = txn.open_table(tables::ACCOUNTS)?;
+            table.insert(sender_key, sender_account.to_bytes()?)?;
+        } else {
+            // Sponsored transaction: fee_payer pays tx.fee, sender nonce increments.
+            let mut payer_account = {
+                let table = txn.open_table(tables::ACCOUNTS)?;
+                let value = table.get(fee_payer_key)?;
+                value
+                    .map(|v| Account::from_bytes(&v.value()).unwrap_or_default())
+                    .unwrap_or_default()
+            };
+            if payer_account.balance < tx.fee {
+                return Ok((
+                    TransactionReceipt {
+                        tx_hash: tx.hash,
+                        success: false,
+                        gas_used: 0,
+                        error: Some("Sponsor has insufficient balance for fee".to_string()),
+                        events: Vec::new(),
+                    },
+                    0,
+                ));
+            }
+            payer_account.balance = payer_account.balance.saturating_sub(tx.fee);
+            sender_account.nonce = sender_account.nonce.saturating_add(1);
+            let mut table = txn.open_table(tables::ACCOUNTS)?;
+            table.insert(fee_payer_key, payer_account.to_bytes()?)?;
             table.insert(sender_key, sender_account.to_bytes()?)?;
         }
 
@@ -920,8 +999,13 @@ impl ExecutionContext {
         // arm below can still report it after the body is rolled back.
         let mut gas_used = 0u64;
 
-        // Execute based on transaction kind
-        let result = match &tx.kind {
+        // Execute based on transaction kind (unwrapping `Sponsored` so the
+        // inner action runs as `tx.sender` while `fee_payer` paid `tx.fee`).
+        let effective_kind = match &tx.kind {
+            TransactionKind::Sponsored { inner, .. } => inner.as_ref(),
+            other => other,
+        };
+        let result = match effective_kind {
             TransactionKind::Transfer { to, amount } => {
                 self.execute_transfer(txn, storage, &tx.sender, *to, *amount)
             }
@@ -995,6 +1079,20 @@ impl ExecutionContext {
             TransactionKind::Evidence { evidence } => {
                 self.execute_evidence(txn, storage, evidence, leader_round, slashing_active)
             }
+            TransactionKind::Batch { actions } => self.execute_batch(
+                txn,
+                storage,
+                &tx.sender,
+                tx.nonce,
+                actions,
+                committed_height,
+                gas_hardening_active,
+                contract_hardening_active,
+                &mut gas_used,
+            ),
+            TransactionKind::Sponsored { .. } => Err(ExecutionError::Validation(
+                "Nested Sponsored transactions are not allowed".to_string(),
+            )),
         };
 
         let (success, error, events) = match result {
@@ -1293,6 +1391,128 @@ impl ExecutionContext {
     /// before `deploy_contract`, so an invalid/overwriting deploy leaves no
     /// code write. Fee and nonce were already charged by the per-transaction
     /// savepoint in `execute_transaction`, matching every other body failure.
+    /// Execute an atomic [`TransactionKind::Batch`] of actions (Wave A).
+    ///
+    /// All actions execute sequentially in `txn`; if any action fails, the outer
+    /// savepoint (`AccountUndo`) rolls back all account changes. A `BatchAction::Call`
+    /// with `contract == Address::zero()` resolves to the most recently deployed
+    /// contract in the same batch (enabling 1-tx `Deploy + token_create` / `rwa_create`).
+    #[allow(clippy::too_many_arguments)]
+    fn execute_batch(
+        &mut self,
+        txn: &mut WriteTransaction,
+        storage: &Storage,
+        from: &Address,
+        pre_nonce: u64,
+        actions: &[kovanica_types::BatchAction],
+        committed_height: u64,
+        gas_hardening_active: bool,
+        contract_hardening_active: bool,
+        gas_used_out: &mut u64,
+    ) -> Result<Vec<ContractEvent>, ExecutionError> {
+        if actions.is_empty() || actions.len() > kovanica_params::MAX_BATCH_ACTIONS {
+            return Err(ExecutionError::Validation(format!(
+                "Batch action count {} outside 1..={}",
+                actions.len(),
+                kovanica_params::MAX_BATCH_ACTIONS
+            )));
+        }
+        let total_gas_limit: u64 = actions
+            .iter()
+            .map(|a| match a {
+                kovanica_types::BatchAction::Call { gas_limit, .. } => *gas_limit,
+                _ => 0,
+            })
+            .fold(0u64, u64::saturating_add);
+        if total_gas_limit > MAX_TX_GAS_LIMIT {
+            return Err(ExecutionError::Validation(format!(
+                "Batch gas limit {} exceeds MAX_TX_GAS_LIMIT {}",
+                total_gas_limit, MAX_TX_GAS_LIMIT
+            )));
+        }
+
+        let mut all_events = Vec::new();
+        let mut last_deployed: Option<Address> = None;
+        let post_nonce = pre_nonce.saturating_add(1);
+
+        for (idx, action) in actions.iter().enumerate() {
+            match action {
+                kovanica_types::BatchAction::Transfer { to, amount } => {
+                    let ev = self.execute_transfer(txn, storage, from, *to, *amount)?;
+                    all_events.extend(ev);
+                }
+                kovanica_types::BatchAction::Deploy { code } => {
+                    if code.is_empty() {
+                        return Err(ExecutionError::Validation(
+                            "Empty contract code in batch".to_string(),
+                        ));
+                    }
+                    let contract_addr = derive_batch_contract_address(from, post_nonce, idx);
+                    if contract_hardening_active {
+                        let existing = storage
+                            .state()
+                            .get_account_or_default_write(txn, &contract_addr)?;
+                        if !existing.code.is_empty() {
+                            return Err(ExecutionError::Validation(
+                                "Contract address already has code".to_string(),
+                            ));
+                        }
+                        self.contract_runner.validate_module(code).map_err(|_| {
+                            ExecutionError::Validation("Invalid contract bytecode".to_string())
+                        })?;
+                    }
+                    let code_hash =
+                        storage
+                            .state()
+                            .deploy_contract(txn, &contract_addr, code.clone())?;
+                    all_events.push(ContractEvent {
+                        address: contract_addr,
+                        topic: b"deploy".to_vec(),
+                        data: bincode::serialize(&(&contract_addr, &code_hash))
+                            .map_err(|e| ExecutionError::Other(e.to_string()))?,
+                    });
+                    last_deployed = Some(contract_addr);
+                }
+                kovanica_types::BatchAction::Call {
+                    contract,
+                    value,
+                    method,
+                    args,
+                    gas_limit,
+                } => {
+                    let resolved_contract = if *contract == Address([0u8; 32]) {
+                        last_deployed.ok_or_else(|| {
+                            ExecutionError::Validation(
+                                "Batch Call with zero contract requires a prior Deploy in the batch"
+                                    .to_string(),
+                            )
+                        })?
+                    } else {
+                        *contract
+                    };
+                    let mut action_gas = 0u64;
+                    let ev = self.execute_call(
+                        txn,
+                        storage,
+                        from,
+                        resolved_contract,
+                        *value,
+                        method,
+                        args,
+                        *gas_limit,
+                        committed_height,
+                        gas_hardening_active,
+                        contract_hardening_active,
+                        &mut action_gas,
+                    )?;
+                    *gas_used_out = gas_used_out.saturating_add(action_gas);
+                    all_events.extend(ev);
+                }
+            }
+        }
+        Ok(all_events)
+    }
+
     fn execute_deploy(
         &mut self,
         txn: &mut WriteTransaction,
@@ -2199,11 +2419,37 @@ fn resolve_leader_identity(
         .map(|member| Address::from_public_key(&member.public_key))
 }
 
+/// Compute the canonical fixed minimum fee (in atoms) for a transaction kind.
+fn fixed_min_fee_for_kind(kind: &TransactionKind) -> u64 {
+    match kind {
+        TransactionKind::Deploy { .. } => kovanica_params::FIXED_FEE_CONTRACT_DEPLOY,
+        TransactionKind::Call { method, .. } => kovanica_fee::fixed_min_fee_for_call_method(method),
+        TransactionKind::Batch { actions } => actions
+            .iter()
+            .map(|a| match a {
+                kovanica_types::BatchAction::Deploy { .. } => {
+                    kovanica_params::FIXED_FEE_CONTRACT_DEPLOY
+                }
+                kovanica_types::BatchAction::Call { method, .. } => {
+                    kovanica_fee::fixed_min_fee_for_call_method(method)
+                }
+                kovanica_types::BatchAction::Transfer { .. } => 0,
+            })
+            .fold(0u64, u64::saturating_add),
+        TransactionKind::Sponsored { inner, .. } => fixed_min_fee_for_kind(inner),
+        _ => 0,
+    }
+}
+
 /// Every `ACCOUNTS` row a transaction body can write (sender, plus the
 /// transfer recipient / deployed contract address).
 fn touched_accounts(tx: &Transaction) -> Vec<[u8; 32]> {
     let mut keys = vec![address_to_bytes(&tx.sender)];
-    match &tx.kind {
+    let effective = match &tx.kind {
+        TransactionKind::Sponsored { inner, .. } => inner.as_ref(),
+        other => other,
+    };
+    match effective {
         TransactionKind::Transfer { to, .. } => keys.push(address_to_bytes(to)),
         TransactionKind::Deploy { .. } => {
             // Contract address derivation mirrors `execute_deploy`; the nonce
@@ -2213,11 +2459,44 @@ fn touched_accounts(tx: &Transaction) -> Vec<[u8; 32]> {
             b.extend_from_slice(&tx.nonce.saturating_add(1).to_le_bytes());
             keys.push(address_to_bytes(&Address(kovanica_common::hash(&b))));
         }
+        TransactionKind::Batch { actions } => {
+            for (idx, action) in actions.iter().enumerate() {
+                match action {
+                    kovanica_types::BatchAction::Transfer { to, .. } => {
+                        keys.push(address_to_bytes(to));
+                    }
+                    kovanica_types::BatchAction::Deploy { .. } => {
+                        keys.push(address_to_bytes(&derive_batch_contract_address(
+                            &tx.sender,
+                            tx.nonce.saturating_add(1),
+                            idx,
+                        )));
+                    }
+                    kovanica_types::BatchAction::Call { contract, .. } => {
+                        if *contract != Address([0u8; 32]) {
+                            keys.push(address_to_bytes(contract));
+                        }
+                    }
+                }
+            }
+        }
         _ => {}
     }
     keys.sort_unstable();
     keys.dedup();
     keys
+}
+
+/// Deterministically derive the deployed contract address for action `idx` in a `Batch`.
+/// Action 0 matches `execute_deploy`'s derivation (`sender || (nonce + 1)`).
+fn derive_batch_contract_address(sender: &Address, post_nonce: u64, idx: usize) -> Address {
+    let mut b = Vec::with_capacity(48);
+    b.extend_from_slice(&sender.0);
+    b.extend_from_slice(&post_nonce.to_le_bytes());
+    if idx > 0 {
+        b.extend_from_slice(&(idx as u64).to_le_bytes());
+    }
+    Address(kovanica_common::hash(&b))
 }
 
 /// Pre-images of account rows, restored when a transaction body fails.

@@ -182,9 +182,22 @@ pub const ENTRY_POINTS: &[&str] = &[
     "name_resolve",
     "name_update_endpoints",
     "name_transfer",
+    "rwa_create",
+    "rwa_mint",
+    "rwa_transfer",
+    "rwa_burn",
+    "rwa_freeze",
+    "rwa_update_metadata",
+    "scheduler_create_job",
+    "scheduler_execute_job",
+    "scheduler_cancel_job",
+    "bridge_init",
+    "bridge_attest_mint",
+    "bridge_request_withdraw",
+    "bridge_set_paused",
 ];
 
-/// Returns whether `name` is one of the 34 dispatchable entry points.
+/// Returns whether `name` is one of the 47 dispatchable entry points.
 pub fn is_entry_point(name: &str) -> bool {
     ENTRY_POINTS.contains(&name)
 }
@@ -223,6 +236,8 @@ pub struct ContractHost<'a> {
     reads: Reads<'a>,
     /// Raw contract key → value; the contract address is applied at commit.
     storage_writes: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Storage writes from committed cross-contract sub-calls: `(contract, raw_key) -> value`.
+    child_storage_writes: BTreeMap<([u8; 32], Vec<u8>), Vec<u8>>,
     /// Accounts touched by `transfer`/`balance_of` (balance possibly
     /// mutated), keyed by the raw 32-byte address (`kovanica_types::Address`
     /// itself does not implement `Ord`).
@@ -238,6 +253,10 @@ pub struct ContractHost<'a> {
     /// The signed `Call.value` as authored (never decremented). [`Self::attached_value`]
     /// is what is left to spend; this is what the caller actually paid.
     signed_value: u64,
+    /// Current cross-contract call nesting depth (`0` for top-level call).
+    call_depth: u8,
+    /// Active contract call stack for reentrancy protection.
+    active_contracts: Vec<Address>,
 }
 
 impl<'a> ContractHost<'a> {
@@ -261,11 +280,14 @@ impl<'a> ContractHost<'a> {
             timestamp,
             reads,
             storage_writes: BTreeMap::new(),
+            child_storage_writes: BTreeMap::new(),
             accounts: BTreeMap::new(),
             events: Vec::new(),
             read_error: RefCell::new(None),
             attached_value: 0,
             signed_value: 0,
+            call_depth: 0,
+            active_contracts: vec![contract],
         })
     }
 
@@ -292,11 +314,14 @@ impl<'a> ContractHost<'a> {
             timestamp,
             reads: Reads::Txn(txn),
             storage_writes: BTreeMap::new(),
+            child_storage_writes: BTreeMap::new(),
             accounts: BTreeMap::new(),
             events: Vec::new(),
             read_error: RefCell::new(None),
             attached_value: 0,
             signed_value: 0,
+            call_depth: 0,
+            active_contracts: vec![contract],
         }
     }
 
@@ -453,6 +478,7 @@ impl<'a> ContractHost<'a> {
             contract,
             reads,
             storage_writes,
+            child_storage_writes,
             accounts,
             events,
             ..
@@ -463,7 +489,14 @@ impl<'a> ContractHost<'a> {
                 // All-or-nothing: pre-images are captured first and restored
                 // if any write fails, so `txn` never holds a partial call.
                 let journal = WriteJournal::capture(txn, &contract, &storage_writes, &accounts)?;
-                if let Err(err) = apply_overlay(storage, txn, &contract, storage_writes, accounts) {
+                if let Err(err) = apply_overlay(
+                    storage,
+                    txn,
+                    &contract,
+                    storage_writes,
+                    child_storage_writes,
+                    accounts,
+                ) {
                     journal.restore(txn)?;
                     return Err(err);
                 }
@@ -472,7 +505,14 @@ impl<'a> ContractHost<'a> {
             Reads::Snapshot(snapshot) => {
                 drop(snapshot);
                 let txn = storage.begin_write()?;
-                apply_overlay(storage, &txn, &contract, storage_writes, accounts)?;
+                apply_overlay(
+                    storage,
+                    &txn,
+                    &contract,
+                    storage_writes,
+                    child_storage_writes,
+                    accounts,
+                )?;
                 txn.commit().map_err(StorageError::Commit)?;
                 Ok(events)
             }
@@ -529,12 +569,21 @@ fn apply_overlay(
     txn: &WriteTransaction,
     contract: &Address,
     storage_writes: BTreeMap<Vec<u8>, Vec<u8>>,
+    child_storage_writes: BTreeMap<([u8; 32], Vec<u8>), Vec<u8>>,
     accounts: BTreeMap<[u8; 32], Account>,
 ) -> Result<(), ExecutionError> {
     for (raw_key, value) in storage_writes {
         storage
             .state()
             .set_storage(txn, contract, ContractHost::namespace(&raw_key), value)?;
+    }
+    for ((child_contract, raw_key), value) in child_storage_writes {
+        storage.state().set_storage(
+            txn,
+            &Address(child_contract),
+            ContractHost::namespace(&raw_key),
+            value,
+        )?;
     }
     for (address, account) in accounts {
         storage
@@ -726,6 +775,100 @@ impl Host for ContractHost<'_> {
             return;
         }
         self.storage_writes.insert(key.to_vec(), value.to_vec());
+    }
+
+    fn call_contract(
+        &mut self,
+        target: &[u8; 32],
+        method: &str,
+        args: &[u8],
+        value: u128,
+    ) -> ContractResult<Vec<u8>> {
+        if self.call_depth >= kovanica_params::MAX_CROSS_CONTRACT_CALL_DEPTH {
+            return Err(ContractError::Overflow);
+        }
+        let target_addr = Address(*target);
+        // Reentrancy guard: refuse calling back into any active contract on the stack.
+        if self.active_contracts.contains(&target_addr) {
+            return Err(ContractError::Unauthorized);
+        }
+        if !is_entry_point(method) {
+            return Err(ContractError::InvalidInput);
+        }
+        let target_account = self.load_account(&target_addr)?;
+        if target_account.code.is_empty() {
+            return Err(ContractError::NotFound);
+        }
+        if value > u64::MAX as u128 {
+            return Err(ContractError::Overflow);
+        }
+        let value_u64 = value as u64;
+
+        // Open a child host view sharing the same backing reads and cloned overlays
+        // so any failure in the sub-call rolls back atomically.
+        let child_reads = match &self.reads {
+            Reads::Txn(txn) => Reads::Txn(txn),
+            Reads::Snapshot(_) => Reads::Snapshot(
+                self.storage
+                    .begin_read()
+                    .map_err(|_| ContractError::Custom(500))?,
+            ),
+        };
+        let mut child_active = self.active_contracts.clone();
+        child_active.push(target_addr);
+
+        let mut child_storage = BTreeMap::new();
+        for ((c, k), v) in &self.child_storage_writes {
+            if *c == *target {
+                child_storage.insert(k.clone(), v.clone());
+            }
+        }
+
+        let mut child = ContractHost {
+            storage: self.storage,
+            contract: target_addr,
+            caller: self.contract,
+            block_height: self.block_height,
+            timestamp: self.timestamp,
+            reads: child_reads,
+            storage_writes: child_storage,
+            child_storage_writes: self.child_storage_writes.clone(),
+            accounts: self.accounts.clone(),
+            events: Vec::new(),
+            read_error: RefCell::new(None),
+            attached_value: 0,
+            signed_value: 0,
+            call_depth: self.call_depth + 1,
+            active_contracts: child_active,
+        };
+
+        if value_u64 > 0 {
+            let caller_balance = child.load_account(&self.contract)?.balance;
+            let spendable = caller_balance.saturating_sub(self.custody_total()?);
+            child.move_real(&self.contract, &target_addr, value_u64, spendable)?;
+            child.attached_value = value_u64;
+            child.signed_value = value_u64;
+        }
+
+        match dispatch_entry(method, &mut child, args) {
+            Ok(ret) => {
+                if child.read_error.borrow().is_some() {
+                    return Err(ContractError::Custom(500));
+                }
+                // Merge child storage writes, nested child writes, accounts, and events.
+                for (k, v) in child.storage_writes {
+                    self.child_storage_writes.insert((*target, k), v);
+                }
+                for (k, v) in child.child_storage_writes {
+                    self.child_storage_writes.insert(k, v);
+                }
+                self.accounts = child.accounts;
+                self.events.extend(child.events);
+                Ok(ret)
+            }
+            Err(ExecutionError::Contract(ce)) => Err(ce),
+            Err(_) => Err(ContractError::Custom(500)),
+        }
     }
 }
 
@@ -1045,6 +1188,174 @@ fn dispatch_entry(
         "name_transfer" => {
             let (name, new_owner): (String, [u8; 32]) = dec(args)?;
             kovanica_name_registry::NameRegistry::transfer(host, name, new_owner)?;
+            enc(&())
+        }
+
+        // --- kovanica-rwa (KVP-106) --------------------------------------------
+        "rwa_create" => {
+            #[allow(clippy::type_complexity)]
+            type RwaCreateTuple = (
+                String,
+                String,
+                String,
+                String,
+                u32,
+                String,
+                [u8; 32],
+                String,
+                String,
+                String,
+                u8,
+                kovanica_common::Amount,
+                kovanica_common::Amount,
+            );
+            let (
+                name,
+                symbol,
+                asset_class,
+                unique_id,
+                version,
+                jurisdiction,
+                metadata_hash,
+                metadata_uri,
+                legal_uri,
+                custody_uri,
+                decimals,
+                max_supply,
+                initial_supply,
+            ): RwaCreateTuple = dec(args)?;
+            enc(&kovanica_rwa::Rwa::create(
+                host,
+                name,
+                symbol,
+                asset_class,
+                unique_id,
+                version,
+                jurisdiction,
+                metadata_hash,
+                metadata_uri,
+                legal_uri,
+                custody_uri,
+                decimals,
+                max_supply,
+                initial_supply,
+            )?)
+        }
+        "rwa_mint" => {
+            let (to, amount): ([u8; 32], kovanica_common::Amount) = dec(args)?;
+            kovanica_rwa::Rwa::mint(host, to, amount)?;
+            enc(&())
+        }
+        "rwa_transfer" => {
+            let (to, amount): ([u8; 32], kovanica_common::Amount) = dec(args)?;
+            kovanica_rwa::Rwa::transfer(host, to, amount)?;
+            enc(&())
+        }
+        "rwa_burn" => {
+            let amount: kovanica_common::Amount = dec(args)?;
+            kovanica_rwa::Rwa::burn(host, amount)?;
+            enc(&())
+        }
+        "rwa_freeze" => {
+            let (account, frozen): ([u8; 32], bool) = dec(args)?;
+            kovanica_rwa::Rwa::freeze(host, account, frozen)?;
+            enc(&())
+        }
+        "rwa_update_metadata" => {
+            let (metadata_hash, metadata_uri, legal_uri, custody_uri): (
+                [u8; 32],
+                String,
+                String,
+                String,
+            ) = dec(args)?;
+            kovanica_rwa::Rwa::update_metadata(
+                host,
+                metadata_hash,
+                metadata_uri,
+                legal_uri,
+                custody_uri,
+            )?;
+            enc(&())
+        }
+
+        // --- kovanica-scheduler (Wave C #9) ------------------------------------
+        "scheduler_create_job" => {
+            let (
+                target_contract,
+                method,
+                call_args,
+                execute_after_height,
+                interval_heights,
+                max_runs,
+                bounty_per_run,
+            ): (
+                [u8; 32],
+                String,
+                Vec<u8>,
+                u64,
+                u64,
+                u32,
+                kovanica_common::Amount,
+            ) = dec(args)?;
+            enc(&kovanica_scheduler::Scheduler::create_job(
+                host,
+                target_contract,
+                method,
+                call_args,
+                execute_after_height,
+                interval_heights,
+                max_runs,
+                bounty_per_run,
+            )?)
+        }
+        "scheduler_execute_job" => {
+            let job_id: kovanica_scheduler::JobId = dec(args)?;
+            enc(&kovanica_scheduler::Scheduler::execute_job(host, job_id)?)
+        }
+        "scheduler_cancel_job" => {
+            let job_id: kovanica_scheduler::JobId = dec(args)?;
+            enc(&kovanica_scheduler::Scheduler::cancel_job(host, job_id)?)
+        }
+
+        // --- kovanica-bridge (Wave D #10) --------------------------------------
+        "bridge_init" => {
+            let (wrapped_token, asset_symbol, relayers, threshold): (
+                [u8; 32],
+                String,
+                Vec<[u8; 32]>,
+                u8,
+            ) = dec(args)?;
+            kovanica_bridge::Bridge::init(host, wrapped_token, asset_symbol, relayers, threshold)?;
+            enc(&())
+        }
+        "bridge_attest_mint" => {
+            let (source_chain_id, source_tx_hash, recipient, amount): (
+                u64,
+                [u8; 32],
+                [u8; 32],
+                kovanica_common::Amount,
+            ) = dec(args)?;
+            enc(&kovanica_bridge::Bridge::attest_mint(
+                host,
+                source_chain_id,
+                source_tx_hash,
+                recipient,
+                amount,
+            )?)
+        }
+        "bridge_request_withdraw" => {
+            let (dest_chain_id, dest_address, amount): (u64, Vec<u8>, kovanica_common::Amount) =
+                dec(args)?;
+            enc(&kovanica_bridge::Bridge::request_withdraw(
+                host,
+                dest_chain_id,
+                dest_address,
+                amount,
+            )?)
+        }
+        "bridge_set_paused" => {
+            let paused: bool = dec(args)?;
+            kovanica_bridge::Bridge::set_paused(host, paused)?;
             enc(&())
         }
 
@@ -2213,10 +2524,10 @@ pub(crate) mod tests {
         let contract = addr(30);
         let caller = addr(1);
         deploy(&storage, &contract);
-        assert_eq!(ENTRY_POINTS.len(), 34);
+        assert_eq!(ENTRY_POINTS.len(), 47);
         assert_eq!(
             ENTRY_POINTS.iter().filter(|e| is_entry_point(e)).count(),
-            34
+            47
         );
         for entry in ENTRY_POINTS {
             let err = execute_contract_call(entry, contract, caller, 1, 100, &[], &storage)
@@ -2230,6 +2541,53 @@ pub(crate) mod tests {
             .expect_err("unknown entry point");
         assert!(matches!(err, ExecutionError::Other(_)), "{err:?}");
         assert!(!is_entry_point("does_not_exist"));
+    }
+
+    #[test]
+    fn cross_contract_call_cpi_executes_guards_reentrancy_and_rolls_back() {
+        let (_dir, storage) = open_storage();
+        let contract_a = addr(41);
+        let contract_b = addr(42);
+        let user = addr(1);
+        deploy(&storage, &contract_a);
+        deploy(&storage, &contract_b);
+
+        // Contract A invokes Contract B's `token_create` via CPI (`Host::call_contract`).
+        let create_args = token_create_args(1_000);
+        let mut host_a = ContractHost::new(&storage, contract_a, user, 10, 10).unwrap();
+        let ret = host_a
+            .call_contract(&contract_b.0, "token_create", &create_args, 0)
+            .expect("CPI token_create should succeed");
+        assert!(ret.is_empty());
+
+        // Reentrancy: Contract A cannot call itself via CPI.
+        assert_eq!(
+            host_a.call_contract(&contract_a.0, "token_create", &create_args, 0),
+            Err(ContractError::Unauthorized)
+        );
+
+        // Failed sub-call (duplicate token_create on B) returns error without corrupting A.
+        assert_eq!(
+            host_a.call_contract(&contract_b.0, "token_create", &create_args, 0),
+            Err(ContractError::AlreadyExists)
+        );
+
+        // Committing A flushes B's storage writes and events atomically.
+        let events = host_a.commit().expect("commit parent + child overlay");
+        assert!(!events.is_empty());
+
+        // Verify B's state persisted and contract_a holds the 1_000 minted tokens.
+        let transfer_args = bincode::serialize(&(user.0, 250u128)).unwrap();
+        execute_contract_call(
+            "token_transfer",
+            contract_b,
+            contract_a,
+            11,
+            11,
+            &transfer_args,
+            &storage,
+        )
+        .expect("token_transfer from contract_a should succeed after CPI");
     }
 
     // (d) Wasmi e2e: build kovanica-token for wasm32 inside the test (isolated

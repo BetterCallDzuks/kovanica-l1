@@ -332,6 +332,17 @@ fn kind_to_json(kind: &TransactionKind) -> Value {
             "digest_a": to_hex(&evidence.header_a.digest.0),
             "digest_b": to_hex(&evidence.header_b.digest.0),
         }),
+        TransactionKind::Batch { actions } => json!({
+            "type": "batch",
+            "action_count": actions.len(),
+        }),
+        TransactionKind::Sponsored {
+            fee_payer, inner, ..
+        } => json!({
+            "type": "sponsored",
+            "fee_payer": fee_payer.to_string(),
+            "inner": kind_to_json(inner),
+        }),
     }
 }
 
@@ -1681,6 +1692,46 @@ pub async fn handle_estimate_fee(_params: Value, state: RpcState) -> Result<Valu
         .unwrap_or(DEFAULT_FEE_RATE)
         .max(DEFAULT_FEE_RATE);
     Ok(quantity(rate))
+}
+
+/// `kovanica_getFeeSchedule()` — canonical fixed operation fee floors, fee split,
+/// and round-gated activation status for this chain.
+pub async fn handle_get_fee_schedule(_params: Value, state: RpcState) -> Result<Value, RpcError> {
+    let chain_id = served_chain_id(&state);
+    let tip_height = state
+        .storage
+        .begin_read()
+        .ok()
+        .and_then(|txn| {
+            state
+                .storage
+                .consensus()
+                .get_committed_leader_height(&txn)
+                .ok()
+        })
+        .unwrap_or(0);
+    let active_from_round = kovanica_params::fixed_fees_active_from_round_for_chain(chain_id);
+    let active = kovanica_params::fixed_fees_active_from_for_chain(chain_id, tip_height);
+    let (burn_bps, miner_bps) = if chain_id == kovanica_params::CHAIN_ID_DEVNET {
+        (10_000u64, 0u64)
+    } else {
+        (7_500u64, 2_500u64)
+    };
+    Ok(json!({
+        "chain_id": quantity(chain_id),
+        "active_from_round": quantity(active_from_round),
+        "active": active,
+        "fee_split_burn_bps": burn_bps,
+        "fee_split_miner_bps": miner_bps,
+        "fixed_fees": {
+            "deploy": quantity(kovanica_params::FIXED_FEE_CONTRACT_DEPLOY),
+            "token_create": quantity(kovanica_params::FIXED_FEE_TOKEN_CREATE),
+            "nft_create_collection": quantity(kovanica_params::FIXED_FEE_NFT_CREATE_COLLECTION),
+            "nft_mint": quantity(kovanica_params::FIXED_FEE_NFT_MINT),
+            "rwa_create": quantity(kovanica_params::FIXED_FEE_RWA_CREATE),
+            "rwa_mint": quantity(kovanica_params::FIXED_FEE_RWA_MINT),
+        }
+    }))
 }
 
 /// Overflow-safe nearest-rank percentile over an ascending-sorted `u64` slice.

@@ -256,6 +256,20 @@ pub trait Host {
     // Optional: storage get/set if contracts use host storage instead of pure WASM memory
     fn storage_get(&self, key: &[u8]) -> Option<Vec<u8>>;
     fn storage_set(&mut self, key: &[u8], value: &[u8]);
+    /// Invoke another deployed contract (cross-contract call / CPI).
+    ///
+    /// Default returns `Err(ContractError::Unauthorized)` so hosts that do not
+    /// support composability fail closed. Execution hosts enforce call-depth
+    /// limits, reentrancy protection, and atomic sub-call rollback.
+    fn call_contract(
+        &mut self,
+        _target: &Address,
+        _method: &str,
+        _args: &[u8],
+        _value: Amount,
+    ) -> ContractResult<Vec<u8>> {
+        Err(ContractError::Unauthorized)
+    }
 }
 
 use alloc::vec::Vec;

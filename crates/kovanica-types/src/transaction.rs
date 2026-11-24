@@ -103,7 +103,55 @@ pub enum TransactionKind {
         /// The two conflicting signed headers.
         evidence: EquivocationEvidence,
     },
+    /// Atomic batch of actions executed all-or-nothing in one transaction (Wave A).
+    Batch {
+        /// Ordered actions (`1..=MAX_BATCH_ACTIONS`).
+        actions: Vec<BatchAction>,
+    },
+    /// Sponsored (gasless) transaction where `fee_payer` co-signs and pays `tx.fee` (Wave A).
+    Sponsored {
+        /// Account paying `tx.fee`.
+        fee_payer: Address,
+        /// Ed25519 signature by `fee_payer` over `Transaction::sponsor_signing_hash`.
+        fee_payer_signature: Signature,
+        /// Inner transaction kind (must not be nested `Sponsored`).
+        inner: Box<TransactionKind>,
+    },
 }
+
+/// One action inside [`TransactionKind::Batch`].
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum BatchAction {
+    /// Native KVNC transfer.
+    Transfer {
+        /// Recipient address.
+        to: Address,
+        /// Amount in base units.
+        amount: u64,
+    },
+    /// Deploy a WASM contract.
+    Deploy {
+        /// WASM bytecode.
+        code: Vec<u8>,
+    },
+    /// Call a WASM contract. If `contract == Address::zero()`, targets the most
+    /// recently deployed contract in the same batch (`Deploy + token_create` / `rwa_create`).
+    Call {
+        /// Target contract address (or `Address::zero()` for the previous deploy in this batch).
+        contract: Address,
+        /// Attached native KVNC in base units.
+        value: u64,
+        /// Contract entry point name.
+        method: String,
+        /// Encoded arguments.
+        args: Vec<u8>,
+        /// Gas limit for execution.
+        gas_limit: u64,
+    },
+}
+
+/// 16-byte domain tag for sponsored transaction fee-payer co-signatures.
+pub const SPONSOR_DOMAIN_TAG: [u8; 16] = *b"KVNC/sponsor/v1\0";
 
 /// Full signed transaction.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -140,109 +188,204 @@ impl Transaction {
         data.extend_from_slice(&ctx.chain_id.to_le_bytes());
         data.extend_from_slice(&self.sender.0);
         data.extend_from_slice(&self.nonce.to_le_bytes());
-        // Serialize kind
-        match &self.kind {
-            TransactionKind::Transfer { to, amount } => {
-                data.push(0);
-                data.extend_from_slice(&to.0);
-                data.extend_from_slice(&amount.to_le_bytes());
-            }
-            TransactionKind::Stake { amount } => {
-                data.push(1);
-                data.extend_from_slice(&amount.to_le_bytes());
-            }
-            TransactionKind::Unstake { amount } => {
-                data.push(2);
-                data.extend_from_slice(&amount.to_le_bytes());
-            }
-            TransactionKind::Delegate { validator, amount } => {
-                data.push(5);
-                data.extend_from_slice(&validator.0);
-                data.extend_from_slice(&amount.to_le_bytes());
-            }
-            TransactionKind::ClaimRewards { validator } => {
-                data.push(6);
-                if let Some(v) = validator {
-                    data.push(1);
-                    data.extend_from_slice(&v.0);
-                } else {
-                    data.push(0);
-                }
-            }
-            TransactionKind::Deploy { code } => {
-                data.push(3);
-                data.extend_from_slice(&(code.len() as u64).to_le_bytes());
-                data.extend_from_slice(code);
-            }
-            TransactionKind::Call {
-                contract,
-                value,
-                method,
-                args,
-                gas_limit,
-            } => {
-                data.push(4);
-                data.extend_from_slice(&contract.0);
-                data.extend_from_slice(&value.to_le_bytes());
-                data.extend_from_slice(&(method.len() as u64).to_le_bytes());
-                data.extend_from_slice(method.as_bytes());
-                data.extend_from_slice(&(args.len() as u64).to_le_bytes());
-                data.extend_from_slice(args);
-                data.extend_from_slice(&gas_limit.to_le_bytes());
-            }
-            TransactionKind::RegisterLightNode {
-                vrf_public_key,
-                stake,
-            } => {
-                data.push(7);
-                data.extend_from_slice(&vrf_public_key.0);
-                data.extend_from_slice(&stake.to_le_bytes());
-            }
-            TransactionKind::ExitLightNode => {
-                data.push(8);
-            }
-            TransactionKind::SubmitLightWitness {
-                epoch,
-                vrf_hash,
-                vrf_proof,
-            } => {
-                data.push(9);
-                data.extend_from_slice(&epoch.to_le_bytes());
-                data.extend_from_slice(vrf_hash);
-                data.extend_from_slice(vrf_proof);
-            }
-            TransactionKind::SetCommission {
-                validator,
-                commission_bps,
-            } => {
-                data.push(10);
-                data.extend_from_slice(&validator.0);
-                data.extend_from_slice(&commission_bps.to_le_bytes());
-            }
-            TransactionKind::ClaimTreasury { amount } => {
-                data.push(11);
-                data.extend_from_slice(&amount.to_le_bytes());
-            }
-            TransactionKind::Evidence { evidence } => {
-                data.push(12);
-                for header in [&evidence.header_a, &evidence.header_b] {
-                    data.extend_from_slice(&header.author.0);
-                    data.extend_from_slice(&header.round.to_le_bytes());
-                    data.extend_from_slice(&header.digest.0);
-                    data.extend_from_slice(&header.signature.0);
-                }
-            }
-        }
+        encode_kind_into(&self.kind, &mut data);
         data.extend_from_slice(&self.fee.to_le_bytes());
         Hash::new_keyed(Hash::DOMAIN_TX, &data)
     }
 
-    /// Verify the transaction signature against the sender's public key.
+    /// Returns the account responsible for paying `self.fee` (`fee_payer` for
+    /// [`TransactionKind::Sponsored`], otherwise `self.sender`).
+    pub fn fee_payer(&self) -> Address {
+        match &self.kind {
+            TransactionKind::Sponsored { fee_payer, .. } => *fee_payer,
+            _ => self.sender,
+        }
+    }
+
+    /// Domain-separated hash signed by `fee_payer` for [`TransactionKind::Sponsored`].
+    /// Returns `None` for non-sponsored transactions.
+    pub fn sponsor_signing_hash(&self, ctx: &SigningContext) -> Option<Hash> {
+        let TransactionKind::Sponsored { fee_payer, .. } = &self.kind else {
+            return None;
+        };
+        let tx_hash = self.signing_hash(ctx);
+        let mut data = Vec::with_capacity(16 + 8 + 32 + 32 + 8);
+        data.extend_from_slice(&SPONSOR_DOMAIN_TAG);
+        data.extend_from_slice(&ctx.chain_id.to_le_bytes());
+        data.extend_from_slice(&tx_hash.0);
+        data.extend_from_slice(&fee_payer.0);
+        data.extend_from_slice(&self.fee.to_le_bytes());
+        Some(Hash::new_keyed(Hash::DOMAIN_TX, &data))
+    }
+
+    /// Verify the transaction signature against the sender's public key
+    /// (and against `fee_payer` for [`TransactionKind::Sponsored`]).
     pub fn verify_signature(&self, ctx: &SigningContext) -> bool {
         // The sender address is the public key (32 bytes)
         let public_key = crate::crypto::PublicKey(self.sender.0);
-        self.signature
+        if !self
+            .signature
             .verify(&self.signing_hash(ctx).0, &public_key)
+        {
+            return false;
+        }
+        if let TransactionKind::Sponsored {
+            fee_payer,
+            fee_payer_signature,
+            inner,
+        } = &self.kind
+        {
+            // Disallow nested Sponsored transactions.
+            if matches!(inner.as_ref(), TransactionKind::Sponsored { .. }) {
+                return false;
+            }
+            let Some(sponsor_hash) = self.sponsor_signing_hash(ctx) else {
+                return false;
+            };
+            let sponsor_pk = crate::crypto::PublicKey(fee_payer.0);
+            if !fee_payer_signature.verify(&sponsor_hash.0, &sponsor_pk) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn encode_kind_into(kind: &TransactionKind, data: &mut Vec<u8>) {
+    match kind {
+        TransactionKind::Transfer { to, amount } => {
+            data.push(0);
+            data.extend_from_slice(&to.0);
+            data.extend_from_slice(&amount.to_le_bytes());
+        }
+        TransactionKind::Stake { amount } => {
+            data.push(1);
+            data.extend_from_slice(&amount.to_le_bytes());
+        }
+        TransactionKind::Unstake { amount } => {
+            data.push(2);
+            data.extend_from_slice(&amount.to_le_bytes());
+        }
+        TransactionKind::Delegate { validator, amount } => {
+            data.push(5);
+            data.extend_from_slice(&validator.0);
+            data.extend_from_slice(&amount.to_le_bytes());
+        }
+        TransactionKind::ClaimRewards { validator } => {
+            data.push(6);
+            if let Some(v) = validator {
+                data.push(1);
+                data.extend_from_slice(&v.0);
+            } else {
+                data.push(0);
+            }
+        }
+        TransactionKind::Deploy { code } => {
+            data.push(3);
+            data.extend_from_slice(&(code.len() as u64).to_le_bytes());
+            data.extend_from_slice(code);
+        }
+        TransactionKind::Call {
+            contract,
+            value,
+            method,
+            args,
+            gas_limit,
+        } => {
+            data.push(4);
+            data.extend_from_slice(&contract.0);
+            data.extend_from_slice(&value.to_le_bytes());
+            data.extend_from_slice(&(method.len() as u64).to_le_bytes());
+            data.extend_from_slice(method.as_bytes());
+            data.extend_from_slice(&(args.len() as u64).to_le_bytes());
+            data.extend_from_slice(args);
+            data.extend_from_slice(&gas_limit.to_le_bytes());
+        }
+        TransactionKind::RegisterLightNode {
+            vrf_public_key,
+            stake,
+        } => {
+            data.push(7);
+            data.extend_from_slice(&vrf_public_key.0);
+            data.extend_from_slice(&stake.to_le_bytes());
+        }
+        TransactionKind::ExitLightNode => {
+            data.push(8);
+        }
+        TransactionKind::SubmitLightWitness {
+            epoch,
+            vrf_hash,
+            vrf_proof,
+        } => {
+            data.push(9);
+            data.extend_from_slice(&epoch.to_le_bytes());
+            data.extend_from_slice(vrf_hash);
+            data.extend_from_slice(vrf_proof);
+        }
+        TransactionKind::SetCommission {
+            validator,
+            commission_bps,
+        } => {
+            data.push(10);
+            data.extend_from_slice(&validator.0);
+            data.extend_from_slice(&commission_bps.to_le_bytes());
+        }
+        TransactionKind::ClaimTreasury { amount } => {
+            data.push(11);
+            data.extend_from_slice(&amount.to_le_bytes());
+        }
+        TransactionKind::Evidence { evidence } => {
+            data.push(12);
+            for header in [&evidence.header_a, &evidence.header_b] {
+                data.extend_from_slice(&header.author.0);
+                data.extend_from_slice(&header.round.to_le_bytes());
+                data.extend_from_slice(&header.digest.0);
+                data.extend_from_slice(&header.signature.0);
+            }
+        }
+        TransactionKind::Batch { actions } => {
+            data.push(13);
+            data.extend_from_slice(&(actions.len() as u64).to_le_bytes());
+            for action in actions {
+                match action {
+                    BatchAction::Transfer { to, amount } => {
+                        data.push(0);
+                        data.extend_from_slice(&to.0);
+                        data.extend_from_slice(&amount.to_le_bytes());
+                    }
+                    BatchAction::Deploy { code } => {
+                        data.push(1);
+                        data.extend_from_slice(&(code.len() as u64).to_le_bytes());
+                        data.extend_from_slice(code);
+                    }
+                    BatchAction::Call {
+                        contract,
+                        value,
+                        method,
+                        args,
+                        gas_limit,
+                    } => {
+                        data.push(2);
+                        data.extend_from_slice(&contract.0);
+                        data.extend_from_slice(&value.to_le_bytes());
+                        data.extend_from_slice(&(method.len() as u64).to_le_bytes());
+                        data.extend_from_slice(method.as_bytes());
+                        data.extend_from_slice(&(args.len() as u64).to_le_bytes());
+                        data.extend_from_slice(args);
+                        data.extend_from_slice(&gas_limit.to_le_bytes());
+                    }
+                }
+            }
+        }
+        TransactionKind::Sponsored {
+            fee_payer,
+            fee_payer_signature: _,
+            inner,
+        } => {
+            data.push(14);
+            data.extend_from_slice(&fee_payer.0);
+            encode_kind_into(inner, data);
+        }
     }
 }
 
@@ -257,14 +400,15 @@ impl TransactionKind {
     /// [`TransactionKind::RegisterLightNode`] / `ExitLightNode` are a separate
     /// light-node bond and are deliberately *not* included here.
     pub fn is_stake_kind(&self) -> bool {
-        matches!(
-            self,
+        match self {
             TransactionKind::Stake { .. }
-                | TransactionKind::Unstake { .. }
-                | TransactionKind::Delegate { .. }
-                | TransactionKind::ClaimRewards { .. }
-                | TransactionKind::SetCommission { .. }
-        )
+            | TransactionKind::Unstake { .. }
+            | TransactionKind::Delegate { .. }
+            | TransactionKind::ClaimRewards { .. }
+            | TransactionKind::SetCommission { .. } => true,
+            TransactionKind::Sponsored { inner, .. } => inner.is_stake_kind(),
+            _ => false,
+        }
     }
 }
 
@@ -466,6 +610,68 @@ mod tests {
             crate::signing::TX_DOMAIN_TAG,
             crate::signing::VOTE_DOMAIN_TAG
         );
+    }
+
+    #[test]
+    fn batch_and_sponsored_signing_and_verification() {
+        use ed25519_dalek::Signer;
+        let sponsor_key = SigningKey::from_bytes(&[9u8; 32]);
+        let sponsor_addr = Address(sponsor_key.verifying_key().to_bytes());
+
+        // 1. Atomic Batch tx
+        let mut batch_tx = tx(
+            1,
+            TransactionKind::Batch {
+                actions: vec![
+                    BatchAction::Transfer {
+                        to: Address([0x11; 32]),
+                        amount: 500,
+                    },
+                    BatchAction::Transfer {
+                        to: Address([0x22; 32]),
+                        amount: 250,
+                    },
+                ],
+            },
+            100,
+        );
+        let bh = batch_tx.signing_hash(&CTX);
+        batch_tx.signature = Signature(key().sign(&bh.0).to_bytes());
+        batch_tx.hash = bh;
+        assert!(batch_tx.verify_signature(&CTX));
+        assert_eq!(batch_tx.fee_payer(), sender());
+
+        // 2. Sponsored (gasless) tx
+        let mut sponsored_tx = tx(
+            2,
+            TransactionKind::Sponsored {
+                fee_payer: sponsor_addr,
+                fee_payer_signature: Signature([0u8; 64]),
+                inner: Box::new(TransactionKind::Transfer {
+                    to: Address([0x33; 32]),
+                    amount: 100,
+                }),
+            },
+            500,
+        );
+        let sh = sponsored_tx.signing_hash(&CTX);
+        sponsored_tx.signature = Signature(key().sign(&sh.0).to_bytes());
+        sponsored_tx.hash = sh;
+        // Missing sponsor signature must fail verification
+        assert!(!sponsored_tx.verify_signature(&CTX));
+
+        // Co-sign with sponsor key
+        let sponsor_hash = sponsored_tx.sponsor_signing_hash(&CTX).unwrap();
+        let sponsor_sig = Signature(sponsor_key.sign(&sponsor_hash.0).to_bytes());
+        if let TransactionKind::Sponsored {
+            ref mut fee_payer_signature,
+            ..
+        } = sponsored_tx.kind
+        {
+            *fee_payer_signature = sponsor_sig;
+        }
+        assert!(sponsored_tx.verify_signature(&CTX));
+        assert_eq!(sponsored_tx.fee_payer(), sponsor_addr);
     }
 
     #[test]
