@@ -524,7 +524,7 @@ use crate::protocol::{StratumNotification, StratumRequest, StratumResponse};
 use crate::rpc::NodeRpcClient;
 use crate::session::{
     parse_and_validate_username, SessionRegistry, WorkerSession, WorkerSessionSummary,
-    WorkersResponse,
+    WorkersResponse, WorkersSummary,
 };
 use crate::{KOVANICA_STRATUM_ALGORITHM, KOVANICA_STRATUM_CAPABILITY};
 
@@ -1374,6 +1374,7 @@ impl StratumGateway {
             .map(|sess| sess.summary())
             .collect();
         workers.sort_by_key(|w| w.session_id);
+        let summary = WorkersSummary::from_workers(&workers);
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1381,6 +1382,7 @@ impl StratumGateway {
         WorkersResponse {
             active_workers: workers.len(),
             vardiff_enabled: self.config.vardiff_enabled,
+            summary,
             workers,
             timestamp,
         }
@@ -2632,7 +2634,7 @@ impl StratumGateway {
                     let job = match job_manager.get_job(job_id) {
                         Some(j) => j,
                         None => {
-                            session.record_rejected_share();
+                            session.record_stale_share();
                             metrics.record_share_rejected(ShareRejectReason::Stale);
                             let _ = outbound_tx
                                 .send(StratumResponse::job_not_found(req_id).to_wire_line())
@@ -3381,6 +3383,13 @@ mod tests {
         assert_eq!(empty_snap.active_workers, 0);
         assert!(empty_snap.vardiff_enabled);
         assert!(empty_snap.workers.is_empty());
+        assert_eq!(empty_snap.summary.min_difficulty, None);
+        assert_eq!(empty_snap.summary.median_difficulty, None);
+        assert_eq!(empty_snap.summary.max_difficulty, None);
+        assert_eq!(empty_snap.summary.total_accepted_shares, 0);
+        assert_eq!(empty_snap.summary.total_rejected_shares, 0);
+        assert_eq!(empty_snap.summary.total_stale_shares, 0);
+        assert_eq!(empty_snap.summary.stale_ratio, 0.0);
         assert!(empty_snap.timestamp > 0);
 
         // Register two active sessions (one authorized, one unauthorized)
@@ -3393,11 +3402,11 @@ mod tests {
         s1.record_accepted_share();
         s1.record_accepted_share();
         s1.record_accepted_share();
-        s1.record_rejected_share();
+        s1.record_stale_share();
 
         let s2 = gateway.session_registry().create_session(8.0);
         s2.record_rejected_share();
-        s2.record_rejected_share();
+        s2.record_stale_share();
 
         {
             let mut active = gateway.active_sessions.write();
@@ -3410,6 +3419,16 @@ mod tests {
         assert!(snap.vardiff_enabled);
         assert_eq!(snap.workers.len(), 2);
 
+        // Verify structured summary stats (even worker count: 4.0 and 8.0 -> median 6.0)
+        assert_eq!(snap.summary.min_difficulty, Some(4.0));
+        assert_eq!(snap.summary.median_difficulty, Some(6.0));
+        assert_eq!(snap.summary.max_difficulty, Some(8.0));
+        assert_eq!(snap.summary.total_accepted_shares, 3);
+        assert_eq!(snap.summary.total_rejected_shares, 3);
+        assert_eq!(snap.summary.total_stale_shares, 2);
+        // 2 stale / (3 accepted + 3 rejected) = 1/3
+        assert!((snap.summary.stale_ratio - (2.0 / 6.0)).abs() < 1e-12);
+
         // Must be sorted by numeric session_id ascending
         assert_eq!(snap.workers[0].session_id, 1);
         assert_eq!(snap.workers[0].worker_name, "miner_01");
@@ -3418,6 +3437,7 @@ mod tests {
         assert!((snap.workers[0].difficulty - 4.0).abs() < 1e-9);
         assert_eq!(snap.workers[0].shares_accepted, 3);
         assert_eq!(snap.workers[0].shares_rejected, 1);
+        assert_eq!(snap.workers[0].shares_stale, 1);
 
         assert_eq!(snap.workers[1].session_id, 2);
         assert_eq!(snap.workers[1].worker_name, "unauthorized");
@@ -3426,9 +3446,13 @@ mod tests {
         assert!((snap.workers[1].difficulty - 8.0).abs() < 1e-9);
         assert_eq!(snap.workers[1].shares_accepted, 0);
         assert_eq!(snap.workers[1].shares_rejected, 2);
+        assert_eq!(snap.workers[1].shares_stale, 1);
 
         let json_str = serde_json::to_string(&snap).expect("serialize workers response");
         assert!(json_str.contains(r#""idle_secs":"#));
+        assert!(json_str.contains(r#""summary":"#));
+        assert!(json_str.contains(r#""median_difficulty":6.0"#));
+        assert!(json_str.contains(r#""total_stale_shares":2"#));
         assert!(!json_str.contains("super_secret_rpc_token_do_not_leak"));
         assert!(!json_str.contains(&addr_str));
         assert!(!json_str.contains("127.0.0.1"));

@@ -111,12 +111,86 @@ pub struct WorkerSessionSummary {
     pub difficulty: f64,
     /// Count of shares accepted in this session.
     pub shares_accepted: u64,
-    /// Count of shares rejected in this session.
+    /// Count of shares rejected in this session (includes stale shares).
     pub shares_rejected: u64,
+    /// Count of stale shares rejected in this session.
+    #[serde(default)]
+    pub shares_stale: u64,
     /// Elapsed connection duration in seconds.
     pub connected_secs: u64,
     /// Seconds elapsed since the worker's last Stratum activity.
     pub idle_secs: u64,
+}
+
+/// Aggregate summary statistics across active worker sessions for `GET /workers`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkersSummary {
+    /// Minimum assigned share difficulty across active workers (`null` when no workers are active).
+    pub min_difficulty: Option<f64>,
+    /// Median assigned share difficulty across active workers (`null` when no workers are active).
+    pub median_difficulty: Option<f64>,
+    /// Maximum assigned share difficulty across active workers (`null` when no workers are active).
+    pub max_difficulty: Option<f64>,
+    /// Total accepted shares across active workers.
+    pub total_accepted_shares: u64,
+    /// Total rejected shares across active workers (includes stale shares).
+    pub total_rejected_shares: u64,
+    /// Total stale shares across active workers.
+    pub total_stale_shares: u64,
+    /// Ratio of stale shares to total submitted shares (`0.0` when total shares is 0).
+    pub stale_ratio: f64,
+}
+
+impl WorkersSummary {
+    /// Compute aggregate difficulty and share statistics from a slice of per-worker summaries.
+    pub fn from_workers(workers: &[WorkerSessionSummary]) -> Self {
+        let mut difficulties: Vec<f64> = workers
+            .iter()
+            .map(|w| w.difficulty)
+            .filter(|d| d.is_finite())
+            .collect();
+        difficulties.sort_by(f64::total_cmp);
+
+        let (min_difficulty, median_difficulty, max_difficulty) = if difficulties.is_empty() {
+            (None, None, None)
+        } else {
+            let len = difficulties.len();
+            let min = difficulties[0];
+            let max = difficulties[len - 1];
+            let median = if len % 2 == 1 {
+                difficulties[len / 2]
+            } else {
+                (difficulties[len / 2 - 1] + difficulties[len / 2]) / 2.0
+            };
+            (Some(min), Some(median), Some(max))
+        };
+
+        let mut total_accepted_shares = 0u64;
+        let mut total_rejected_shares = 0u64;
+        let mut total_stale_shares = 0u64;
+        for w in workers {
+            total_accepted_shares = total_accepted_shares.saturating_add(w.shares_accepted);
+            total_rejected_shares = total_rejected_shares.saturating_add(w.shares_rejected);
+            total_stale_shares = total_stale_shares.saturating_add(w.shares_stale);
+        }
+
+        let total_shares = total_accepted_shares.saturating_add(total_rejected_shares);
+        let stale_ratio = if total_shares == 0 {
+            0.0
+        } else {
+            total_stale_shares as f64 / total_shares as f64
+        };
+
+        Self {
+            min_difficulty,
+            median_difficulty,
+            max_difficulty,
+            total_accepted_shares,
+            total_rejected_shares,
+            total_stale_shares,
+            stale_ratio,
+        }
+    }
 }
 
 /// Sanitized response payload for `GET /workers` on the Stratum observability HTTP server.
@@ -126,6 +200,8 @@ pub struct WorkersResponse {
     pub active_workers: usize,
     /// Whether variable difficulty (`VarDiff`) retargeting is enabled on this gateway.
     pub vardiff_enabled: bool,
+    /// Aggregate summary statistics across active worker sessions.
+    pub summary: WorkersSummary,
     /// Active worker session summaries sorted by `session_id`.
     pub workers: Vec<WorkerSessionSummary>,
     /// Response generation timestamp (Unix seconds).
@@ -173,8 +249,10 @@ pub struct WorkerSession {
     submitted_shares_order: Mutex<VecDeque<(String, String, u64)>>,
     /// Stats: count of accepted shares.
     pub accepted_shares: AtomicU64,
-    /// Stats: count of rejected shares.
+    /// Stats: count of rejected shares (includes stale shares).
     pub rejected_shares: AtomicU64,
+    /// Stats: count of stale shares rejected due to unknown/expired job.
+    pub stale_shares: AtomicU64,
     /// Stats: count of valid network blocks found.
     pub blocks_found: AtomicU64,
     /// Timestamps of recent accepted shares (Unix seconds) for hashrate estimation.
@@ -237,6 +315,7 @@ impl WorkerSession {
             submitted_shares_order: Mutex::new(VecDeque::new()),
             accepted_shares: AtomicU64::new(0),
             rejected_shares: AtomicU64::new(0),
+            stale_shares: AtomicU64::new(0),
             blocks_found: AtomicU64::new(0),
             share_timestamps: Mutex::new(Vec::new()),
             last_retarget: Mutex::new(None),
@@ -322,9 +401,14 @@ impl WorkerSession {
         self.accepted_shares.load(Ordering::Relaxed)
     }
 
-    /// Return the total count of rejected shares for this session.
+    /// Return the total count of rejected shares for this session (includes stale shares).
     pub fn shares_rejected(&self) -> u64 {
         self.rejected_shares.load(Ordering::Relaxed)
+    }
+
+    /// Return the total count of stale shares for this session.
+    pub fn shares_stale(&self) -> u64 {
+        self.stale_shares.load(Ordering::Relaxed)
     }
 
     /// Return the elapsed connection duration in seconds.
@@ -355,6 +439,7 @@ impl WorkerSession {
             difficulty: self.get_difficulty(),
             shares_accepted: self.shares_accepted(),
             shares_rejected: self.shares_rejected(),
+            shares_stale: self.shares_stale(),
             connected_secs: self.connected_secs(),
             idle_secs: self.idle_secs(),
         }
@@ -450,9 +535,16 @@ impl WorkerSession {
     }
 
     /// Update assigned share difficulty clamped to explicit `[min_diff, max_diff]` bounds.
-    /// Returns the applied difficulty if `diff` was finite and positive.
+    /// Returns the applied difficulty if `diff`, `min_diff`, and `max_diff` are finite,
+    /// strictly positive, and `min_diff <= max_diff`.
     pub fn set_difficulty_bounded(&self, diff: f64, min_diff: f64, max_diff: f64) -> Option<f64> {
-        if !diff.is_finite() || diff <= 0.0 || min_diff > max_diff {
+        if !diff.is_finite()
+            || diff <= 0.0
+            || !min_diff.is_finite()
+            || !max_diff.is_finite()
+            || min_diff <= 0.0
+            || min_diff > max_diff
+        {
             return None;
         }
         let clamped = diff.clamp(min_diff, max_diff);
@@ -473,6 +565,12 @@ impl WorkerSession {
     /// Increment rejected shares counter.
     pub fn record_rejected_share(&self) {
         self.rejected_shares.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment both rejected and stale share counters.
+    pub fn record_stale_share(&self) {
+        self.rejected_shares.fetch_add(1, Ordering::Relaxed);
+        self.stale_shares.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Increment blocks found counter.
@@ -600,15 +698,7 @@ impl WorkerSession {
         cfg: &VarDiffConfig,
         now: u64,
     ) -> Option<f64> {
-        if !cfg.enabled
-            || cfg.retarget_interval_secs == 0
-            || !cfg.target_share_secs.is_finite()
-            || cfg.target_share_secs <= 0.0
-            || !cfg.min_difficulty.is_finite()
-            || !cfg.max_difficulty.is_finite()
-            || cfg.min_difficulty <= 0.0
-            || cfg.min_difficulty > cfg.max_difficulty
-        {
+        if !cfg.enabled || cfg.validate().is_err() {
             return None;
         }
 
@@ -1171,5 +1261,159 @@ mod tests {
         assert_eq!(registry.active_session_count(), 1);
         assert!(registry.get_session(&s1.session_id).is_none());
         assert!(registry.get_session(&s2.session_id).is_some());
+    }
+
+    fn make_worker_summary(
+        session_id: u64,
+        difficulty: f64,
+        shares_accepted: u64,
+        shares_rejected: u64,
+        shares_stale: u64,
+    ) -> WorkerSessionSummary {
+        WorkerSessionSummary {
+            session_id,
+            worker_name: format!("rig_{session_id}"),
+            authorized: true,
+            extranonce_subscribed: false,
+            difficulty,
+            shares_accepted,
+            shares_rejected,
+            shares_stale,
+            connected_secs: 60,
+            idle_secs: 1,
+        }
+    }
+
+    #[test]
+    fn test_workers_summary_zero_workers() {
+        let summary = WorkersSummary::from_workers(&[]);
+        assert_eq!(summary.min_difficulty, None);
+        assert_eq!(summary.median_difficulty, None);
+        assert_eq!(summary.max_difficulty, None);
+        assert_eq!(summary.total_accepted_shares, 0);
+        assert_eq!(summary.total_rejected_shares, 0);
+        assert_eq!(summary.total_stale_shares, 0);
+        assert_eq!(summary.stale_ratio, 0.0);
+
+        let json: serde_json::Value =
+            serde_json::to_value(&summary).expect("serialize WorkersSummary");
+        assert!(json["min_difficulty"].is_null());
+        assert!(json["median_difficulty"].is_null());
+        assert!(json["max_difficulty"].is_null());
+        assert_eq!(json["total_accepted_shares"], 0);
+        assert_eq!(json["total_rejected_shares"], 0);
+        assert_eq!(json["total_stale_shares"], 0);
+        assert_eq!(json["stale_ratio"], 0.0);
+    }
+
+    #[test]
+    fn test_workers_summary_single_worker_and_zero_shares() {
+        let workers = [make_worker_summary(1, 4.5, 0, 0, 0)];
+        let summary = WorkersSummary::from_workers(&workers);
+        assert_eq!(summary.min_difficulty, Some(4.5));
+        assert_eq!(summary.median_difficulty, Some(4.5));
+        assert_eq!(summary.max_difficulty, Some(4.5));
+        assert_eq!(summary.total_accepted_shares, 0);
+        assert_eq!(summary.total_rejected_shares, 0);
+        assert_eq!(summary.total_stale_shares, 0);
+        assert_eq!(summary.stale_ratio, 0.0);
+    }
+
+    #[test]
+    fn test_workers_summary_odd_worker_count_median_and_share_aggregation() {
+        // Unsorted difficulties [16.0, 2.0, 8.0] -> sorted [2.0, 8.0, 16.0], median = 8.0
+        let workers = [
+            make_worker_summary(1, 16.0, 10, 2, 1),
+            make_worker_summary(2, 2.0, 5, 3, 2),
+            make_worker_summary(3, 8.0, 0, 0, 0),
+        ];
+        let summary = WorkersSummary::from_workers(&workers);
+        assert_eq!(summary.min_difficulty, Some(2.0));
+        assert_eq!(summary.median_difficulty, Some(8.0));
+        assert_eq!(summary.max_difficulty, Some(16.0));
+        assert_eq!(summary.total_accepted_shares, 15);
+        assert_eq!(summary.total_rejected_shares, 5);
+        assert_eq!(summary.total_stale_shares, 3);
+        // 3 stale / (15 accepted + 5 rejected) = 0.15
+        assert!((summary.stale_ratio - 0.15).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_workers_summary_even_worker_count_median_and_stale_ratio_edge_cases() {
+        // Unsorted difficulties [32.0, 2.0, 12.0, 4.0] -> sorted [2.0, 4.0, 12.0, 32.0]
+        // median = (4.0 + 12.0) / 2.0 = 8.0
+        // All shares are stale -> stale_ratio == 1.0
+        let all_stale = [
+            make_worker_summary(1, 32.0, 0, 2, 2),
+            make_worker_summary(2, 2.0, 0, 1, 1),
+            make_worker_summary(3, 12.0, 0, 1, 1),
+            make_worker_summary(4, 4.0, 0, 0, 0),
+        ];
+        let summary = WorkersSummary::from_workers(&all_stale);
+        assert_eq!(summary.min_difficulty, Some(2.0));
+        assert_eq!(summary.median_difficulty, Some(8.0));
+        assert_eq!(summary.max_difficulty, Some(32.0));
+        assert_eq!(summary.total_accepted_shares, 0);
+        assert_eq!(summary.total_rejected_shares, 4);
+        assert_eq!(summary.total_stale_shares, 4);
+        assert!((summary.stale_ratio - 1.0).abs() < 1e-12);
+
+        // Zero stale shares with accepted and non-stale rejected shares -> stale_ratio == 0.0
+        let no_stale = [
+            make_worker_summary(1, 1.0, 7, 3, 0),
+            make_worker_summary(2, 3.0, 5, 0, 0),
+        ];
+        let summary_no_stale = WorkersSummary::from_workers(&no_stale);
+        assert_eq!(summary_no_stale.min_difficulty, Some(1.0));
+        assert_eq!(summary_no_stale.median_difficulty, Some(2.0));
+        assert_eq!(summary_no_stale.max_difficulty, Some(3.0));
+        assert_eq!(summary_no_stale.total_accepted_shares, 12);
+        assert_eq!(summary_no_stale.total_rejected_shares, 3);
+        assert_eq!(summary_no_stale.total_stale_shares, 0);
+        assert_eq!(summary_no_stale.stale_ratio, 0.0);
+    }
+
+    #[test]
+    fn test_vardiff_runtime_rejects_invalid_bounds() {
+        let session = WorkerSession::new_at("s1".into(), "00000001".into(), 2.0, 1_000);
+
+        // set_difficulty_bounded rejects non-finite, non-positive, or inverted bounds
+        assert_eq!(session.set_difficulty_bounded(f64::NAN, 1.0, 10.0), None);
+        assert_eq!(
+            session.set_difficulty_bounded(f64::INFINITY, 1.0, 10.0),
+            None
+        );
+        assert_eq!(session.set_difficulty_bounded(0.0, 1.0, 10.0), None);
+        assert_eq!(session.set_difficulty_bounded(-1.0, 1.0, 10.0), None);
+        assert_eq!(session.set_difficulty_bounded(5.0, 0.0, 10.0), None);
+        assert_eq!(session.set_difficulty_bounded(5.0, -1.0, 10.0), None);
+        assert_eq!(session.set_difficulty_bounded(5.0, f64::NAN, 10.0), None);
+        assert_eq!(
+            session.set_difficulty_bounded(5.0, 1.0, f64::INFINITY),
+            None
+        );
+        assert_eq!(session.set_difficulty_bounded(5.0, 10.0, 1.0), None);
+        assert_eq!(session.get_difficulty(), 2.0);
+
+        // Valid bounded clamp
+        assert_eq!(session.set_difficulty_bounded(50.0, 1.0, 10.0), Some(10.0));
+        assert_eq!(session.get_difficulty(), 10.0);
+
+        // maybe_retarget_difficulty_with_config rejects invalid variance_percent (NaN / 100.0)
+        for i in 0..20 {
+            session.record_share_timestamp_with_window(1_000 + i, 60);
+        }
+        let mut bad_cfg = test_vardiff_cfg();
+        bad_cfg.variance_percent = f64::NAN;
+        assert_eq!(
+            session.maybe_retarget_difficulty_with_config(&bad_cfg, 1_060),
+            None
+        );
+        bad_cfg.variance_percent = 100.0;
+        assert_eq!(
+            session.maybe_retarget_difficulty_with_config(&bad_cfg, 1_060),
+            None
+        );
+        assert_eq!(session.get_difficulty(), 10.0);
     }
 }

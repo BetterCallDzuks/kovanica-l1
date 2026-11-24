@@ -1710,6 +1710,15 @@ async fn test_observability_workers_endpoint_e2e() {
     assert_eq!(w0_updated["authorized"], true);
     assert_eq!(w0_updated["shares_accepted"], 2);
     assert_eq!(w0_updated["shares_rejected"], 2);
+    assert_eq!(w0_updated["shares_stale"], 1);
+    let summary = &after_submit_json["summary"];
+    assert_eq!(summary["min_difficulty"], 0.0);
+    assert_eq!(summary["median_difficulty"], 0.0);
+    assert_eq!(summary["max_difficulty"], 0.0);
+    assert_eq!(summary["total_accepted_shares"], 2);
+    assert_eq!(summary["total_rejected_shares"], 2);
+    assert_eq!(summary["total_stale_shares"], 1);
+    assert!((summary["stale_ratio"].as_f64().unwrap() - 0.25).abs() < 1e-12);
 
     // 5. Disconnect worker and verify GET /workers returns to 0 active workers
     drop(client1);
