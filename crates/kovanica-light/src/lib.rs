@@ -6,6 +6,13 @@
 
 #![deny(unsafe_code)]
 
+pub mod diagnostics;
+pub use diagnostics::{
+    build_light_sync_status, verify_checkpoint_hash, verify_checkpoint_header,
+    verify_checkpoint_hex, CheckpointVerificationReport, LightHeaderSyncState, LightSyncStatus,
+    TrustedCheckpoint, SYNC_STATE_SYNCED, SYNC_STATE_SYNCING, SYNC_STATE_UNINITIALIZED,
+};
+
 use kovanica_crypto::CommitSealError;
 use kovanica_types::crypto::Signature;
 use kovanica_types::{
