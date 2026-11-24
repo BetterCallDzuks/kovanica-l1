@@ -33,6 +33,16 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Inspect a snapshot manifest (directory or JSON file) without mutating files
+    InspectManifest {
+        #[arg(long)]
+        path: PathBuf,
+    },
+    /// Verify a snapshot manifest and all referenced chunk files (non-destructive)
+    VerifyManifest {
+        #[arg(long)]
+        path: PathBuf,
+    },
 }
 
 fn db_path(data_dir: &Path) -> PathBuf {
@@ -74,6 +84,18 @@ fn main() -> Result<()> {
                 .context("import snapshot")?;
             txn.commit().context("commit")?;
             println!("imported into {}", data_dir.display());
+        }
+        Cmd::InspectManifest { path } => {
+            let summary = kovanica_snapshot::inspect_snapshot_manifest(&path)
+                .context("inspect snapshot manifest")?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Cmd::VerifyManifest { path } => {
+            let report = kovanica_snapshot::verify_snapshot_report(&path);
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if !report.ok {
+                anyhow::bail!("snapshot verification failed");
+            }
         }
     }
     Ok(())
