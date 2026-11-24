@@ -217,6 +217,15 @@ fn immediate_value(kind: &TransactionKind) -> u64 {
         TransactionKind::SetCommission { .. } => 0,
         TransactionKind::ClaimTreasury { .. } => 0, // funds leave the treasury account, not the sender
         TransactionKind::Evidence { .. } => 0,      // the proof spends no funds
+        TransactionKind::Batch { actions } => actions
+            .iter()
+            .map(|a| match a {
+                kovanica_types::BatchAction::Transfer { amount, .. } => *amount,
+                kovanica_types::BatchAction::Call { value, .. } => *value,
+                kovanica_types::BatchAction::Deploy { .. } => 0,
+            })
+            .fold(0u64, u64::saturating_add),
+        TransactionKind::Sponsored { inner, .. } => immediate_value(inner),
     }
 }
 
@@ -415,10 +424,33 @@ impl Mempool {
         if size > self.config.max_tx_size {
             return Err(MempoolError::TransactionTooLarge(size));
         }
-        if let TransactionKind::Call { gas_limit, .. } = &tx.kind {
-            if *gas_limit > self.config.max_gas_limit {
-                return Err(MempoolError::GasLimitTooHigh);
+        // Validate gas limit for Call, Batch, and Sponsored kinds.
+        let inner_kind = match &tx.kind {
+            TransactionKind::Sponsored { inner, .. } => inner.as_ref(),
+            other => other,
+        };
+        match inner_kind {
+            TransactionKind::Call { gas_limit, .. } => {
+                if *gas_limit > self.config.max_gas_limit {
+                    return Err(MempoolError::GasLimitTooHigh);
+                }
             }
+            TransactionKind::Batch { actions } => {
+                if actions.is_empty() || actions.len() > kovanica_params::MAX_BATCH_ACTIONS {
+                    return Err(MempoolError::TransactionTooLarge(actions.len()));
+                }
+                let total_gas: u64 = actions
+                    .iter()
+                    .map(|a| match a {
+                        kovanica_types::BatchAction::Call { gas_limit, .. } => *gas_limit,
+                        _ => 0,
+                    })
+                    .fold(0u64, u64::saturating_add);
+                if total_gas > self.config.max_gas_limit {
+                    return Err(MempoolError::GasLimitTooHigh);
+                }
+            }
+            _ => {}
         }
         // Hybrid chains (1, 2) have no stake product: refuse the five staking
         // kinds at admission so they never enter the pool or a block. Checked
@@ -451,13 +483,7 @@ impl Mempool {
                 self.signing_ctx.chain_id,
                 tip_height,
             ) {
-                let min_fixed_fee = match &tx.kind {
-                    TransactionKind::Deploy { .. } => kovanica_params::FIXED_FEE_CONTRACT_DEPLOY,
-                    TransactionKind::Call { method, .. } => {
-                        kovanica_fee::fixed_min_fee_for_call_method(method)
-                    }
-                    _ => 0,
-                };
+                let min_fixed_fee = fixed_min_fee_for_kind(&tx.kind);
                 if tx.fee < min_fixed_fee {
                     return Err(MempoolError::FixedFeeTooLow {
                         fee: tx.fee,
@@ -953,6 +979,31 @@ pub enum ReinsertOutcome {
 pub struct ReinsertReport {
     pub hash: Hash,
     pub outcome: ReinsertOutcome,
+}
+
+/// Compute the canonical fixed minimum fee (in atoms) for a transaction kind,
+/// summing across actions for `Batch` and delegating to `inner` for `Sponsored`.
+fn fixed_min_fee_for_kind(kind: &TransactionKind) -> u64 {
+    match kind {
+        TransactionKind::Deploy { .. } => kovanica_params::FIXED_FEE_CONTRACT_DEPLOY,
+        TransactionKind::Call { method, .. } => {
+            kovanica_fee::fixed_min_fee_for_call_method(method)
+        }
+        TransactionKind::Batch { actions } => actions
+            .iter()
+            .map(|a| match a {
+                kovanica_types::BatchAction::Deploy { .. } => {
+                    kovanica_params::FIXED_FEE_CONTRACT_DEPLOY
+                }
+                kovanica_types::BatchAction::Call { method, .. } => {
+                    kovanica_fee::fixed_min_fee_for_call_method(method)
+                }
+                kovanica_types::BatchAction::Transfer { .. } => 0,
+            })
+            .fold(0u64, u64::saturating_add),
+        TransactionKind::Sponsored { inner, .. } => fixed_min_fee_for_kind(inner),
+        _ => 0,
+    }
 }
 
 /// Errors that can occur in mempool operations.

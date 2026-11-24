@@ -152,6 +152,13 @@ pub const SIZE_LIMITS_ACTIVE_FROM_ROUND: u64 = GENESIS_ROUND;
 /// matching `STATE_COMMITMENT_ACTIVE_FROM_ROUND` so the live seed1 testnet never forks.
 /// Mainnet (chain 1) enforces fixed fees from genesis (round 0).
 pub const FIXED_FEES_ACTIVE_FROM_ROUND: u64 = 500_000;
+/// Activation round for Wave A upgrades (Atomic Batch, Sponsored Txs, Cross-Contract Calls).
+/// Mainnet (chain 1) activates from genesis (round 0); testnet/devnet at round 500,000.
+pub const WAVE_A_ACTIVE_FROM_ROUND: u64 = 500_000;
+/// Maximum number of actions in a single `TransactionKind::Batch`.
+pub const MAX_BATCH_ACTIONS: usize = 16;
+/// Maximum nested cross-contract call depth (CPI).
+pub const MAX_CROSS_CONTRACT_CALL_DEPTH: u8 = 4;
 
 // ============================================================
 // Fixed operation fee floors (Balanced tier; 75% burn / 25% miner)
@@ -219,6 +226,20 @@ pub const fn fixed_fees_active_from_round_for_chain(chain_id: u64) -> u64 {
 /// Whether `round` enforces fixed operation fee floors on `chain_id`.
 pub const fn fixed_fees_active_from_for_chain(chain_id: u64, round: u64) -> bool {
     round >= fixed_fees_active_from_round_for_chain(chain_id)
+}
+
+/// Chain-scoped Wave A activation round (Atomic Batch, Sponsored Txs, Cross-Contract Calls).
+pub const fn wave_a_active_from_round_for_chain(chain_id: u64) -> u64 {
+    if chain_id == CHAIN_ID_MAINNET {
+        GENESIS_ROUND
+    } else {
+        WAVE_A_ACTIVE_FROM_ROUND
+    }
+}
+
+/// Whether `round` enables Wave A upgrades on `chain_id`.
+pub const fn wave_a_active_from_for_chain(chain_id: u64, round: u64) -> bool {
+    round >= wave_a_active_from_round_for_chain(chain_id)
 }
 #[allow(clippy::absurd_extreme_comparisons)]
 pub fn size_limits_active_from(round: u64) -> bool {

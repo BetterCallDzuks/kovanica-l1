@@ -287,6 +287,26 @@ fn summarize_kind(kind: &TransactionKind) -> (&'static str, Value) {
                 "digest_b": format!("0x{}", evidence.header_b.digest.to_hex()),
             }),
         ),
+        TransactionKind::Batch { actions } => (
+            "Batch",
+            json!({
+                "action_count": actions.len(),
+            }),
+        ),
+        TransactionKind::Sponsored {
+            fee_payer, inner, ..
+        } => {
+            let (inner_kind, inner_fields) = summarize_kind(inner);
+            (
+                "Sponsored",
+                json!({
+                    "fee_payer": fee_payer.encode(),
+                    "fee_payer_hex": format!("0x{}", fee_payer.to_hex()),
+                    "inner_kind": inner_kind,
+                    "inner": inner_fields,
+                }),
+            )
+        }
     }
 }
 

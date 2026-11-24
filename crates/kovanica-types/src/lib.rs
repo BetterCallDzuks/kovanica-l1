@@ -65,7 +65,7 @@ pub use pow::{
 };
 pub use signing::SigningContext;
 pub use timeout::{SkipCert, Timeout};
-pub use transaction::{Transaction, TransactionKind};
+pub use transaction::{BatchAction, Transaction, TransactionKind};
 pub use vote::Vote;
 
 /// Logical round number in the DAG.

@@ -332,6 +332,17 @@ fn kind_to_json(kind: &TransactionKind) -> Value {
             "digest_a": to_hex(&evidence.header_a.digest.0),
             "digest_b": to_hex(&evidence.header_b.digest.0),
         }),
+        TransactionKind::Batch { actions } => json!({
+            "type": "batch",
+            "action_count": actions.len(),
+        }),
+        TransactionKind::Sponsored {
+            fee_payer, inner, ..
+        } => json!({
+            "type": "sponsored",
+            "fee_payer": fee_payer.to_string(),
+            "inner": kind_to_json(inner),
+        }),
     }
 }
 

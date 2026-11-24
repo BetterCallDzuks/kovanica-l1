@@ -82,6 +82,11 @@ pub const HOST_EMIT_EVENT_BASE_GAS: u64 = 500;
 pub const HOST_EMIT_EVENT_PER_CALL_GAS: u64 = 20;
 pub const HOST_EMIT_EVENT_PER_BYTE_GAS: u64 = 1;
 
+pub const HOST_CALL_CONTRACT_BASE_GAS: u64 = 2_600;
+pub const HOST_CALL_CONTRACT_PER_CALL_GAS: u64 = 200;
+pub const GAS_KOVANICA_CALL_CONTRACT: u64 =
+    HOST_CALL_CONTRACT_BASE_GAS + HOST_CALL_CONTRACT_PER_CALL_GAS;
+
 // Aggregate convenience constants (total per invocation, no per-byte component).
 pub const GAS_KOVANICA_CALLER: u64 = HOST_CALLER_BASE_GAS + HOST_CALLER_PER_CALL_GAS;
 pub const GAS_KOVANICA_CONTRACT_ADDRESS: u64 =

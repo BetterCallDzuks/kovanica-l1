@@ -357,7 +357,9 @@ fn counterparty(kind: &TransactionKind) -> Option<Address> {
         | TransactionKind::ExitLightNode
         | TransactionKind::SubmitLightWitness { .. }
         | TransactionKind::ClaimTreasury { .. }
-        | TransactionKind::Evidence { .. } => None,
+        | TransactionKind::Evidence { .. }
+        | TransactionKind::Batch { .. } => None,
+        TransactionKind::Sponsored { inner, .. } => counterparty(inner),
     }
 }
 
@@ -376,6 +378,8 @@ fn kind_code(kind: &TransactionKind) -> u8 {
         TransactionKind::SetCommission { .. } => 10,
         TransactionKind::ClaimTreasury { .. } => 11,
         TransactionKind::Evidence { .. } => 12,
+        TransactionKind::Batch { .. } => 13,
+        TransactionKind::Sponsored { .. } => 14,
     }
 }
 
@@ -394,6 +398,8 @@ fn kind_name(code: u8) -> Option<&'static str> {
         10 => "set_commission",
         11 => "claim_treasury",
         12 => "evidence",
+        13 => "batch",
+        14 => "sponsored",
         _ => return None,
     })
 }
@@ -407,6 +413,15 @@ fn kind_amount(kind: &TransactionKind) -> u64 {
         | TransactionKind::ClaimTreasury { amount } => *amount,
         TransactionKind::Call { value, .. } => *value,
         TransactionKind::RegisterLightNode { stake, .. } => *stake,
+        TransactionKind::Batch { actions } => actions
+            .iter()
+            .map(|a| match a {
+                kovanica_types::BatchAction::Transfer { amount, .. } => *amount,
+                kovanica_types::BatchAction::Call { value, .. } => *value,
+                kovanica_types::BatchAction::Deploy { .. } => 0,
+            })
+            .fold(0u64, u64::saturating_add),
+        TransactionKind::Sponsored { inner, .. } => kind_amount(inner),
         TransactionKind::ClaimRewards { .. }
         | TransactionKind::Deploy { .. }
         | TransactionKind::ExitLightNode
