@@ -1198,6 +1198,10 @@ struct HealthResponse {
     /// `ok`, or `degraded` once execution or consensus has stopped.
     status: &'static str,
     peer_count: usize,
+    /// Number of pending transactions currently held in the mempool.
+    mempool_pending: usize,
+    /// `kovanica-rpc` crate version serving this endpoint.
+    rpc_version: &'static str,
     #[serde(flatten)]
     detail: HealthSnapshot,
 }
@@ -1216,6 +1220,8 @@ async fn health_check(Extension(state): Extension<RpcState>) -> (StatusCode, Jso
         Json(HealthResponse {
             status,
             peer_count: state.peer_count.load(Ordering::Relaxed),
+            mempool_pending: state.mempool.len(),
+            rpc_version: env!("CARGO_PKG_VERSION"),
             detail,
         }),
     )
@@ -1282,6 +1288,15 @@ fn append_rpc_metrics(mut base: String) -> String {
          # HELP rpc_get_logs_truncated_total Total number of kovanica_getLogs calls rejected or truncated for exceeding range, result, or scan limits.\n\
          # TYPE rpc_get_logs_truncated_total counter\n\
          rpc_get_logs_truncated_total {}\n\
+         # HELP rpc_get_logs_max_span_rejected_total Total number of kovanica_getLogs calls rejected for exceeding MAX_GET_LOGS_BLOCK_RANGE.\n\
+         # TYPE rpc_get_logs_max_span_rejected_total counter\n\
+         rpc_get_logs_max_span_rejected_total {}\n\
+         # HELP rpc_get_logs_cursor_requests_total Total number of kovanica_getLogs calls using a valid pagination cursor.\n\
+         # TYPE rpc_get_logs_cursor_requests_total counter\n\
+         rpc_get_logs_cursor_requests_total {}\n\
+         # HELP rpc_get_logs_cursor_invalid_total Total number of kovanica_getLogs calls rejected for a malformed pagination cursor.\n\
+         # TYPE rpc_get_logs_cursor_invalid_total counter\n\
+         rpc_get_logs_cursor_invalid_total {}\n\
          # HELP rpc_tx_submitted_total Total number of raw transactions accepted by kovanica_sendRawTransaction.\n\
          # TYPE rpc_tx_submitted_total counter\n\
          rpc_tx_submitted_total {}\n\
@@ -1302,6 +1317,9 @@ fn append_rpc_metrics(mut base: String) -> String {
         rpc_get_logs_blocks_scanned_total(),
         rpc_get_logs_results_total(),
         rpc_get_logs_truncated_total(),
+        rpc_get_logs_max_span_rejected_total(),
+        rpc_get_logs_cursor_requests_total(),
+        rpc_get_logs_cursor_invalid_total(),
         rpc_tx_submitted_total(),
         rpc_tx_rejected_total(),
     );
@@ -2291,6 +2309,9 @@ mod tests {
         let scanned_before = rpc_get_logs_blocks_scanned_total();
         let results_before = rpc_get_logs_results_total();
         let truncated_before = rpc_get_logs_truncated_total();
+        let max_span_before = rpc_get_logs_max_span_rejected_total();
+        let cursor_req_before = rpc_get_logs_cursor_requests_total();
+        let cursor_invalid_before = rpc_get_logs_cursor_invalid_total();
 
         // Valid range scan (0x0..=0x2 => 3 blocks scanned, 0 matching logs).
         let (status, body) = call(
@@ -2304,7 +2325,30 @@ mod tests {
         assert!(body["error"].is_null(), "{body}");
         assert_eq!(body["result"], json!([]));
 
-        // Oversized range (> MAX_GET_LOGS_BLOCK_RANGE) increments truncated counter.
+        // Valid cursor pagination request increments cursor_requests_total.
+        let (status, body) = call(
+            server.router(),
+            "kovanica_getLogs",
+            json!([{ "fromBlock": "0x0", "toBlock": "0x2", "cursor": "0x1:0x0" }]),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["error"].is_null(), "{body}");
+        assert_eq!(body["result"], json!([]));
+
+        // Malformed cursor increments cursor_invalid_total and returns -32602.
+        let (status, body) = call(
+            server.router(),
+            "kovanica_getLogs",
+            json!([{ "fromBlock": "0x0", "toBlock": "0x2", "cursor": "not-a-cursor" }]),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["error"]["code"], json!(-32602));
+
+        // Oversized range (> MAX_GET_LOGS_BLOCK_RANGE) increments truncated + max_span counters.
         let (status, body) = call(
             server.router(),
             "kovanica_getLogs",
@@ -2319,8 +2363,8 @@ mod tests {
         assert!(!body["error"].is_null(), "expected invalid params error");
 
         assert!(
-            rpc_get_logs_blocks_scanned_total() >= scanned_before + 3,
-            "blocks scanned counter must advance by at least 3"
+            rpc_get_logs_blocks_scanned_total() >= scanned_before + 5,
+            "blocks scanned counter must advance by at least 5 (3 + 2)"
         );
         assert!(
             rpc_get_logs_results_total() >= results_before,
@@ -2329,6 +2373,18 @@ mod tests {
         assert!(
             rpc_get_logs_truncated_total() > truncated_before,
             "truncated counter must advance on oversized range rejection"
+        );
+        assert!(
+            rpc_get_logs_max_span_rejected_total() > max_span_before,
+            "max_span_rejected counter must advance on oversized range rejection"
+        );
+        assert!(
+            rpc_get_logs_cursor_requests_total() > cursor_req_before,
+            "cursor_requests counter must advance on valid cursor query"
+        );
+        assert!(
+            rpc_get_logs_cursor_invalid_total() > cursor_invalid_before,
+            "cursor_invalid counter must advance on malformed cursor rejection"
         );
 
         let metrics_resp = server
@@ -2344,6 +2400,9 @@ mod tests {
             "rpc_get_logs_blocks_scanned_total",
             "rpc_get_logs_results_total",
             "rpc_get_logs_truncated_total",
+            "rpc_get_logs_max_span_rejected_total",
+            "rpc_get_logs_cursor_requests_total",
+            "rpc_get_logs_cursor_invalid_total",
         ] {
             let type_line = format!("# TYPE {metric} counter");
             assert_eq!(
@@ -2838,5 +2897,100 @@ mod tests {
         assert_eq!(items[0]["result"], single_body["result"]);
         assert_eq!(items[1]["id"], json!(2));
         assert_eq!(items[1]["result"], single_body["result"]);
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_reports_mempool_pending_and_rpc_version() {
+        let (_dir, srv) = server(unlimited(), open_auth()).await;
+
+        // 1. Healthy node with empty mempool.
+        let resp = srv
+            .router()
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], json!("ok"));
+        assert_eq!(body["healthy"], json!(true));
+        assert_eq!(body["peer_count"], json!(0));
+        assert_eq!(body["mempool_pending"], json!(0));
+        assert_eq!(body["rpc_version"], json!(env!("CARGO_PKG_VERSION")));
+        assert!(body["execution"].is_object());
+        assert!(body["consensus"].is_object());
+
+        // 2. Submit a valid signed devnet transfer so mempool_pending becomes 1.
+        let (sk, pk) = kovanica_crypto::generate_keypair();
+        let sender = kovanica_types::Address::from_public_key(&pk);
+        let (_, recipient_pk) = kovanica_crypto::generate_keypair();
+        let recipient = kovanica_types::Address::from_public_key(&recipient_pk);
+
+        let (airdrop_status, airdrop_body) = call(
+            srv.router(),
+            "kovanica_requestAirdrop",
+            json!([sender.to_string(), 100_000u64]),
+            None,
+        )
+        .await;
+        assert_eq!(airdrop_status, StatusCode::OK);
+        assert!(airdrop_body["error"].is_null(), "{airdrop_body}");
+
+        let mut tx = kovanica_types::Transaction {
+            sender,
+            nonce: 0,
+            kind: kovanica_types::TransactionKind::Transfer {
+                to: recipient,
+                amount: 1_000,
+            },
+            fee: 10_000,
+            signature: kovanica_types::Signature([0; 64]),
+            hash: kovanica_types::Hash::zero(),
+        };
+        let signing_ctx =
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
+        let signing_hash = tx.signing_hash(&signing_ctx);
+        tx.signature = kovanica_crypto::sign(&sk, signing_hash.as_ref());
+        tx.hash = signing_hash;
+        let raw_hex = format!("0x{}", hex::encode(bincode::serialize(&tx).unwrap()));
+
+        let (tx_status, tx_body) = call(
+            srv.router(),
+            "kovanica_sendRawTransaction",
+            json!([raw_hex]),
+            None,
+        )
+        .await;
+        assert_eq!(tx_status, StatusCode::OK);
+        assert!(tx_body["error"].is_null(), "{tx_body}");
+
+        let resp = srv
+            .router()
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], json!("ok"));
+        assert_eq!(body["healthy"], json!(true));
+        assert_eq!(body["mempool_pending"], json!(1));
+        assert_eq!(body["rpc_version"], json!(env!("CARGO_PKG_VERSION")));
+
+        // 3. Degraded node (HTTP 503) still reports mempool_pending and rpc_version.
+        srv.state.health.execution_failed("synthetic test fault");
+        let resp = srv
+            .router()
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], json!("degraded"));
+        assert_eq!(body["healthy"], json!(false));
+        assert_eq!(body["mempool_pending"], json!(1));
+        assert_eq!(body["rpc_version"], json!(env!("CARGO_PKG_VERSION")));
+        assert!(body["last_error"].is_string());
     }
 }

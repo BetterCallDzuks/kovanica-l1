@@ -61,6 +61,9 @@ pub const MAX_GET_LOGS_SCAN_MS: u64 = 200;
 static RPC_GET_LOGS_BLOCKS_SCANNED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_GET_LOGS_RESULTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RPC_GET_LOGS_TRUNCATED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_GET_LOGS_MAX_SPAN_REJECTED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_GET_LOGS_CURSOR_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RPC_GET_LOGS_CURSOR_INVALID_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Process-wide `kovanica_sendRawTransaction` telemetry counters (exported on `/metrics`).
 static RPC_TX_SUBMITTED_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -80,6 +83,22 @@ pub fn rpc_get_logs_results_total() -> u64 {
 /// or scan-time limits.
 pub fn rpc_get_logs_truncated_total() -> u64 {
     RPC_GET_LOGS_TRUNCATED_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Total `kovanica_getLogs` calls rejected by the max block-span guard
+/// (`block_span > MAX_GET_LOGS_BLOCK_RANGE`).
+pub fn rpc_get_logs_max_span_rejected_total() -> u64 {
+    RPC_GET_LOGS_MAX_SPAN_REJECTED_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Total `kovanica_getLogs` calls that supplied a valid pagination cursor.
+pub fn rpc_get_logs_cursor_requests_total() -> u64 {
+    RPC_GET_LOGS_CURSOR_REQUESTS_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Total `kovanica_getLogs` calls rejected due to a malformed pagination cursor.
+pub fn rpc_get_logs_cursor_invalid_total() -> u64 {
+    RPC_GET_LOGS_CURSOR_INVALID_TOTAL.load(Ordering::Relaxed)
 }
 
 /// Total raw transactions accepted by `kovanica_sendRawTransaction`.
@@ -1216,12 +1235,31 @@ pub async fn handle_get_logs(params: Value, state: RpcState) -> Result<Value, Rp
         _ => latest,
     };
 
-    if from > to {
+    let cursor = parse_get_logs_cursor(filter.get("cursor"))?;
+    if cursor.is_some() {
+        RPC_GET_LOGS_CURSOR_REQUESTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
+
+    let effective_from = match cursor {
+        Some((cursor_height, _)) => from.max(cursor_height),
+        None => from,
+    };
+
+    if effective_from > to {
         return Ok(json!([]));
     }
-    let block_span = to - from + 1;
+    let block_span = to - effective_from + 1;
     if block_span > MAX_GET_LOGS_BLOCK_RANGE {
         RPC_GET_LOGS_TRUNCATED_TOTAL.fetch_add(1, Ordering::Relaxed);
+        RPC_GET_LOGS_MAX_SPAN_REJECTED_TOTAL.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            from_block = effective_from,
+            to_block = to,
+            block_span,
+            max_span = MAX_GET_LOGS_BLOCK_RANGE,
+            has_cursor = cursor.is_some(),
+            "kovanica_getLogs rejected: block span exceeds maximum"
+        );
         return Err(RpcError::InvalidParams(format!(
             "getLogs: block range {block_span} exceeds the maximum of {MAX_GET_LOGS_BLOCK_RANGE} blocks",
         )));
@@ -1230,8 +1268,8 @@ pub async fn handle_get_logs(params: Value, state: RpcState) -> Result<Value, Rp
     let addresses = parse_address_filter(filter.get("address"), served_chain_id(&state))?;
     let topics = parse_topics_filter(filter.get("topics"))?;
 
-    let scanned =
-        kovanica_execution::receipts_in_height_range(&state.storage, from, to).map_err(internal)?;
+    let scanned = kovanica_execution::receipts_in_height_range(&state.storage, effective_from, to)
+        .map_err(internal)?;
     RPC_GET_LOGS_BLOCKS_SCANNED_TOTAL.fetch_add(block_span, Ordering::Relaxed);
 
     let mut logs: Vec<Value> = Vec::new();
@@ -1257,6 +1295,15 @@ pub async fn handle_get_logs(params: Value, state: RpcState) -> Result<Value, Rp
                 if !topics_match(&topics, &event.topic) {
                     continue;
                 }
+                let current_log_index = log_index;
+                log_index += 1;
+                if let Some((cursor_height, cursor_log_index)) = cursor {
+                    if height < cursor_height
+                        || (height == cursor_height && current_log_index <= cursor_log_index)
+                    {
+                        continue;
+                    }
+                }
                 logs.push(json!({
                     "address": event.address.to_string(),
                     "topics": [to_hex(&event.topic)],
@@ -1265,10 +1312,9 @@ pub async fn handle_get_logs(params: Value, state: RpcState) -> Result<Value, Rp
                     "blockHash": Value::Null,
                     "transactionHash": to_hex(&receipt.tx_hash.0),
                     "transactionIndex": quantity(tx_index as u64),
-                    "logIndex": quantity(log_index),
+                    "logIndex": quantity(current_log_index),
                     "removed": false,
                 }));
-                log_index += 1;
                 if logs.len() > MAX_GET_LOGS_RESULTS {
                     RPC_GET_LOGS_TRUNCATED_TOTAL.fetch_add(1, Ordering::Relaxed);
                     return Err(RpcError::InvalidParams(format!(
@@ -1281,6 +1327,52 @@ pub async fn handle_get_logs(params: Value, state: RpcState) -> Result<Value, Rp
 
     RPC_GET_LOGS_RESULTS_TOTAL.fetch_add(logs.len() as u64, Ordering::Relaxed);
     Ok(Value::Array(logs))
+}
+
+/// Parse an optional `kovanica_getLogs` pagination cursor (`"<height>:<logIndex>"`).
+///
+/// Each component may be a decimal integer or a `0x`-prefixed hex quantity.
+fn parse_get_logs_cursor(value: Option<&Value>) -> Result<Option<(u64, u64)>, RpcError> {
+    let raw = match value {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(s)) => s.trim(),
+        Some(_) => {
+            RPC_GET_LOGS_CURSOR_INVALID_TOTAL.fetch_add(1, Ordering::Relaxed);
+            return Err(RpcError::InvalidParams(
+                "getLogs: cursor must be a '<height>:<logIndex>' string".into(),
+            ));
+        }
+    };
+
+    let parse_component = |part: &str| -> Option<u64> {
+        if let Some(hex_str) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
+            if hex_str.is_empty() {
+                return None;
+            }
+            u64::from_str_radix(hex_str, 16).ok()
+        } else if part.is_empty() {
+            None
+        } else {
+            part.parse::<u64>().ok()
+        }
+    };
+
+    let Some((h_raw, idx_raw)) = raw.split_once(':') else {
+        RPC_GET_LOGS_CURSOR_INVALID_TOTAL.fetch_add(1, Ordering::Relaxed);
+        return Err(RpcError::InvalidParams(
+            "getLogs: invalid cursor (expected '<height>:<logIndex>')".into(),
+        ));
+    };
+
+    match (parse_component(h_raw), parse_component(idx_raw)) {
+        (Some(height), Some(log_index)) => Ok(Some((height, log_index))),
+        _ => {
+            RPC_GET_LOGS_CURSOR_INVALID_TOTAL.fetch_add(1, Ordering::Relaxed);
+            Err(RpcError::InvalidParams(
+                "getLogs: invalid cursor (expected '<height>:<logIndex>')".into(),
+            ))
+        }
+    }
 }
 
 /// Resolve a block reference to a committed-leader height.
@@ -4343,6 +4435,198 @@ mod tests {
             handle_get_logs(json!([42]), state).await,
             Err(RpcError::InvalidParams(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn get_logs_cursor_pagination_and_max_span_guard_telemetry() {
+        use kovanica_execution::ExecutionContext;
+        use kovanica_storage::state_store::Account;
+        use kovanica_types::Signature;
+
+        let (_dir, storage) = open_storage();
+        let (sk, pk) = kovanica_crypto::generate_keypair();
+        let sender = Address::from_public_key(&pk);
+        let recipient_a = Address([0x22; 32]);
+        let recipient_b = Address([0x23; 32]);
+        {
+            let txn = storage.begin_write().unwrap();
+            storage
+                .state()
+                .set_account(
+                    &txn,
+                    &sender,
+                    &Account {
+                        balance: 1_000_000,
+                        nonce: 0,
+                        code_hash: [0; 32],
+                        code: Vec::new(),
+                    },
+                )
+                .unwrap();
+            storage
+                .consensus()
+                .set_committed_leader_height(&txn, 1)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+        let state = test_state(storage.clone());
+        let signing_ctx = state.mempool.signing_context();
+
+        let mut tx0 = Transaction {
+            sender,
+            nonce: 0,
+            kind: TransactionKind::Transfer {
+                to: recipient_a,
+                amount: 10,
+            },
+            fee: 100,
+            signature: Signature([0; 64]),
+            hash: Hash::zero(),
+        };
+        let h0 = tx0.signing_hash(&signing_ctx);
+        tx0.signature = kovanica_crypto::sign(&sk, h0.as_ref());
+        tx0.hash = h0;
+
+        let mut tx1 = Transaction {
+            sender,
+            nonce: 1,
+            kind: TransactionKind::Transfer {
+                to: recipient_b,
+                amount: 20,
+            },
+            fee: 100,
+            signature: Signature([0; 64]),
+            hash: Hash::zero(),
+        };
+        let h1 = tx1.signing_hash(&signing_ctx);
+        tx1.signature = kovanica_crypto::sign(&sk, h1.as_ref());
+        tx1.hash = h1;
+        let block = StatementBlock {
+            author: 0,
+            round: 1,
+            parents: Vec::new(),
+            transactions: vec![tx0.clone(), tx1.clone()],
+            statements: Vec::new(),
+            signature: Signature([0; 64]),
+            digest: StatementBlock::compute_digest(0, 1, &[], &[tx0.clone(), tx1.clone()]),
+            merkle_root: StatementBlock::compute_merkle_root(&[tx0.clone(), tx1.clone()]),
+        };
+        let leader = StatementBlock {
+            author: 0,
+            round: 1,
+            parents: Vec::new(),
+            transactions: Vec::new(),
+            statements: Vec::new(),
+            signature: Signature([0; 64]),
+            digest: StatementBlock::compute_digest(0, 1, &[], &[]),
+            merkle_root: Default::default(),
+        };
+        let subdag = kovanica_consensus::CommittedSubDag {
+            leader,
+            blocks: vec![block],
+            leader_round: 1,
+            leader_author: 0,
+            non_blue: Vec::new(),
+        };
+        let mut ctx = ExecutionContext::new();
+        let executed = ctx
+            .execute_committed_subdag(&subdag, &storage)
+            .expect("execute committed subdag");
+        assert!(executed.receipts.iter().all(|r| r.success));
+
+        let cursor_req_before = rpc_get_logs_cursor_requests_total();
+        let cursor_invalid_before = rpc_get_logs_cursor_invalid_total();
+        let max_span_before = rpc_get_logs_max_span_rejected_total();
+        let truncated_before = rpc_get_logs_truncated_total();
+
+        // Both logs are returned without a cursor.
+        let all = handle_get_logs(
+            json!([{ "fromBlock": "0x0", "toBlock": "0x2" }]),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        let all = all.as_array().unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0]["logIndex"], json!("0x0"));
+        assert_eq!(all[1]["logIndex"], json!("0x1"));
+        let log_height_hex = all[0]["blockNumber"].as_str().unwrap();
+        let log_height = u64::from_str_radix(log_height_hex.trim_start_matches("0x"), 16).unwrap();
+
+        // Decimal cursor "<height>:0" resumes strictly after (height, logIndex=0).
+        let after_first = handle_get_logs(
+            json!([{
+                "fromBlock": "0x0",
+                "toBlock": "0x2",
+                "cursor": format!("{log_height}:0")
+            }]),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        let after_first = after_first.as_array().unwrap();
+        assert_eq!(after_first.len(), 1);
+        assert_eq!(
+            after_first[0]["transactionHash"],
+            json!(to_hex(&tx1.hash.0))
+        );
+        assert_eq!(after_first[0]["logIndex"], json!("0x1"));
+
+        // Hex cursor "0x<height>:0x1" resumes past the last log and returns empty.
+        let after_last = handle_get_logs(
+            json!([{
+                "fromBlock": "0x0",
+                "toBlock": "0x2",
+                "cursor": format!("{log_height_hex}:0x1")
+            }]),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(after_last.as_array().unwrap().is_empty());
+
+        // Cursor advancing effective_from keeps span within MAX_GET_LOGS_BLOCK_RANGE.
+        let cursor_narrows_span = handle_get_logs(
+            json!([{
+                "fromBlock": "0x0",
+                "toBlock": format!("0x{:x}", MAX_GET_LOGS_BLOCK_RANGE + 10),
+                "cursor": format!("{}:0", MAX_GET_LOGS_BLOCK_RANGE)
+            }]),
+            state.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(cursor_narrows_span.as_array().unwrap().is_empty());
+        assert!(rpc_get_logs_cursor_requests_total() >= cursor_req_before + 3);
+
+        // Malformed cursors are rejected and increment cursor_invalid_total.
+        for bad in [
+            json!("missing_colon"),
+            json!("1:"),
+            json!("0xzz:0"),
+            json!(123),
+        ] {
+            let err = handle_get_logs(
+                json!([{ "fromBlock": "0x0", "toBlock": "0x1", "cursor": bad }]),
+                state.clone(),
+            )
+            .await;
+            assert!(matches!(err, Err(RpcError::InvalidParams(_))));
+        }
+        assert!(rpc_get_logs_cursor_invalid_total() >= cursor_invalid_before + 4);
+
+        // Max-span guard rejects oversized range and increments both counters.
+        let too_wide = handle_get_logs(
+            json!([{
+                "fromBlock": "0x0",
+                "toBlock": format!("0x{:x}", MAX_GET_LOGS_BLOCK_RANGE)
+            }]),
+            state.clone(),
+        )
+        .await;
+        assert!(matches!(too_wide, Err(RpcError::InvalidParams(_))));
+        assert!(rpc_get_logs_max_span_rejected_total() > max_span_before);
+        assert!(rpc_get_logs_truncated_total() > truncated_before);
     }
 
     #[tokio::test]

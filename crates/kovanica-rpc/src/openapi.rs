@@ -312,6 +312,11 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
                             { "type": "array", "items": { "type": "string" } }
                         ]
                     }
+                },
+                "cursor": {
+                    "type": "string",
+                    "pattern": "^(0x[a-fA-F0-9]+|[0-9]+):(0x[a-fA-F0-9]+|[0-9]+)$",
+                    "description": "Optional pagination cursor ('<height>:<logIndex>') resuming strictly after the given log entry. Queries spanning more than 500 blocks are rejected."
                 }
             }
         }),
@@ -405,9 +410,18 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             "properties": {
                 "status": { "type": "string", "enum": ["ok", "degraded"] },
                 "peer_count": { "type": "integer", "minimum": 0 },
+                "mempool_pending": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Number of pending transactions currently in the mempool"
+                },
+                "rpc_version": {
+                    "type": "string",
+                    "description": "kovanica-rpc crate version serving this endpoint"
+                },
                 "healthy": { "type": "boolean" }
             },
-            "required": ["status", "peer_count", "healthy"]
+            "required": ["status", "peer_count", "mempool_pending", "rpc_version", "healthy"]
         }),
     );
 
@@ -1327,5 +1341,26 @@ mod tests {
                 "Missing {header} on /health 200 response"
             );
         }
+
+        let health_schema = &spec.components.schemas["HealthResponse"];
+        assert!(
+            health_schema["properties"].get("mempool_pending").is_some(),
+            "HealthResponse schema must document mempool_pending"
+        );
+        assert!(
+            health_schema["properties"].get("rpc_version").is_some(),
+            "HealthResponse schema must document rpc_version"
+        );
+        let required = health_schema["required"]
+            .as_array()
+            .expect("HealthResponse.required array");
+        assert!(required.contains(&json!("mempool_pending")));
+        assert!(required.contains(&json!("rpc_version")));
+
+        let get_logs_filter = &spec.components.schemas["GetLogsFilter"];
+        assert!(
+            get_logs_filter["properties"].get("cursor").is_some(),
+            "GetLogsFilter schema must document cursor"
+        );
     }
 }
