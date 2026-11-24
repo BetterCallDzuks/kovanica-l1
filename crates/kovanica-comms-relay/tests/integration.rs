@@ -627,3 +627,319 @@ async fn http_rejects_bad_id_and_oversized_body() {
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["error"]["code"], "too_large");
 }
+
+// ---------------------------------------------------------------------------
+// OpenMetrics /metrics & envelope queue depth telemetry.
+// ---------------------------------------------------------------------------
+
+fn parse_openmetrics_value(body: &str, metric: &str) -> u64 {
+    let prefix = format!("{metric} ");
+    let line = body
+        .lines()
+        .find(|l| l.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("missing metric `{metric}` in:\n{body}"));
+    line[prefix.len()..]
+        .trim()
+        .parse::<u64>()
+        .unwrap_or_else(|e| panic!("non-integer metric `{metric}` in line `{line}`: {e}"))
+}
+
+fn assert_valid_openmetrics(body: &str) {
+    assert!(
+        body.ends_with("# EOF\n"),
+        "OpenMetrics payload must end with `# EOF\\n`, got tail: {:?}",
+        &body[body.len().saturating_sub(32)..]
+    );
+
+    let mut seen_types = std::collections::HashSet::new();
+    let mut seen_helps = std::collections::HashSet::new();
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("# TYPE ") {
+            let mut parts = rest.split_whitespace();
+            let name = parts.next().expect("metric name in # TYPE");
+            let kind = parts.next().expect("metric type in # TYPE");
+            assert!(
+                matches!(kind, "gauge" | "counter"),
+                "unexpected metric type `{kind}` for `{name}`"
+            );
+            assert!(
+                name.starts_with("kovanica_comms_relay_"),
+                "metric `{name}` must use kovanica_comms_relay_ prefix"
+            );
+            assert!(
+                seen_types.insert(name.to_string()),
+                "duplicate `# TYPE {name}` header in /metrics"
+            );
+            if kind == "counter" {
+                assert!(
+                    !name.ends_with("_total"),
+                    "OpenMetrics 1.0 counter family `{name}` must not end with _total"
+                );
+            }
+        } else if let Some(rest) = line.strip_prefix("# HELP ") {
+            let name = rest
+                .split_whitespace()
+                .next()
+                .expect("metric name in # HELP");
+            assert!(
+                seen_helps.insert(name.to_string()),
+                "duplicate `# HELP {name}` header in /metrics"
+            );
+        }
+    }
+    assert_eq!(
+        seen_types, seen_helps,
+        "every metric family must have matching # HELP and # TYPE headers"
+    );
+}
+
+#[tokio::test]
+async fn http_metrics_tracks_queue_depth_lifecycle_and_leaks_zero_pii() {
+    let _guard = ENV_LOCK.lock().await;
+    std::env::set_var("KOVANICA_RELAY_ALLOW_UNPAID", "true");
+
+    let (store, base) = spawn_relay().await;
+    let client = RelayClient::new(base.clone());
+    let http = reqwest::Client::new();
+
+    let recipient_a_seed: SecretSeed = RECIPIENT_SEED;
+    let recipient_a_key = SigningKey::from_bytes(&recipient_a_seed);
+    let recipient_a_pub = recipient_a_key.verifying_key().to_bytes();
+    let recipient_a_id = comms_id_hex(&kovanica_comms_relay::comms_id_bytes(&recipient_a_pub));
+
+    let recipient_b_seed: SecretSeed = [0x07; 32];
+    let recipient_b_key = SigningKey::from_bytes(&recipient_b_seed);
+    let recipient_b_pub = recipient_b_key.verifying_key().to_bytes();
+    let recipient_b_id = comms_id_hex(&kovanica_comms_relay::comms_id_bytes(&recipient_b_pub));
+    let sender_id = comms_id_hex(&kovanica_comms_relay::comms_id_bytes(&sender_pub()));
+
+    // 1. Initial empty metrics response: HTTP 200, OpenMetrics 1.0 content-type, `# EOF\n`.
+    let resp = http.get(format!("{base}/metrics")).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        resp.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some(kovanica_comms_relay::OPENMETRICS_CONTENT_TYPE)
+    );
+    let body = resp.text().await.unwrap();
+    assert_valid_openmetrics(&body);
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_queued"),
+        0
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_active_mailboxes"),
+        0
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_max_mailbox_depth"),
+        0
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_accepted_total"),
+        0
+    );
+
+    // 2. Push 2 envelopes to recipient A, 1 envelope to recipient B, plus 1 duplicate to A.
+    let now = kovanica_comms_relay::now_ms();
+    let secret_payload =
+        br#"{"kind":"text","body":"super-secret-telemetry-check","ts":1730000000001}"#;
+    let env_a1 = kovanica_comms_relay::envelope::seal_and_sign(
+        &SENDER_SEED,
+        &recipient_a_pub,
+        secret_payload,
+        now,
+        now + 600_000,
+    )
+    .unwrap();
+    let env_a2 = kovanica_comms_relay::envelope::seal_and_sign(
+        &SENDER_SEED,
+        &recipient_a_pub,
+        KAT_PAYLOAD,
+        now + 1,
+        now + 600_000,
+    )
+    .unwrap();
+    let env_b1 = kovanica_comms_relay::envelope::seal_and_sign(
+        &SENDER_SEED,
+        &recipient_b_pub,
+        KAT_PAYLOAD,
+        now + 2,
+        now + 600_000,
+    )
+    .unwrap();
+
+    client.post_envelope(&env_a1).await.unwrap();
+    client.post_envelope(&env_a2).await.unwrap();
+    client.post_envelope(&env_a2).await.unwrap(); // duplicate
+    client.post_envelope(&env_b1).await.unwrap();
+
+    // Trigger 1 rejected envelope (malformed JSON) and 1 rate-limited envelope (unpaid).
+    let bad_resp = http
+        .post(format!("{base}/v1/envelope"))
+        .body("not-json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_resp.status().as_u16(), 400);
+
+    std::env::remove_var("KOVANICA_RELAY_ALLOW_UNPAID");
+    let env_unpaid = kovanica_comms_relay::envelope::seal_and_sign(
+        &SENDER_SEED,
+        &recipient_b_pub,
+        KAT_PAYLOAD,
+        now + 3,
+        now + 600_000,
+    )
+    .unwrap();
+    let rl_err = client.post_envelope(&env_unpaid).await.unwrap_err();
+    assert!(matches!(rl_err, ClientError::Status { status: 429, .. }));
+
+    // Read inbox once and trigger 1 unauthorized ack.
+    let _ = client.get_inbox(&recipient_a_id, None, None).await.unwrap();
+    let _ = client
+        .ack(&recipient_a_id, std::slice::from_ref(&env_a1.id))
+        .await
+        .unwrap_err();
+
+    // Verify /metrics reflects exact live queue depths and counters.
+    let body = http
+        .get(format!("{base}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_valid_openmetrics(&body);
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_queued"),
+        3
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_active_mailboxes"),
+        2
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_max_mailbox_depth"),
+        2
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_accepted_total"),
+        3
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_duplicate_total"),
+        1
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_delivered_total"),
+        0
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_rejected_total"),
+        1
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_rate_limited_total"),
+        1
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_inbox_requests_total"),
+        1
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_ack_rejected_total"),
+        1
+    );
+
+    // Zero PII / recipient addresses / sender addresses / envelope IDs / plaintext / ciphertext leakage.
+    let ct_b64 = STANDARD.encode(&env_a1.ct);
+    for forbidden in [
+        recipient_a_id.as_str(),
+        recipient_b_id.as_str(),
+        sender_id.as_str(),
+        env_a1.id.as_str(),
+        env_a2.id.as_str(),
+        env_b1.id.as_str(),
+        "super-secret-telemetry-check",
+        "hello kovanica",
+        ct_b64.as_str(),
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "sensitive data `{forbidden}` leaked into /metrics output"
+        );
+    }
+
+    // 3. Drain recipient A's 2 envelopes via signed ack and expire recipient B's via sweep.
+    let deleted = client
+        .ack_signed(
+            &recipient_a_key,
+            &recipient_a_id,
+            &[env_a1.id.clone(), env_a2.id.clone()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted, 2);
+
+    let body = http
+        .get(format!("{base}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_valid_openmetrics(&body);
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_queued"),
+        1
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_active_mailboxes"),
+        1
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_max_mailbox_depth"),
+        1
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_delivered_total"),
+        2
+    );
+
+    // Expire recipient B's envelope via sweep.
+    assert_eq!(store.sweep(now + 700_000), 1);
+    let body = http
+        .get(format!("{base}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_valid_openmetrics(&body);
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_queued"),
+        0
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_active_mailboxes"),
+        0
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_max_mailbox_depth"),
+        0
+    );
+    assert_eq!(
+        parse_openmetrics_value(&body, "kovanica_comms_relay_envelopes_expired_total"),
+        1
+    );
+
+    // Existing /v1/health remains 100% backwards-compatible.
+    let health = client.health().await.unwrap();
+    assert!(health.ok);
+    assert_eq!(health.envelopes, 0);
+}

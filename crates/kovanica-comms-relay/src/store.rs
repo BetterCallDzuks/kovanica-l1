@@ -55,6 +55,27 @@ pub struct Credit {
     pub expires_at: u64, // ms
 }
 
+/// Point-in-time queue depth and lifecycle telemetry snapshot for [`Store`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoreStats {
+    /// Total queued (undelivered) envelopes across all mailboxes.
+    pub queued_envelopes: usize,
+    /// Number of mailboxes currently holding at least one queued envelope.
+    pub active_mailboxes: usize,
+    /// Largest queue depth of any single mailbox (`0` when the store is empty).
+    pub max_mailbox_depth: usize,
+    /// Total unique envelopes accepted and inserted into the store.
+    pub envelopes_accepted_total: u64,
+    /// Total duplicate envelope submissions deduplicated by `id`.
+    pub envelopes_duplicate_total: u64,
+    /// Total envelopes acknowledged (delivered and removed via [`Store::ack`]).
+    pub envelopes_delivered_total: u64,
+    /// Total envelopes dropped due to TTL expiration during [`Store::sweep`].
+    pub envelopes_expired_total: u64,
+    /// Total envelope insertions rejected by store quotas (per-recipient or global cap).
+    pub envelopes_quota_rejected_total: u64,
+}
+
 #[derive(Debug, Default)]
 struct Inner {
     by_id: HashMap<String, Stored>,
@@ -62,6 +83,11 @@ struct Inner {
     queues: HashMap<String, Vec<String>>,
     /// Prepaid credit per comms_id(to)
     credits: HashMap<String, Credit>,
+    accepted_total: u64,
+    duplicate_total: u64,
+    delivered_total: u64,
+    expired_total: u64,
+    quota_rejected_total: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -93,14 +119,17 @@ impl Store {
     pub fn insert(&self, envelope: Envelope, now: u64) -> Result<InsertOutcome, StoreError> {
         let mut inner = self.inner.lock();
         if inner.by_id.contains_key(&envelope.id) {
+            inner.duplicate_total = inner.duplicate_total.saturating_add(1);
             return Ok(InsertOutcome::Duplicate);
         }
         let to = envelope.to.clone();
         const MAX_TOTAL_ENVELOPES: usize = 50_000;
         if inner.by_id.len() >= MAX_TOTAL_ENVELOPES {
+            inner.quota_rejected_total = inner.quota_rejected_total.saturating_add(1);
             return Err(StoreError::RateLimited);
         }
         if inner.queues.get(&to).map(Vec::len).unwrap_or(0) >= MAX_PER_RECIPIENT {
+            inner.quota_rejected_total = inner.quota_rejected_total.saturating_add(1);
             return Err(StoreError::RateLimited);
         }
         let expires_at = envelope.expires_at.min(now.saturating_add(MAX_TTL_MS));
@@ -117,6 +146,7 @@ impl Store {
             .push(stored.envelope.id.clone());
         let id = stored.envelope.id.clone();
         inner.by_id.insert(id, stored);
+        inner.accepted_total = inner.accepted_total.saturating_add(1);
         Ok(InsertOutcome::Inserted)
     }
 
@@ -169,9 +199,16 @@ impl Store {
         }
         if deleted > 0 {
             let dead: std::collections::HashSet<&String> = ids.iter().collect();
-            if let Some(queue) = inner.queues.get_mut(to) {
+            let remove_mailbox = if let Some(queue) = inner.queues.get_mut(to) {
                 queue.retain(|id| !dead.contains(id));
+                queue.is_empty()
+            } else {
+                false
+            };
+            if remove_mailbox {
+                inner.queues.remove(to);
             }
+            inner.delivered_total = inner.delivered_total.saturating_add(deleted as u64);
         }
         deleted
     }
@@ -197,8 +234,35 @@ impl Store {
             queue.retain(|id| !dead.contains(id));
             !queue.is_empty()
         });
+        inner.expired_total = inner.expired_total.saturating_add(expired.len() as u64);
         let _ = Self::credit_sweep_locked(&mut inner, now);
         expired.len()
+    }
+
+    /// Capture a mutually consistent snapshot of queue depth and lifecycle counters.
+    pub fn stats(&self) -> StoreStats {
+        let inner = self.inner.lock();
+        let mut active_mailboxes = 0usize;
+        let mut max_mailbox_depth = 0usize;
+        for queue in inner.queues.values() {
+            let depth = queue.len();
+            if depth > 0 {
+                active_mailboxes += 1;
+                if depth > max_mailbox_depth {
+                    max_mailbox_depth = depth;
+                }
+            }
+        }
+        StoreStats {
+            queued_envelopes: inner.by_id.len(),
+            active_mailboxes,
+            max_mailbox_depth,
+            envelopes_accepted_total: inner.accepted_total,
+            envelopes_duplicate_total: inner.duplicate_total,
+            envelopes_delivered_total: inner.delivered_total,
+            envelopes_expired_total: inner.expired_total,
+            envelopes_quota_rejected_total: inner.quota_rejected_total,
+        }
     }
 
     /// Total number of stored (undelivered) envelopes.
@@ -419,5 +483,84 @@ mod tests {
             Err(StoreError::RateLimited)
         );
         assert_eq!(store.count_for("to"), MAX_PER_RECIPIENT);
+    }
+
+    #[test]
+    fn stats_track_queue_depth_mailboxes_and_lifecycle_counters() {
+        let store = Store::new();
+        assert_eq!(store.stats(), StoreStats::default());
+
+        // Insert 2 for alice, 1 for bob, plus 1 duplicate for alice.
+        assert_eq!(
+            store.insert(env("a1", "alice", 1, 5_000), 1_000).unwrap(),
+            InsertOutcome::Inserted
+        );
+        assert_eq!(
+            store.insert(env("a2", "alice", 2, 10_000), 1_000).unwrap(),
+            InsertOutcome::Inserted
+        );
+        assert_eq!(
+            store.insert(env("a2", "alice", 2, 10_000), 1_000).unwrap(),
+            InsertOutcome::Duplicate
+        );
+        assert_eq!(
+            store.insert(env("b1", "bob", 3, 10_000), 1_000).unwrap(),
+            InsertOutcome::Inserted
+        );
+
+        let s = store.stats();
+        assert_eq!(s.queued_envelopes, 3);
+        assert_eq!(s.active_mailboxes, 2);
+        assert_eq!(s.max_mailbox_depth, 2);
+        assert_eq!(s.envelopes_accepted_total, 3);
+        assert_eq!(s.envelopes_duplicate_total, 1);
+        assert_eq!(s.envelopes_delivered_total, 0);
+        assert_eq!(s.envelopes_expired_total, 0);
+        assert_eq!(s.envelopes_quota_rejected_total, 0);
+
+        // Expire a1 via sweep.
+        assert_eq!(store.sweep(5_000), 1);
+        let s = store.stats();
+        assert_eq!(s.queued_envelopes, 2);
+        assert_eq!(s.active_mailboxes, 2);
+        assert_eq!(s.max_mailbox_depth, 1);
+        assert_eq!(s.envelopes_expired_total, 1);
+
+        // Ack bob's only envelope -> bob's mailbox becomes inactive.
+        assert_eq!(store.ack("bob", &["b1".into()]), 1);
+        let s = store.stats();
+        assert_eq!(s.queued_envelopes, 1);
+        assert_eq!(s.active_mailboxes, 1);
+        assert_eq!(s.max_mailbox_depth, 1);
+        assert_eq!(s.envelopes_delivered_total, 1);
+
+        // Ack alice's last envelope -> store completely drained.
+        assert_eq!(store.ack("alice", &["a2".into()]), 1);
+        let s = store.stats();
+        assert_eq!(s.queued_envelopes, 0);
+        assert_eq!(s.active_mailboxes, 0);
+        assert_eq!(s.max_mailbox_depth, 0);
+        assert_eq!(s.envelopes_delivered_total, 2);
+        assert_eq!(s.envelopes_accepted_total, 3);
+    }
+
+    #[test]
+    fn stats_track_quota_rejections() {
+        let store = Store::new();
+        for i in 0..MAX_PER_RECIPIENT {
+            store
+                .insert(env(&format!("id{i}"), "to", i as u64, u64::MAX), 0)
+                .unwrap();
+        }
+        assert_eq!(
+            store.insert(env("overflow", "to", 0, u64::MAX), 0),
+            Err(StoreError::RateLimited)
+        );
+        let s = store.stats();
+        assert_eq!(s.queued_envelopes, MAX_PER_RECIPIENT);
+        assert_eq!(s.active_mailboxes, 1);
+        assert_eq!(s.max_mailbox_depth, MAX_PER_RECIPIENT);
+        assert_eq!(s.envelopes_accepted_total, MAX_PER_RECIPIENT as u64);
+        assert_eq!(s.envelopes_quota_rejected_total, 1);
     }
 }
