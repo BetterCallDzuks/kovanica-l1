@@ -1202,6 +1202,11 @@ struct HealthResponse {
     mempool_pending: usize,
     /// `kovanica-rpc` crate version serving this endpoint.
     rpc_version: &'static str,
+    /// Whether the node is actively catching up or behind its sync target.
+    syncing: bool,
+    /// Whether an event/log subscriber or indexer is currently attached to the
+    /// node's [`EventBus`].
+    indexer_attached: bool,
     #[serde(flatten)]
     detail: HealthSnapshot,
 }
@@ -1215,6 +1220,15 @@ async fn health_check(Extension(state): Extension<RpcState>) -> (StatusCode, Jso
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "degraded")
     };
+    let syncing = state
+        .sync_status
+        .as_ref()
+        .map(|source| {
+            let snap = source();
+            snap.catching_up || snap.behind_by.unwrap_or(0) > 0
+        })
+        .unwrap_or(false);
+    let indexer_attached = state.events.has_indexer_subscriber();
     (
         code,
         Json(HealthResponse {
@@ -1222,6 +1236,8 @@ async fn health_check(Extension(state): Extension<RpcState>) -> (StatusCode, Jso
             peer_count: state.peer_count.load(Ordering::Relaxed),
             mempool_pending: state.mempool.len(),
             rpc_version: env!("CARGO_PKG_VERSION"),
+            syncing,
+            indexer_attached,
             detail,
         }),
     )
@@ -2991,6 +3007,185 @@ mod tests {
         assert_eq!(body["healthy"], json!(false));
         assert_eq!(body["mempool_pending"], json!(1));
         assert_eq!(body["rpc_version"], json!(env!("CARGO_PKG_VERSION")));
+        assert_eq!(body["syncing"], json!(false));
+        assert_eq!(body["indexer_attached"], json!(false));
         assert!(body["last_error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_reports_syncing_and_indexer_attached_flags() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let catching_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let behind_by = Arc::new(AtomicU64::new(0));
+        let catching_up_cb = Arc::clone(&catching_up);
+        let behind_by_cb = Arc::clone(&behind_by);
+
+        let mut st = state(&dir, unlimited(), open_auth());
+        st.sync_status = Some(Arc::new(move || {
+            let behind = behind_by_cb.load(Ordering::Relaxed);
+            SyncStatus {
+                catching_up: catching_up_cb.load(Ordering::Relaxed),
+                behind_by: (behind > 0).then_some(behind),
+                ..SyncStatus::default()
+            }
+        }));
+        let srv = RpcServer::new(
+            "127.0.0.1:0".parse().unwrap(),
+            st,
+            Some(unlimited()),
+            Some(open_auth()),
+        )
+        .await;
+
+        let fetch_health = |router: Router| async move {
+            let resp = router
+                .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            (status, body)
+        };
+
+        // 1. Caught up, no indexer subscriber attached.
+        let (code, body) = fetch_health(srv.router()).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(body["status"], json!("ok"));
+        assert_eq!(body["healthy"], json!(true));
+        assert_eq!(body["peer_count"], json!(0));
+        assert_eq!(body["mempool_pending"], json!(0));
+        assert_eq!(body["rpc_version"], json!(env!("CARGO_PKG_VERSION")));
+        assert_eq!(body["syncing"], json!(false));
+        assert_eq!(body["indexer_attached"], json!(false));
+
+        // 2. Actively catching up -> syncing = true.
+        catching_up.store(true, Ordering::Relaxed);
+        let (code, body) = fetch_health(srv.router()).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(body["syncing"], json!(true));
+        assert_eq!(body["indexer_attached"], json!(false));
+
+        // 3. Not catching_up flag, but behind_by > 0 -> syncing = true.
+        catching_up.store(false, Ordering::Relaxed);
+        behind_by.store(5, Ordering::Relaxed);
+        let (code, body) = fetch_health(srv.router()).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(body["syncing"], json!(true));
+
+        // 4. Caught up again -> syncing = false.
+        behind_by.store(0, Ordering::Relaxed);
+        let (code, body) = fetch_health(srv.router()).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(body["syncing"], json!(false));
+
+        // 5. Attach a Logs subscriber -> indexer_attached = true; drop -> false.
+        let logs_rx = srv.state.events.subscribe_receiver(SubscriptionKind::Logs);
+        let (code, body) = fetch_health(srv.router()).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(body["indexer_attached"], json!(true));
+        drop(logs_rx);
+
+        let (code, body) = fetch_health(srv.router()).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(body["indexer_attached"], json!(false));
+
+        // 6. Attach a NewCommittedLeader subscriber + degraded node -> 503 with flags intact.
+        let leader_rx = srv
+            .state
+            .events
+            .subscribe_receiver(SubscriptionKind::NewCommittedLeader);
+        catching_up.store(true, Ordering::Relaxed);
+        srv.state.health.consensus_failed("test consensus fault");
+        let (code, body) = fetch_health(srv.router()).await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["status"], json!("degraded"));
+        assert_eq!(body["healthy"], json!(false));
+        assert_eq!(body["syncing"], json!(true));
+        assert_eq!(body["indexer_attached"], json!(true));
+        drop(leader_rx);
+    }
+
+    #[tokio::test]
+    async fn mempool_stats_percentile_edge_cases_via_rpc() {
+        let (_dir, srv) = server(unlimited(), open_auth()).await;
+        let signing_ctx =
+            kovanica_types::SigningContext::new(kovanica_types::signing::chain_id::DEVNET);
+
+        let submit_transfer =
+            |router: Router, sk, sender: Address, to: Address, nonce: u64, fee: u64| async move {
+                let mut tx = kovanica_types::Transaction {
+                    sender,
+                    nonce,
+                    kind: kovanica_types::TransactionKind::Transfer { to, amount: 1 },
+                    fee,
+                    signature: kovanica_types::Signature([0; 64]),
+                    hash: kovanica_types::Hash::zero(),
+                };
+                let signing_hash = tx.signing_hash(&signing_ctx);
+                tx.signature = kovanica_crypto::sign(&sk, signing_hash.as_ref());
+                tx.hash = signing_hash;
+                let raw_hex = format!("0x{}", hex::encode(bincode::serialize(&tx).unwrap()));
+                let (status, body) = call(
+                    router,
+                    "kovanica_sendRawTransaction",
+                    json!([raw_hex]),
+                    None,
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK);
+                assert!(body["error"].is_null(), "tx submission failed: {body}");
+            };
+
+        // Fund two senders with plenty of balance for varying fees.
+        let (sk_a, pk_a) = kovanica_crypto::generate_keypair();
+        let sender_a = Address::from_public_key(&pk_a);
+        let (sk_b, pk_b) = kovanica_crypto::generate_keypair();
+        let sender_b = Address::from_public_key(&pk_b);
+        let (_, pk_c) = kovanica_crypto::generate_keypair();
+        let recipient = Address::from_public_key(&pk_c);
+
+        for sender in [sender_a, sender_b] {
+            let (s, b) = call(
+                srv.router(),
+                "kovanica_requestAirdrop",
+                json!([sender.to_string(), 100_000_000_000u64]),
+                None,
+            )
+            .await;
+            assert_eq!(s, StatusCode::OK);
+            assert!(b["error"].is_null(), "airdrop failed: {b}");
+        }
+
+        // 1. Two transactions with identical fees -> uniform percentiles.
+        submit_transfer(srv.router(), sk_a.clone(), sender_a, recipient, 0, 50_000).await;
+        submit_transfer(srv.router(), sk_b.clone(), sender_b, recipient, 0, 50_000).await;
+
+        let (status, body) = call(srv.router(), "kovanica_mempoolStats", json!([]), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let res = &body["result"];
+        assert_eq!(res["pending_count"], json!(2));
+        let uniform_rate = res["min_fee_per_byte"].as_u64().unwrap();
+        assert!(uniform_rate > 0);
+        assert_eq!(res["p50_fee_per_byte"], json!(uniform_rate));
+        assert_eq!(res["p90_fee_per_byte"], json!(uniform_rate));
+        assert_eq!(res["max_fee_per_byte"], json!(uniform_rate));
+
+        // 2. Add a much higher-fee transaction -> min <= p50 <= p90 <= max with p90 == max.
+        submit_transfer(srv.router(), sk_a, sender_a, recipient, 1, 5_000_000_000u64).await;
+
+        let (status, body) = call(srv.router(), "kovanica_mempoolStats", json!([]), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let res = &body["result"];
+        assert_eq!(res["pending_count"], json!(3));
+        let min = res["min_fee_per_byte"].as_u64().unwrap();
+        let p50 = res["p50_fee_per_byte"].as_u64().unwrap();
+        let p90 = res["p90_fee_per_byte"].as_u64().unwrap();
+        let max = res["max_fee_per_byte"].as_u64().unwrap();
+        assert_eq!(min, uniform_rate);
+        assert_eq!(p50, uniform_rate);
+        assert_eq!(p90, max);
+        assert!(min <= p50 && p50 <= p90 && p90 <= max);
+        assert!(max > min);
     }
 }

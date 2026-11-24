@@ -316,6 +316,15 @@ impl EventBus {
         }
     }
 
+    /// Returns `true` when at least one subscriber (such as an attached
+    /// indexer or WebSocket block/log listener) is actively subscribed to
+    /// `logs`, `newCommittedLeader`, or `newHeads` events.
+    pub fn has_indexer_subscriber(&self) -> bool {
+        self.logs.receiver_count() > 0
+            || self.committed_leaders.receiver_count() > 0
+            || self.new_heads.receiver_count() > 0
+    }
+
     /// Broadcast a newly produced/accepted block. No-op if nobody listens.
     pub fn publish_new_head(&self, block: &StatementBlock) {
         let _ = self.new_heads.send(block_to_json(block));

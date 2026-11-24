@@ -419,9 +419,25 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
                     "type": "string",
                     "description": "kovanica-rpc crate version serving this endpoint"
                 },
+                "syncing": {
+                    "type": "boolean",
+                    "description": "Whether the node is actively catching up or behind its sync target"
+                },
+                "indexer_attached": {
+                    "type": "boolean",
+                    "description": "Whether an event/log subscriber or indexer is currently attached to the node EventBus"
+                },
                 "healthy": { "type": "boolean" }
             },
-            "required": ["status", "peer_count", "mempool_pending", "rpc_version", "healthy"]
+            "required": [
+                "status",
+                "peer_count",
+                "mempool_pending",
+                "rpc_version",
+                "syncing",
+                "indexer_attached",
+                "healthy"
+            ]
         }),
     );
 
@@ -1351,11 +1367,23 @@ mod tests {
             health_schema["properties"].get("rpc_version").is_some(),
             "HealthResponse schema must document rpc_version"
         );
+        assert_eq!(
+            health_schema["properties"]["syncing"]["type"],
+            json!("boolean"),
+            "HealthResponse schema must document syncing as boolean"
+        );
+        assert_eq!(
+            health_schema["properties"]["indexer_attached"]["type"],
+            json!("boolean"),
+            "HealthResponse schema must document indexer_attached as boolean"
+        );
         let required = health_schema["required"]
             .as_array()
             .expect("HealthResponse.required array");
         assert!(required.contains(&json!("mempool_pending")));
         assert!(required.contains(&json!("rpc_version")));
+        assert!(required.contains(&json!("syncing")));
+        assert!(required.contains(&json!("indexer_attached")));
 
         let get_logs_filter = &spec.components.schemas["GetLogsFilter"];
         assert!(
