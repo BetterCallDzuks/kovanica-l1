@@ -13,4 +13,10 @@ kovanica-snapshot verify --file snapshot.bin
 
 # Import into empty data dir (requires --force)
 kovanica-snapshot import --data-dir ./data2 --file snapshot.bin --force
+
+# Inspect a snapshot manifest without mutating files (JSON output)
+kovanica-snapshot inspect-manifest --path ./snapshot-dir
+
+# Verify a snapshot manifest and all chunk BLAKE3 checksums (JSON output)
+kovanica-snapshot verify-manifest --path ./snapshot-dir
 ```

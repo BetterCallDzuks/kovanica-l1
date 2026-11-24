@@ -1,6 +1,6 @@
 # kovanica-faucet
 
-Rate-limited testnet faucet (`POST /faucet`, `GET /health`).
+Rate-limited testnet faucet (`POST /faucet`, `GET /health`, `GET /metrics`).
 
 ```
 kovanica-faucet --chain-id 2 --keystore faucet.keystore --rpc-url http://127.0.0.1:8545 --listen 0.0.0.0:8080 \
