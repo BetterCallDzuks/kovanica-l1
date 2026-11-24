@@ -2396,6 +2396,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kovanica-bridge"
+version = "0.3.0"
+dependencies = [
+ "bincode",
+ "kovanica-common",
+ "serde",
+]
+
+[[package]]
 name = "kovanica-cli"
 version = "0.1.0"
 dependencies = [
@@ -2597,6 +2606,7 @@ name = "kovanica-execution"
 version = "0.3.0"
 dependencies = [
  "bincode",
+ "kovanica-bridge",
  "kovanica-common",
  "kovanica-consensus",
  "kovanica-crypto",
@@ -2609,6 +2619,7 @@ dependencies = [
  "kovanica-params",
  "kovanica-runtime",
  "kovanica-rwa",
+ "kovanica-scheduler",
  "kovanica-staking",
  "kovanica-storage",
  "kovanica-token",
@@ -3009,6 +3020,15 @@ dependencies = [
 
 [[package]]
 name = "kovanica-rwa"
+version = "0.3.0"
+dependencies = [
+ "bincode",
+ "kovanica-common",
+ "serde",
+]
+
+[[package]]
+name = "kovanica-scheduler"
 version = "0.3.0"
 dependencies = [
  "bincode",

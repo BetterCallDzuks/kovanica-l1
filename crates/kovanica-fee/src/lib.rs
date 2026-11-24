@@ -415,3 +415,118 @@ pub fn host_storage_set_cost(bytes_written: usize) -> u64 {
 pub fn host_emit_event_cost(topic_and_data_bytes: usize) -> u64 {
     DEFAULT_GAS_SCHEDULE.host_emit_event_cost(topic_and_data_bytes)
 }
+
+// ---------------------------------------------------------------------------
+// Wave B: EIP-1559 Dynamic Base Fee, Storage Deposits, and Gas-Priced Fees
+// ---------------------------------------------------------------------------
+
+/// Compute the next round's EIP-1559 `base_fee_per_byte` (atoms/byte) from the
+/// parent round's `parent_base_fee` and `parent_block_bytes` against `TARGET_BLOCK_BYTES`.
+pub fn next_base_fee_per_byte(parent_base_fee: u64, parent_block_bytes: usize) -> u64 {
+    let base = parent_base_fee.max(kovanica_params::MIN_BASE_FEE_PER_BYTE);
+    let target = kovanica_params::TARGET_BLOCK_BYTES as u128;
+    let used = parent_block_bytes as u128;
+    let denom = kovanica_params::BASE_FEE_MAX_CHANGE_DENOMINATOR as u128;
+
+    if used == target {
+        return base;
+    }
+    if used > target {
+        let delta = used - target;
+        let inc = (u128::from(base) * delta / target / denom).max(1);
+        base.saturating_add(u64::try_from(inc).unwrap_or(u64::MAX))
+    } else {
+        let delta = target - used;
+        let dec = u128::from(base) * delta / target / denom;
+        base.saturating_sub(u64::try_from(dec).unwrap_or(u64::MAX))
+            .max(kovanica_params::MIN_BASE_FEE_PER_BYTE)
+    }
+}
+
+/// Refundable storage deposit delta when a contract's persistent storage size changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageDepositDelta {
+    /// Additional KVNC atoms to lock as refundable storage deposit.
+    Charge(u64),
+    /// KVNC atoms to refund back to the caller after freeing storage bytes.
+    Refund(u64),
+    /// Net storage bytes unchanged.
+    Unchanged,
+}
+
+/// Compute the refundable KVNC storage deposit delta for a net byte change.
+pub fn compute_storage_deposit_delta(prev_bytes: usize, new_bytes: usize) -> StorageDepositDelta {
+    if new_bytes > prev_bytes {
+        let diff = (new_bytes - prev_bytes) as u64;
+        StorageDepositDelta::Charge(diff.saturating_mul(kovanica_params::STORAGE_DEPOSIT_PER_BYTE))
+    } else if prev_bytes > new_bytes {
+        let diff = (prev_bytes - new_bytes) as u64;
+        StorageDepositDelta::Refund(diff.saturating_mul(kovanica_params::STORAGE_DEPOSIT_PER_BYTE))
+    } else {
+        StorageDepositDelta::Unchanged
+    }
+}
+
+/// Compute total required fee combining fixed operation floors, EIP-1559 dynamic
+/// byte pricing, and WASM fuel gas pricing (`GAS_SCHEDULE.md` §8).
+pub fn compute_total_required_fee(
+    fixed_min_fee: u64,
+    tx_bytes: usize,
+    base_fee_per_byte: u64,
+    gas_used: u64,
+    gas_price: u64,
+) -> u64 {
+    let dynamic_byte_fee = (tx_bytes as u64).saturating_mul(base_fee_per_byte);
+    let gas_fee = fee_from_gas(gas_price, gas_used);
+    fixed_min_fee.max(dynamic_byte_fee.saturating_add(gas_fee))
+}
+
+#[cfg(test)]
+mod wave_b_tests {
+    use super::*;
+
+    #[test]
+    fn eip1559_base_fee_increases_above_target_and_decreases_below() {
+        let target = kovanica_params::TARGET_BLOCK_BYTES;
+        assert_eq!(next_base_fee_per_byte(100, target), 100);
+        // Full block (2x target) increases by 12.5% (100 -> 112)
+        assert_eq!(next_base_fee_per_byte(100, target * 2), 112);
+        // Empty block decreases by 12.5% (100 -> 88)
+        assert_eq!(next_base_fee_per_byte(100, 0), 88);
+        // Never drops below MIN_BASE_FEE_PER_BYTE
+        assert_eq!(
+            next_base_fee_per_byte(1, 0),
+            kovanica_params::MIN_BASE_FEE_PER_BYTE
+        );
+    }
+
+    #[test]
+    fn storage_deposit_charges_and_refunds_symmetrically() {
+        assert_eq!(
+            compute_storage_deposit_delta(0, 1024),
+            StorageDepositDelta::Charge(1024 * kovanica_params::STORAGE_DEPOSIT_PER_BYTE)
+        );
+        assert_eq!(
+            compute_storage_deposit_delta(1024, 512),
+            StorageDepositDelta::Refund(512 * kovanica_params::STORAGE_DEPOSIT_PER_BYTE)
+        );
+        assert_eq!(
+            compute_storage_deposit_delta(512, 512),
+            StorageDepositDelta::Unchanged
+        );
+    }
+
+    #[test]
+    fn total_required_fee_respects_fixed_floor_and_gas_pricing() {
+        // Under normal load, fixed floor (5 KVNC) dominates token_create
+        assert_eq!(
+            compute_total_required_fee(FIXED_FEE_TOKEN_CREATE, 300, 1, 50_000, 1),
+            FIXED_FEE_TOKEN_CREATE
+        );
+        // Under high gas/congestion, dynamic byte + gas fee dominates
+        assert_eq!(
+            compute_total_required_fee(0, 500, 10, 20_000, 2),
+            500 * 10 + 20_000 * 2
+        );
+    }
+}

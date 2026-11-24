@@ -3,7 +3,13 @@
 
 #![deny(unsafe_code)]
 
+mod next_gen;
 mod vrf;
+pub use next_gen::{
+    derive_typed_address, HybridPqEnvelope, SignatureScheme, WebAuthnAssertion,
+    ML_DSA_65_PUBKEY_BYTES, ML_DSA_65_SIG_BYTES, SECP256R1_COMPRESSED_PUBKEY_BYTES,
+    SECP256R1_UNCOMPRESSED_PUBKEY_BYTES,
+};
 pub use vrf::{
     decode_statements, derive_vrf_secret_from_seed, encode_statements, vrf_hash_to_u64, vrf_prove,
     vrf_verify, VRFError, VRFKeyPair, VRFOutput,

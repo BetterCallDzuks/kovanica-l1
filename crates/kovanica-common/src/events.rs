@@ -92,6 +92,18 @@ pub const RWA_BURN: &[u8] = b"rwa_burn";
 pub const RWA_FROZEN: &[u8] = b"rwa_frozen";
 pub const RWA_METADATA_UPDATED: &[u8] = b"rwa_metadata_updated";
 
+// ---------- Scheduler (Wave C #9) ----------
+pub const SCHEDULER_JOB_CREATED: &[u8] = b"scheduler_job_created";
+pub const SCHEDULER_JOB_EXECUTED: &[u8] = b"scheduler_job_executed";
+pub const SCHEDULER_JOB_CANCELLED: &[u8] = b"scheduler_job_cancelled";
+
+// ---------- Bridge (Wave D #10) ----------
+pub const BRIDGE_INITIALIZED: &[u8] = b"bridge_initialized";
+pub const BRIDGE_DEPOSIT_ATTESTED: &[u8] = b"bridge_deposit_attested";
+pub const BRIDGE_MINTED: &[u8] = b"bridge_minted";
+pub const BRIDGE_WITHDRAW_REQUESTED: &[u8] = b"bridge_withdraw_requested";
+pub const BRIDGE_PAUSED: &[u8] = b"bridge_paused";
+
 #[cfg(test)]
 mod tests {
     use super::*;

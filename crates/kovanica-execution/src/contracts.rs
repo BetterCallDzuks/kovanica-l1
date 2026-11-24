@@ -188,9 +188,16 @@ pub const ENTRY_POINTS: &[&str] = &[
     "rwa_burn",
     "rwa_freeze",
     "rwa_update_metadata",
+    "scheduler_create_job",
+    "scheduler_execute_job",
+    "scheduler_cancel_job",
+    "bridge_init",
+    "bridge_attest_mint",
+    "bridge_request_withdraw",
+    "bridge_set_paused",
 ];
 
-/// Returns whether `name` is one of the 40 dispatchable entry points.
+/// Returns whether `name` is one of the 47 dispatchable entry points.
 pub fn is_entry_point(name: &str) -> bool {
     ENTRY_POINTS.contains(&name)
 }
@@ -1266,6 +1273,87 @@ fn dispatch_entry(
                 legal_uri,
                 custody_uri,
             )?;
+            enc(&())
+        }
+
+        // --- kovanica-scheduler (Wave C #9) ------------------------------------
+        "scheduler_create_job" => {
+            let (
+                target_contract,
+                method,
+                call_args,
+                execute_after_height,
+                interval_heights,
+                max_runs,
+                bounty_per_run,
+            ): (
+                [u8; 32],
+                String,
+                Vec<u8>,
+                u64,
+                u64,
+                u32,
+                kovanica_common::Amount,
+            ) = dec(args)?;
+            enc(&kovanica_scheduler::Scheduler::create_job(
+                host,
+                target_contract,
+                method,
+                call_args,
+                execute_after_height,
+                interval_heights,
+                max_runs,
+                bounty_per_run,
+            )?)
+        }
+        "scheduler_execute_job" => {
+            let job_id: kovanica_scheduler::JobId = dec(args)?;
+            enc(&kovanica_scheduler::Scheduler::execute_job(host, job_id)?)
+        }
+        "scheduler_cancel_job" => {
+            let job_id: kovanica_scheduler::JobId = dec(args)?;
+            enc(&kovanica_scheduler::Scheduler::cancel_job(host, job_id)?)
+        }
+
+        // --- kovanica-bridge (Wave D #10) --------------------------------------
+        "bridge_init" => {
+            let (wrapped_token, asset_symbol, relayers, threshold): (
+                [u8; 32],
+                String,
+                Vec<[u8; 32]>,
+                u8,
+            ) = dec(args)?;
+            kovanica_bridge::Bridge::init(host, wrapped_token, asset_symbol, relayers, threshold)?;
+            enc(&())
+        }
+        "bridge_attest_mint" => {
+            let (source_chain_id, source_tx_hash, recipient, amount): (
+                u64,
+                [u8; 32],
+                [u8; 32],
+                kovanica_common::Amount,
+            ) = dec(args)?;
+            enc(&kovanica_bridge::Bridge::attest_mint(
+                host,
+                source_chain_id,
+                source_tx_hash,
+                recipient,
+                amount,
+            )?)
+        }
+        "bridge_request_withdraw" => {
+            let (dest_chain_id, dest_address, amount): (u64, Vec<u8>, kovanica_common::Amount) =
+                dec(args)?;
+            enc(&kovanica_bridge::Bridge::request_withdraw(
+                host,
+                dest_chain_id,
+                dest_address,
+                amount,
+            )?)
+        }
+        "bridge_set_paused" => {
+            let paused: bool = dec(args)?;
+            kovanica_bridge::Bridge::set_paused(host, paused)?;
             enc(&())
         }
 
@@ -2434,10 +2522,10 @@ pub(crate) mod tests {
         let contract = addr(30);
         let caller = addr(1);
         deploy(&storage, &contract);
-        assert_eq!(ENTRY_POINTS.len(), 40);
+        assert_eq!(ENTRY_POINTS.len(), 47);
         assert_eq!(
             ENTRY_POINTS.iter().filter(|e| is_entry_point(e)).count(),
-            40
+            47
         );
         for entry in ENTRY_POINTS {
             let err = execute_contract_call(entry, contract, caller, 1, 100, &[], &storage)

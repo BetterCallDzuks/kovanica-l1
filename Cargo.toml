@@ -31,6 +31,8 @@ members = [
     "crates/kovanica-devnet",
     "crates/kovanica-nft",
     "crates/kovanica-rwa",
+    "crates/kovanica-scheduler",
+    "crates/kovanica-bridge",
     "crates/kovanica-oracle",
     "crates/kovanica-token",
     "crates/kovanica-comms-core",

@@ -161,6 +161,24 @@ pub const MAX_BATCH_ACTIONS: usize = 16;
 pub const MAX_CROSS_CONTRACT_CALL_DEPTH: u8 = 4;
 
 // ============================================================
+// Wave B: Dynamic Base Fee (EIP-1559), Storage Deposits & Gas Pricing
+// ============================================================
+/// Target block size (50% of `MAX_BLOCK_BYTES` = 480 KiB) for EIP-1559 base fee adjustment.
+pub const TARGET_BLOCK_BYTES: usize = MAX_BLOCK_BYTES / 2;
+/// Max base-fee change denominator per round (`8` => ±12.5% per committed round).
+pub const BASE_FEE_MAX_CHANGE_DENOMINATOR: u64 = 8;
+/// Floor for the dynamic base fee in atoms per byte.
+pub const MIN_BASE_FEE_PER_BYTE: u64 = 1;
+/// Refundable KVNC storage deposit per persistent contract storage byte (0.1 KVNC per KiB ≈ 100,000 atoms/byte).
+pub const STORAGE_DEPOSIT_PER_BYTE: u64 = 100_000;
+/// Default gas price in atoms per WASM fuel unit when gas pricing activates.
+pub const DEFAULT_GAS_PRICE_ATOMS: u64 = 1;
+/// Activation round for Wave B/C/D rules on testnet/devnet (500,000); mainnet activates from genesis.
+pub const WAVE_B_ACTIVE_FROM_ROUND: u64 = 500_000;
+pub const WAVE_C_ACTIVE_FROM_ROUND: u64 = 500_000;
+pub const WAVE_D_ACTIVE_FROM_ROUND: u64 = 500_000;
+
+// ============================================================
 // Fixed operation fee floors (Balanced tier; 75% burn / 25% miner)
 // ============================================================
 /// Minimum fee to deploy a WASM contract (1 KVNC).
