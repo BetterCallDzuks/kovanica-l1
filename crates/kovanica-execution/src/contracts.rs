@@ -807,7 +807,7 @@ impl Host for ContractHost<'_> {
         // Open a child host view sharing the same backing reads and cloned overlays
         // so any failure in the sub-call rolls back atomically.
         let child_reads = match &self.reads {
-            Reads::Txn(txn) => Reads::Txn(*txn),
+            Reads::Txn(txn) => Reads::Txn(txn),
             Reads::Snapshot(_) => Reads::Snapshot(
                 self.storage
                     .begin_read()
@@ -1193,6 +1193,22 @@ fn dispatch_entry(
 
         // --- kovanica-rwa (KVP-106) --------------------------------------------
         "rwa_create" => {
+            #[allow(clippy::type_complexity)]
+            type RwaCreateTuple = (
+                String,
+                String,
+                String,
+                String,
+                u32,
+                String,
+                [u8; 32],
+                String,
+                String,
+                String,
+                u8,
+                kovanica_common::Amount,
+                kovanica_common::Amount,
+            );
             let (
                 name,
                 symbol,
@@ -1207,21 +1223,7 @@ fn dispatch_entry(
                 decimals,
                 max_supply,
                 initial_supply,
-            ): (
-                String,
-                String,
-                String,
-                String,
-                u32,
-                String,
-                [u8; 32],
-                String,
-                String,
-                String,
-                u8,
-                kovanica_common::Amount,
-                kovanica_common::Amount,
-            ) = dec(args)?;
+            ): RwaCreateTuple = dec(args)?;
             enc(&kovanica_rwa::Rwa::create(
                 host,
                 name,

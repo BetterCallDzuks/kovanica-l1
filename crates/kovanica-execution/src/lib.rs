@@ -47,10 +47,9 @@ pub use call_args::{
     encode_nft_burn, encode_nft_create_collection, encode_nft_mint, encode_nft_set_base_uri,
     encode_nft_transfer, encode_nft_transfer_from, encode_rwa_burn, encode_rwa_create,
     encode_rwa_freeze, encode_rwa_mint, encode_rwa_transfer, encode_rwa_update_metadata,
-    encode_token_approve, encode_token_burn,
-    encode_token_buy, encode_token_create, encode_token_init_pool, encode_token_mint,
-    encode_token_sell, encode_token_transfer, encode_token_transfer_from, encode_vault_cancel,
-    encode_vault_claim, encode_vault_create,
+    encode_token_approve, encode_token_burn, encode_token_buy, encode_token_create,
+    encode_token_init_pool, encode_token_mint, encode_token_sell, encode_token_transfer,
+    encode_token_transfer_from, encode_vault_cancel, encode_vault_claim, encode_vault_create,
 };
 pub use contracts::{
     execute_contract_call, execute_contract_call_in_txn, execute_contract_call_with_value,
@@ -1458,11 +1457,9 @@ impl ExecutionContext {
                                 "Contract address already has code".to_string(),
                             ));
                         }
-                        self.contract_runner
-                            .validate_module(code)
-                            .map_err(|_| {
-                                ExecutionError::Validation("Invalid contract bytecode".to_string())
-                            })?;
+                        self.contract_runner.validate_module(code).map_err(|_| {
+                            ExecutionError::Validation("Invalid contract bytecode".to_string())
+                        })?;
                     }
                     let code_hash =
                         storage
@@ -2426,9 +2423,7 @@ fn resolve_leader_identity(
 fn fixed_min_fee_for_kind(kind: &TransactionKind) -> u64 {
     match kind {
         TransactionKind::Deploy { .. } => kovanica_params::FIXED_FEE_CONTRACT_DEPLOY,
-        TransactionKind::Call { method, .. } => {
-            kovanica_fee::fixed_min_fee_for_call_method(method)
-        }
+        TransactionKind::Call { method, .. } => kovanica_fee::fixed_min_fee_for_call_method(method),
         TransactionKind::Batch { actions } => actions
             .iter()
             .map(|a| match a {

@@ -477,7 +477,12 @@ impl Mempool {
                 .storage
                 .begin_read()
                 .ok()
-                .and_then(|txn| self.storage.consensus().get_committed_leader_height(&txn).ok())
+                .and_then(|txn| {
+                    self.storage
+                        .consensus()
+                        .get_committed_leader_height(&txn)
+                        .ok()
+                })
                 .unwrap_or(0);
             if kovanica_params::fixed_fees_active_from_for_chain(
                 self.signing_ctx.chain_id,
@@ -986,9 +991,7 @@ pub struct ReinsertReport {
 fn fixed_min_fee_for_kind(kind: &TransactionKind) -> u64 {
     match kind {
         TransactionKind::Deploy { .. } => kovanica_params::FIXED_FEE_CONTRACT_DEPLOY,
-        TransactionKind::Call { method, .. } => {
-            kovanica_fee::fixed_min_fee_for_call_method(method)
-        }
+        TransactionKind::Call { method, .. } => kovanica_fee::fixed_min_fee_for_call_method(method),
         TransactionKind::Batch { actions } => actions
             .iter()
             .map(|a| match a {

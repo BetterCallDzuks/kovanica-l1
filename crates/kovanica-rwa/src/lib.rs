@@ -445,7 +445,13 @@ mod tests {
         let (mut host, _) = create_sample_rwa(1);
         host.set_caller(addr(2));
         assert_eq!(
-            Rwa::update_metadata(&mut host, [1u8; 32], "ipfs://new".into(), "".into(), "".into()),
+            Rwa::update_metadata(
+                &mut host,
+                [1u8; 32],
+                "ipfs://new".into(),
+                "".into(),
+                "".into()
+            ),
             Err(ContractError::Unauthorized)
         );
         host.set_caller(addr(1));

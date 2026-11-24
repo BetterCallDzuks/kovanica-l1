@@ -67,9 +67,7 @@ impl SessionKeyPolicy {
         if !self.allowed_contracts.is_empty() && !self.allowed_contracts.contains(contract) {
             return Err(SessionError::ContractNotAllowed);
         }
-        if !self.allowed_methods.is_empty()
-            && !self.allowed_methods.iter().any(|m| m == method)
-        {
+        if !self.allowed_methods.is_empty() && !self.allowed_methods.iter().any(|m| m == method) {
             return Err(SessionError::MethodNotAllowed);
         }
         let next_spent = self

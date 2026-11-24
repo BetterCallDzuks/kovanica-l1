@@ -134,14 +134,17 @@ impl Bridge {
         let wrapped_token = state.wrapped_token;
         let threshold = usize::from(state.threshold);
 
-        let dep = state.deposits.entry(deposit_id).or_insert_with(|| PendingDeposit {
-            source_chain_id,
-            source_tx_hash,
-            recipient,
-            amount,
-            approvals: BTreeSet::new(),
-            executed: false,
-        });
+        let dep = state
+            .deposits
+            .entry(deposit_id)
+            .or_insert_with(|| PendingDeposit {
+                source_chain_id,
+                source_tx_hash,
+                recipient,
+                amount,
+                approvals: BTreeSet::new(),
+                executed: false,
+            });
         if dep.executed {
             return Err(ContractError::AlreadyExists);
         }
@@ -160,8 +163,8 @@ impl Bridge {
         host.emit_event(BRIDGE_DEPOSIT_ATTESTED, &deposit_id);
 
         if reached_quorum {
-            let mint_args = bincode::serialize(&(recipient, amount))
-                .map_err(|_| ContractError::Custom(1))?;
+            let mint_args =
+                bincode::serialize(&(recipient, amount)).map_err(|_| ContractError::Custom(1))?;
             host.call_contract(&wrapped_token, "token_mint", &mint_args, 0)?;
             host.emit_event(BRIDGE_MINTED, &deposit_id);
         }

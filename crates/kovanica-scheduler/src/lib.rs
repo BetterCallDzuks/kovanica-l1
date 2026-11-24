@@ -12,7 +12,9 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use kovanica_common::events::{SCHEDULER_JOB_CANCELLED, SCHEDULER_JOB_CREATED, SCHEDULER_JOB_EXECUTED};
+use kovanica_common::events::{
+    SCHEDULER_JOB_CANCELLED, SCHEDULER_JOB_CREATED, SCHEDULER_JOB_EXECUTED,
+};
 use kovanica_common::{Address, Amount, ContractError, ContractResult, Height, Host};
 
 pub const STATE_KEY: &[u8] = b"kvnc/v1/scheduler_state";
