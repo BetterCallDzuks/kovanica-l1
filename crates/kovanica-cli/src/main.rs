@@ -20,6 +20,7 @@ use kovanica_cli::contract_inspect::{self, ContractInspectCommand};
 use kovanica_cli::contracts::{
     ContractCommand, HtlcCommand, MultisigCommand, TokenCommand, VaultCommand,
 };
+use kovanica_cli::key_inspect::{self, KeyCommand};
 use kovanica_cli::miner::{run_miner, run_miner_bench, MinerBenchArgs, MinerCommand, MinerRunArgs};
 use kovanica_cli::rpc::RpcClient;
 use kovanica_cli::tx_inspect::{self, TxInspectCommand};
@@ -58,6 +59,11 @@ struct Cli {
 enum Commands {
     /// Generate a new Ed25519 keypair and save a keystore
     Keygen(KeygenArgs),
+    /// Offline keystore inspection and auditing subcommands
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
     /// Load a keystore and print its address
     Import(KeystoreArgs),
     /// Explicitly export private seed material from a keystore
@@ -515,6 +521,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Keygen(args) => cmd_keygen(args, json),
+        Commands::Key { command } => match command {
+            KeyCommand::Inspect(args) => key_inspect::run(args, json),
+        },
         Commands::Import(args) => cmd_import(args, json),
         Commands::Export(args) => cmd_export(args, json),
         Commands::ImportKey(args) => cmd_import_key(args, json),
@@ -2809,5 +2818,40 @@ mod wallet_cli_security_tests {
 
         // Missing URL argument must fail
         assert!(Cli::try_parse_from(["kovanica", "rpc", "probe"]).is_err());
+    }
+
+    #[test]
+    fn key_inspect_subcommand_parses_keyfile_and_json_flag() {
+        let cli = Cli::try_parse_from(["kovanica", "key", "inspect", "wallet.json"]).unwrap();
+        assert!(!cli.json);
+        match cli.command {
+            Commands::Key {
+                command: KeyCommand::Inspect(args),
+            } => {
+                assert_eq!(args.keyfile, PathBuf::from("wallet.json"));
+            }
+            _ => panic!("expected key inspect"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "key",
+            "inspect",
+            "/tmp/my-keystore.json",
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Key {
+                command: KeyCommand::Inspect(args),
+            } => {
+                assert_eq!(args.keyfile, PathBuf::from("/tmp/my-keystore.json"));
+            }
+            _ => panic!("expected key inspect"),
+        }
+
+        // Missing keyfile argument must fail
+        assert!(Cli::try_parse_from(["kovanica", "key", "inspect"]).is_err());
     }
 }
