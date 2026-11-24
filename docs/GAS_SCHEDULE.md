@@ -142,23 +142,22 @@ nonce, matching every other body failure.
 | `kovanica_storage_get` | 200 | 50 (+ 2 per 32 bytes copied) |
 | `kovanica_storage_set` | 5,000 | 100 (+ 2 per 32 bytes written) |
 | `kovanica_emit_event` | 500 | 20 (+ 1 per byte of topic+data) |
+| `kovanica_call_contract` (CPI) | 2,600 | 200 (max depth 4, reentrancy-guarded) |
 
-## 8. PLANNED: fee model
+## 8. Implemented: Balanced Fixed Fee Floors & Wave B Fee Helpers
 
-> **PLANNED — not implemented.** There is no `gas_price` / `gas_used`-derived
-> fee and no dynamic fee floor in the codebase today. Transaction `fee` is a
-> fixed atom amount set by the sender; the mempool enforces an
-> operator-configured `min_fee_rate` (default `0`, i.e. no floor) plus a
-> replacement bump.
+Round-gated via `FIXED_FEES_ACTIVE_FROM_ROUND` (active from round `0` on mainnet, round `500_000` on testnet/devnet; 75% burned / 25% miner on mainnet & testnet, 100% burned on devnet):
 
-Target design (not live):
+| Operation | Entry Point / Tx | Fixed Floor |
+|-----------|------------------|-------------|
+| Contract Deploy | `Deploy` | 1 KVNC (`1_000_000_000` atoms) |
+| Create Token (KVP-102) | `token_create` | 5 KVNC (`5_000_000_000` atoms) |
+| Create NFT Collection | `nft_create_collection` | 2 KVNC (`2_000_000_000` atoms) |
+| Mint NFT | `nft_mint` | 0.1 KVNC (`100_000_000` atoms) |
+| Register RWA (KVP-106) | `rwa_create` | 10 KVNC (`10_000_000_000` atoms) |
+| Mint RWA Shares | `rwa_mint` | 0.5 KVNC (`500_000_000` atoms) |
 
-```
-fee = gas_price * gas_used
-```
-
-with a minimum fee floor derived from the block subsidy. Neither term is
-implemented; `gas_used` is recorded in the receipt but is not yet priced.
+Wave B helpers in `kovanica-fee` (`next_base_fee_per_byte`, `compute_storage_deposit_delta`, `compute_total_required_fee`) implement EIP-1559 dynamic byte pricing (`TARGET_BLOCK_BYTES = 480 KiB`, ±12.5% per round), refundable storage deposits (`100_000` atoms/byte), and gas-priced fee floors (`kovanica_getFeeSchedule`).
 
 ## 9. Configuration
 
