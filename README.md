@@ -1,10 +1,14 @@
-# Kovanica (KVNC)
+# kovanica-l1 — Kovanica (KVNC)
 
-> A clean, from-scratch Rust Layer-1 blockchain implementing Hybrid PoW + GHOSTDAG consensus, account-based state, deterministic Wasmi WebAssembly smart contracts, and a native light-client and decentralized communications stack.
+A clean, from-scratch Rust Layer-1 blockchain implementing **Hybrid PoW + GHOSTDAG** consensus (`KovanicaHash`, `K=5`, `4s` target block time), account-based state, deterministic **Wasmi** WebAssembly smart contracts, and a native light-client and decentralized communications stack.
 
-**Status: Pre-Alpha / Active Development.**  
-Not audited by an external security firm. Do not use with real value. Not for production.  
-All tokenomics parameters and network protocols are binding per `AGENTS.md`.
+> [!IMPORTANT]
+> **Protocol Status & Frozen Canonical Identity:**
+> - **Status:** Mainnet Release Candidate / Freeze (`v1.0.0-mainnet`, launching `1.1.2027`). Not yet audited by an external security firm — do not use with real value.
+> - **Canonical Tags:** Mainnet (Chain `1`) `1-f35df34c92001436` · Testnet (Chain `2`, live `v0.3.0-node`) `2-24cdb5fadd98b207` · Devnet (Chain `3`) local/dev only.
+> - **Binding Rules:** All frozen tokenomics parameters, consensus constants, and agent boundaries are binding per [`AGENTS.md`](AGENTS.md) and [`docs/AGENT-RULES.md`](docs/AGENT-RULES.md).
+
+---
 
 <a id="adresni-format-kanonski"></a>
 ### Project & Address Identity
@@ -429,8 +433,13 @@ Detailed architectural specifications and operational runbooks:
 - **License:** The Kovanica codebase is distributed under the **GNU General Public License v3.0 or later (GPL-3.0-or-later)**.
 
 
-## Apps (moved)
+## Ecosystem Repositories
 
-Client applications (Android / iOS / desktop / node-desktop) moved to **[KovanicaDAG/kovanica-apps](https://github.com/KovanicaDAG/kovanica-apps)**.  
-`kovanica-light-ffi` and the Rust L1 workspace remain in this repository. See [`apps/README.md`](apps/README.md).
+| Repository | Role |
+| :--- | :--- |
+| **[BetterCallDzuks/kovanica-l1](https://github.com/BetterCallDzuks/kovanica-l1)** | Rust Layer-1 node, Hybrid PoW + GHOSTDAG consensus, Wasmi runtime, RPC, Stratum, Faucet, Indexer, Lightnode, `kovanica-light-ffi` & CLI |
+| **[BetterCallDzuks/kovanica-sdk](https://github.com/BetterCallDzuks/kovanica-sdk)** | Official TypeScript SDK (`v0.5.0`) — browser & Node.js client, failover transport, facades, offline codecs & air-gap envelopes |
+| **[BetterCallDzuks/kovanica-web](https://github.com/BetterCallDzuks/kovanica-web)** | Public site, BlockDAG Explorer, Faucet, Pool portal & API Reference (`kovanica.online`) |
+| **[BetterCallDzuks/kovanica-apps](https://github.com/BetterCallDzuks/kovanica-apps)** | Client apps — `wallet-web`, `console-desktop`, `node-desktop`, `desktop`, Android & iOS (see [`apps/README.md`](apps/README.md)) |
+| **[BetterCallDzuks/kovanica-playground](https://github.com/BetterCallDzuks/kovanica-playground)** | Interactive developer RPC console & 7 `kovanica-sdk v0.5.0` studios |
 
