@@ -25,8 +25,8 @@ use kovanica_cli::miner::{run_miner, run_miner_bench, MinerBenchArgs, MinerComma
 use kovanica_cli::rpc::RpcClient;
 use kovanica_cli::tx_inspect::{self, TxInspectCommand};
 use kovanica_cli::{
-    comms, contracts, mining, node, node_doctor, output, rpc_probe, snapshot_verify, tui, tx,
-    wallet,
+    comms, contracts, mining, node, node_doctor, output, rpc_health, rpc_probe, snapshot_verify,
+    stratum_status, tui, tx, wallet,
 };
 use kovanica_types::transaction::TransactionKind;
 use kovanica_types::{crypto::PublicKey, crypto::SigningKey, Address};
@@ -190,6 +190,11 @@ enum Commands {
     Rpc {
         #[command(subcommand)]
         command: rpc_probe::RpcCommand,
+    },
+    /// Stratum mining gateway inspection subcommands
+    Stratum {
+        #[command(subcommand)]
+        command: stratum_status::StratumCommand,
     },
 }
 
@@ -620,6 +625,10 @@ async fn main() -> Result<()> {
         },
         Commands::Rpc { command } => match command {
             rpc_probe::RpcCommand::Probe(args) => rpc_probe::run(args, json).await,
+            rpc_probe::RpcCommand::Health(args) => rpc_health::run(args, json).await,
+        },
+        Commands::Stratum { command } => match command {
+            stratum_status::StratumCommand::Status(args) => stratum_status::run(args, json).await,
         },
     }
 }
@@ -2853,5 +2862,85 @@ mod wallet_cli_security_tests {
 
         // Missing keyfile argument must fail
         assert!(Cli::try_parse_from(["kovanica", "key", "inspect"]).is_err());
+    }
+
+    #[test]
+    fn rpc_health_subcommand_parses_defaults_and_custom_flags() {
+        let cli =
+            Cli::try_parse_from(["kovanica", "rpc", "health", "http://127.0.0.1:8545"]).unwrap();
+        assert!(!cli.json);
+        match cli.command {
+            Commands::Rpc {
+                command: rpc_probe::RpcCommand::Health(args),
+            } => {
+                assert_eq!(args.url, "http://127.0.0.1:8545");
+                assert_eq!(args.timeout_ms, rpc_health::DEFAULT_HEALTH_TIMEOUT_MS);
+            }
+            _ => panic!("expected rpc health"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "rpc",
+            "health",
+            "https://rpc.testnet.kovanica.org",
+            "--timeout-ms",
+            "2500",
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Rpc {
+                command: rpc_probe::RpcCommand::Health(args),
+            } => {
+                assert_eq!(args.url, "https://rpc.testnet.kovanica.org");
+                assert_eq!(args.timeout_ms, 2500);
+            }
+            _ => panic!("expected rpc health"),
+        }
+
+        // Missing URL argument must fail
+        assert!(Cli::try_parse_from(["kovanica", "rpc", "health"]).is_err());
+    }
+
+    #[test]
+    fn stratum_status_subcommand_parses_defaults_and_custom_flags() {
+        let cli = Cli::try_parse_from(["kovanica", "stratum", "status", "http://127.0.0.1:9100"])
+            .unwrap();
+        assert!(!cli.json);
+        match cli.command {
+            Commands::Stratum {
+                command: stratum_status::StratumCommand::Status(args),
+            } => {
+                assert_eq!(args.url, "http://127.0.0.1:9100");
+                assert_eq!(args.timeout_ms, stratum_status::DEFAULT_STATUS_TIMEOUT_MS);
+            }
+            _ => panic!("expected stratum status"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "kovanica",
+            "stratum",
+            "status",
+            "https://pool.kovanica.org:9100/workers",
+            "--timeout-ms",
+            "3000",
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Stratum {
+                command: stratum_status::StratumCommand::Status(args),
+            } => {
+                assert_eq!(args.url, "https://pool.kovanica.org:9100/workers");
+                assert_eq!(args.timeout_ms, 3000);
+            }
+            _ => panic!("expected stratum status"),
+        }
+
+        // Missing URL argument must fail
+        assert!(Cli::try_parse_from(["kovanica", "stratum", "status"]).is_err());
     }
 }

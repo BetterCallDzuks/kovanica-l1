@@ -51,6 +51,8 @@ const SENSITIVE_QUERY_KEYS: &[&str] = &[
 pub enum RpcCommand {
     /// Probe a Kovanica JSON-RPC endpoint (batch support, headers, canonical network tag, latency)
     Probe(RpcProbeArgs),
+    /// Inspect a Kovanica node's HTTP `/health` endpoint
+    Health(crate::rpc_health::RpcHealthArgs),
 }
 
 /// Arguments for `kovanica rpc probe <url>`.
@@ -150,7 +152,7 @@ pub fn redact_url(raw: &str) -> String {
     }
 }
 
-fn redact_parsed_url(parsed: &reqwest::Url) -> String {
+pub(crate) fn redact_parsed_url(parsed: &reqwest::Url) -> String {
     let mut sanitized = parsed.clone();
 
     let has_user = !sanitized.username().is_empty();
@@ -166,10 +168,10 @@ fn redact_parsed_url(parsed: &reqwest::Url) -> String {
         let pairs: Vec<(String, String)> = parsed
             .query_pairs()
             .map(|(k, v)| {
-                let lower = k.to_ascii_lowercase();
+                let normalized = k.to_ascii_lowercase().replace('-', "_");
                 let is_sensitive = SENSITIVE_QUERY_KEYS
                     .iter()
-                    .any(|sensitive| lower == *sensitive || lower.ends_with(sensitive));
+                    .any(|sensitive| normalized == *sensitive || normalized.ends_with(sensitive));
                 if is_sensitive {
                     (k.into_owned(), "REDACTED".to_string())
                 } else {
@@ -183,7 +185,7 @@ fn redact_parsed_url(parsed: &reqwest::Url) -> String {
     sanitized.to_string()
 }
 
-fn extract_header(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn extract_header(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
         .and_then(|v| v.to_str().ok())
