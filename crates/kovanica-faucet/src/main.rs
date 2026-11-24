@@ -242,6 +242,8 @@ struct RateLimiter {
 struct RateLimiterInner {
     requests: Mutex<LimiterMap>,
     address_requests: Mutex<LimiterMap>,
+    active_ip_entries: AtomicU64,
+    active_address_entries: AtomicU64,
     size_cap: usize,
 }
 
@@ -257,15 +259,16 @@ impl RateLimiter {
             inner: Arc::new(RateLimiterInner {
                 requests: Mutex::new(LimiterMap::default()),
                 address_requests: Mutex::new(LimiterMap::default()),
+                active_ip_entries: AtomicU64::new(0),
+                active_address_entries: AtomicU64::new(0),
                 size_cap,
             }),
         }
     }
 
     fn check_and_record_ip(&self, ip: &str, window_secs: u64, max_requests: usize) -> bool {
-        self.inner
-            .requests
-            .lock()
+        let mut guard = self.inner.requests.lock();
+        let admitted = guard
             .record_at(
                 ip,
                 window_secs,
@@ -273,7 +276,11 @@ impl RateLimiter {
                 self.inner.size_cap,
                 std::time::Instant::now(),
             )
-            .is_some()
+            .is_some();
+        self.inner
+            .active_ip_entries
+            .store(guard.entries.len() as u64, Ordering::Relaxed);
+        admitted
     }
 
     fn reserve_address(
@@ -283,13 +290,14 @@ impl RateLimiter {
         max_requests: usize,
     ) -> Option<AddressReservation> {
         let now = std::time::Instant::now();
-        let timestamp = self.inner.address_requests.lock().record_at(
-            address,
-            window_secs,
-            max_requests,
-            self.inner.size_cap,
-            now,
-        )?;
+        let timestamp = {
+            let mut guard = self.inner.address_requests.lock();
+            let ts = guard.record_at(address, window_secs, max_requests, self.inner.size_cap, now);
+            self.inner
+                .active_address_entries
+                .store(guard.entries.len() as u64, Ordering::Relaxed);
+            ts
+        }?;
         Some(AddressReservation {
             limiter: self.clone(),
             address: address.to_string(),
@@ -299,10 +307,21 @@ impl RateLimiter {
     }
 
     fn rollback_address_at(&self, address: &str, timestamp: std::time::Instant) {
+        let mut guard = self.inner.address_requests.lock();
+        guard.rollback_at(address, timestamp);
         self.inner
-            .address_requests
-            .lock()
-            .rollback_at(address, timestamp);
+            .active_address_entries
+            .store(guard.entries.len() as u64, Ordering::Relaxed);
+    }
+
+    /// Lock-free snapshot of tracked client IP entries in the IP limiter table.
+    fn active_ip_entries(&self) -> u64 {
+        self.inner.active_ip_entries.load(Ordering::Relaxed)
+    }
+
+    /// Lock-free snapshot of tracked destination address entries in the cooldown table.
+    fn active_address_entries(&self) -> u64 {
+        self.inner.active_address_entries.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -312,7 +331,11 @@ impl RateLimiter {
 
     #[cfg(test)]
     fn sweep_ip_at(&self, window_secs: u64, now: std::time::Instant) {
-        self.inner.requests.lock().sweep_at(window_secs, now);
+        let mut guard = self.inner.requests.lock();
+        guard.sweep_at(window_secs, now);
+        self.inner
+            .active_ip_entries
+            .store(guard.entries.len() as u64, Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -323,11 +346,14 @@ impl RateLimiter {
         max_requests: usize,
         now: std::time::Instant,
     ) -> bool {
-        self.inner
-            .requests
-            .lock()
+        let mut guard = self.inner.requests.lock();
+        let admitted = guard
             .record_at(ip, window_secs, max_requests, self.inner.size_cap, now)
-            .is_some()
+            .is_some();
+        self.inner
+            .active_ip_entries
+            .store(guard.entries.len() as u64, Ordering::Relaxed);
+        admitted
     }
 
     #[cfg(test)]
@@ -419,46 +445,152 @@ impl PendingNonce {
     }
 }
 
-/// Lock-free OpenMetrics counters and gauges for the faucet.
-#[derive(Default)]
+/// Lock-free OpenMetrics 1.0 counters and gauges for the faucet.
+///
+/// Only aggregate counts and gauges are ever emitted; recipient addresses,
+/// client IPs, private keys, passphrases, and RPC tokens are never recorded or
+/// exposed.
 struct FaucetMetrics {
+    requests_total: AtomicU64,
     drips_succeeded_total: AtomicU64,
+    dispensed_atoms_total: AtomicU64,
     drips_rejected_total: AtomicU64,
-    rate_limited_total: AtomicU64,
+    ip_rate_limited_total: AtomicU64,
+    address_cooldown_hits_total: AtomicU64,
+    invalid_address_total: AtomicU64,
+    low_balance_rejected_total: AtomicU64,
+    rpc_errors_total: AtomicU64,
     balance_atoms: AtomicU64,
+    started_at: std::time::Instant,
+}
+
+impl Default for FaucetMetrics {
+    fn default() -> Self {
+        Self {
+            requests_total: AtomicU64::new(0),
+            drips_succeeded_total: AtomicU64::new(0),
+            dispensed_atoms_total: AtomicU64::new(0),
+            drips_rejected_total: AtomicU64::new(0),
+            ip_rate_limited_total: AtomicU64::new(0),
+            address_cooldown_hits_total: AtomicU64::new(0),
+            invalid_address_total: AtomicU64::new(0),
+            low_balance_rejected_total: AtomicU64::new(0),
+            rpc_errors_total: AtomicU64::new(0),
+            balance_atoms: AtomicU64::new(0),
+            started_at: std::time::Instant::now(),
+        }
+    }
 }
 
 impl FaucetMetrics {
-    fn inc_succeeded(&self) {
+    fn inc_requests(&self) {
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_succeeded(&self, dispensed_atoms: u64) {
         self.drips_succeeded_total.fetch_add(1, Ordering::Relaxed);
+        self.dispensed_atoms_total
+            .fetch_add(dispensed_atoms, Ordering::Relaxed);
     }
 
     fn inc_rejected(&self) {
         self.drips_rejected_total.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn inc_rate_limited(&self) {
-        self.rate_limited_total.fetch_add(1, Ordering::Relaxed);
+    fn inc_invalid_address(&self) {
+        self.invalid_address_total.fetch_add(1, Ordering::Relaxed);
+        self.drips_rejected_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn inc_low_balance_rejected(&self) {
+        self.low_balance_rejected_total
+            .fetch_add(1, Ordering::Relaxed);
+        self.drips_rejected_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn inc_rpc_error(&self) {
+        self.rpc_errors_total.fetch_add(1, Ordering::Relaxed);
+        self.drips_rejected_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn inc_ip_rate_limited(&self) {
+        self.ip_rate_limited_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn inc_address_cooldown_hit(&self) {
+        self.address_cooldown_hits_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     fn set_balance_atoms(&self, atoms: u64) {
         self.balance_atoms.store(atoms, Ordering::Relaxed);
     }
 
-    fn render_openmetrics(&self) -> String {
+    fn render_openmetrics(&self, active_ip_entries: u64, active_address_cooldowns: u64) -> String {
+        let requests = self.requests_total.load(Ordering::Relaxed);
         let succeeded = self.drips_succeeded_total.load(Ordering::Relaxed);
+        let dispensed_atoms = self.dispensed_atoms_total.load(Ordering::Relaxed);
         let rejected = self.drips_rejected_total.load(Ordering::Relaxed);
-        let rate_limited = self.rate_limited_total.load(Ordering::Relaxed);
+        let ip_rate_limited = self.ip_rate_limited_total.load(Ordering::Relaxed);
+        let address_cooldown_hits = self.address_cooldown_hits_total.load(Ordering::Relaxed);
+        let rate_limited = ip_rate_limited.saturating_add(address_cooldown_hits);
+        let invalid_address = self.invalid_address_total.load(Ordering::Relaxed);
+        let low_balance_rejected = self.low_balance_rejected_total.load(Ordering::Relaxed);
+        let rpc_errors = self.rpc_errors_total.load(Ordering::Relaxed);
         let balance_atoms = self.balance_atoms.load(Ordering::Relaxed);
+        let uptime_seconds = self.started_at.elapsed().as_secs();
+
         format!(
-            "# HELP faucet_drips_succeeded_total Total number of successful faucet drips.\n\
-             # TYPE faucet_drips_succeeded_total counter\n\
+            "# HELP kovanica_faucet_requests Total faucet drip requests received.\n\
+             # TYPE kovanica_faucet_requests counter\n\
+             kovanica_faucet_requests_total {requests}\n\
+             # HELP kovanica_faucet_drips_succeeded Total successful faucet drips submitted.\n\
+             # TYPE kovanica_faucet_drips_succeeded counter\n\
+             kovanica_faucet_drips_succeeded_total {succeeded}\n\
+             # HELP kovanica_faucet_dispensed_atoms Total KVNC atoms dispensed by successful faucet drips.\n\
+             # TYPE kovanica_faucet_dispensed_atoms counter\n\
+             kovanica_faucet_dispensed_atoms_total {dispensed_atoms}\n\
+             # HELP kovanica_faucet_drips_rejected Total faucet drip requests rejected due to validation, low balance, or RPC errors.\n\
+             # TYPE kovanica_faucet_drips_rejected counter\n\
+             kovanica_faucet_drips_rejected_total {rejected}\n\
+             # HELP kovanica_faucet_rate_limited Total faucet drip requests rejected by IP rate-limit or address cooldown.\n\
+             # TYPE kovanica_faucet_rate_limited counter\n\
+             kovanica_faucet_rate_limited_total {rate_limited}\n\
+             # HELP kovanica_faucet_ip_rate_limited Total faucet drip requests rejected by the per-IP rate limiter.\n\
+             # TYPE kovanica_faucet_ip_rate_limited counter\n\
+             kovanica_faucet_ip_rate_limited_total {ip_rate_limited}\n\
+             # HELP kovanica_faucet_address_cooldown_hits Total faucet drip requests rejected by the per-address cooldown limiter.\n\
+             # TYPE kovanica_faucet_address_cooldown_hits counter\n\
+             kovanica_faucet_address_cooldown_hits_total {address_cooldown_hits}\n\
+             # HELP kovanica_faucet_invalid_address Total faucet drip requests rejected due to an invalid destination address.\n\
+             # TYPE kovanica_faucet_invalid_address counter\n\
+             kovanica_faucet_invalid_address_total {invalid_address}\n\
+             # HELP kovanica_faucet_low_balance_rejected Total faucet drip requests rejected by the low-balance guard.\n\
+             # TYPE kovanica_faucet_low_balance_rejected counter\n\
+             kovanica_faucet_low_balance_rejected_total {low_balance_rejected}\n\
+             # HELP kovanica_faucet_rpc_errors Total faucet drip requests that failed during node RPC nonce fetch or transaction submission.\n\
+             # TYPE kovanica_faucet_rpc_errors counter\n\
+             kovanica_faucet_rpc_errors_total {rpc_errors}\n\
+             # HELP kovanica_faucet_balance_atoms Last known faucet account balance in atoms.\n\
+             # TYPE kovanica_faucet_balance_atoms gauge\n\
+             kovanica_faucet_balance_atoms {balance_atoms}\n\
+             # HELP kovanica_faucet_active_ip_entries Current number of active client IP entries tracked by the IP rate limiter.\n\
+             # TYPE kovanica_faucet_active_ip_entries gauge\n\
+             kovanica_faucet_active_ip_entries {active_ip_entries}\n\
+             # HELP kovanica_faucet_active_address_cooldowns Current number of active destination address entries tracked by the cooldown limiter.\n\
+             # TYPE kovanica_faucet_active_address_cooldowns gauge\n\
+             kovanica_faucet_active_address_cooldowns {active_address_cooldowns}\n\
+             # HELP kovanica_faucet_uptime_seconds Seconds elapsed since the faucet service initialized.\n\
+             # TYPE kovanica_faucet_uptime_seconds gauge\n\
+             kovanica_faucet_uptime_seconds {uptime_seconds}\n\
+             # HELP faucet_drips_succeeded Total number of successful faucet drips.\n\
+             # TYPE faucet_drips_succeeded counter\n\
              faucet_drips_succeeded_total {succeeded}\n\
-             # HELP faucet_drips_rejected_total Total number of rejected faucet drip requests.\n\
-             # TYPE faucet_drips_rejected_total counter\n\
+             # HELP faucet_drips_rejected Total number of rejected faucet drip requests.\n\
+             # TYPE faucet_drips_rejected counter\n\
              faucet_drips_rejected_total {rejected}\n\
-             # HELP faucet_rate_limited_total Total number of rate-limited faucet drip requests.\n\
-             # TYPE faucet_rate_limited_total counter\n\
+             # HELP faucet_rate_limited Total number of rate-limited faucet drip requests.\n\
+             # TYPE faucet_rate_limited counter\n\
              faucet_rate_limited_total {rate_limited}\n\
              # HELP faucet_balance_atoms Last known faucet account balance in atoms.\n\
              # TYPE faucet_balance_atoms gauge\n\
@@ -705,8 +837,8 @@ const CANONICAL_TESTNET_NETWORK_TAG: &str = "2-24cdb5fadd98b207";
 const CHAIN_ID_HEADER: &str = "x-kovanica-chain-id";
 const NETWORK_TAG_HEADER: &str = "x-kovanica-network-tag";
 
-/// Content-Type for the `/metrics` OpenMetrics exposition endpoint.
-const OPENMETRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+/// OpenMetrics 1.0 `Content-Type` header value returned by `GET /metrics`.
+const OPENMETRICS_CONTENT_TYPE: &str = "application/openmetrics-text; version=1.0.0; charset=utf-8";
 
 /// Resolve the network tag advertised in `X-Kovanica-Network-Tag`.
 ///
@@ -853,13 +985,17 @@ async fn health_check() -> impl IntoResponse {
 }
 
 async fn metrics_handler(State(state): State<Arc<FaucetState>>) -> impl IntoResponse {
+    let active_ips = state.rate_limiter.active_ip_entries();
+    let active_addresses = state.rate_limiter.active_address_entries();
     (
         StatusCode::OK,
         [(
             header::CONTENT_TYPE,
             HeaderValue::from_static(OPENMETRICS_CONTENT_TYPE),
         )],
-        state.metrics.render_openmetrics(),
+        state
+            .metrics
+            .render_openmetrics(active_ips, active_addresses),
     )
 }
 
@@ -869,6 +1005,8 @@ async fn faucet_handler(
     headers: axum::http::HeaderMap,
     Json(req): Json<FaucetRequest>,
 ) -> impl IntoResponse {
+    state.metrics.inc_requests();
+
     // Resolve the client IP for rate limiting. `X-Forwarded-For` is only
     // honoured when the socket peer is a configured trusted proxy.
     let forwarded_for = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
@@ -881,7 +1019,7 @@ async fn faucet_handler(
         state.config.rate_limit_window,
         state.config.max_requests_per_window,
     ) {
-        state.metrics.inc_rate_limited();
+        state.metrics.inc_ip_rate_limited();
         warn!(ip = %ip_str, "rate limit exceeded for IP");
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -901,7 +1039,7 @@ async fn faucet_handler(
     let to_address = match parse_address(&req.address, state.config.signing_ctx.chain_id) {
         Ok(addr) => addr,
         Err(e) => {
-            state.metrics.inc_rejected();
+            state.metrics.inc_invalid_address();
             return (
                 StatusCode::BAD_REQUEST,
                 Json(FaucetResponse {
@@ -925,7 +1063,7 @@ async fn faucet_handler(
     ) {
         Some(res) => res,
         None => {
-            state.metrics.inc_rate_limited();
+            state.metrics.inc_address_cooldown_hit();
             warn!(
                 address = %to_address_str,
                 window = state.config.address_rate_limit_window,
@@ -974,7 +1112,7 @@ async fn faucet_handler(
         {
             Ok(balance) if balance < state.config.min_balance_atoms => {
                 state.metrics.set_balance_atoms(balance);
-                state.metrics.inc_rejected();
+                state.metrics.inc_low_balance_rejected();
                 warn!(
                     balance,
                     threshold = state.config.min_balance_atoms,
@@ -1013,7 +1151,7 @@ async fn faucet_handler(
     {
         Ok(n) => n,
         Err(e) => {
-            state.metrics.inc_rejected();
+            state.metrics.inc_rpc_error();
             warn!("Failed to get faucet nonce: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1113,7 +1251,7 @@ async fn faucet_handler(
 
     match submit_outcome {
         SubmitOutcome::Success(tx_hash) => {
-            state.metrics.inc_succeeded();
+            state.metrics.record_succeeded(state.config.dispense_amount);
             info!(
                 to = %to_address,
                 amount = state.config.dispense_amount,
@@ -1135,7 +1273,7 @@ async fn faucet_handler(
                 .into_response()
         }
         SubmitOutcome::Unknown(e) => {
-            state.metrics.inc_rejected();
+            state.metrics.inc_rpc_error();
             // UNKNOWN outcome (transport error or timeout): keep address slot to prevent double payout.
             if retry_attempted {
                 let mut guard = state.pending_nonce.lock();
@@ -1160,7 +1298,7 @@ async fn faucet_handler(
                 .into_response()
         }
         SubmitOutcome::ExplicitRejection(e) => {
-            state.metrics.inc_rejected();
+            state.metrics.inc_rpc_error();
             // Explicit rejection from node (e.g. invalid tx, balance insufficient): roll back address slot.
             reservation.rollback();
             {
@@ -3636,12 +3774,27 @@ mod http_tests {
             "OpenMetrics payload must end with `# EOF\\n`, got:\n{body}"
         );
         let expected_types = [
-            ("faucet_drips_succeeded_total", "counter"),
-            ("faucet_drips_rejected_total", "counter"),
-            ("faucet_rate_limited_total", "counter"),
+            ("kovanica_faucet_requests", "counter"),
+            ("kovanica_faucet_drips_succeeded", "counter"),
+            ("kovanica_faucet_dispensed_atoms", "counter"),
+            ("kovanica_faucet_drips_rejected", "counter"),
+            ("kovanica_faucet_rate_limited", "counter"),
+            ("kovanica_faucet_ip_rate_limited", "counter"),
+            ("kovanica_faucet_address_cooldown_hits", "counter"),
+            ("kovanica_faucet_invalid_address", "counter"),
+            ("kovanica_faucet_low_balance_rejected", "counter"),
+            ("kovanica_faucet_rpc_errors", "counter"),
+            ("kovanica_faucet_balance_atoms", "gauge"),
+            ("kovanica_faucet_active_ip_entries", "gauge"),
+            ("kovanica_faucet_active_address_cooldowns", "gauge"),
+            ("kovanica_faucet_uptime_seconds", "gauge"),
+            ("faucet_drips_succeeded", "counter"),
+            ("faucet_drips_rejected", "counter"),
+            ("faucet_rate_limited", "counter"),
             ("faucet_balance_atoms", "gauge"),
         ];
         let mut seen_types = std::collections::HashSet::new();
+        let mut seen_helps = std::collections::HashSet::new();
         for line in body.lines() {
             if let Some(rest) = line.strip_prefix("# TYPE ") {
                 let metric_name = rest
@@ -3651,6 +3804,16 @@ mod http_tests {
                 assert!(
                     seen_types.insert(metric_name.to_string()),
                     "duplicate # TYPE header for `{metric_name}` in:\n{body}"
+                );
+            }
+            if let Some(rest) = line.strip_prefix("# HELP ") {
+                let metric_name = rest
+                    .split_whitespace()
+                    .next()
+                    .expect("# HELP line must include metric name");
+                assert!(
+                    seen_helps.insert(metric_name.to_string()),
+                    "duplicate # HELP header for `{metric_name}` in:\n{body}"
                 );
             }
         }
@@ -3668,11 +3831,25 @@ mod http_tests {
                 help_pos < type_pos && type_pos < eof_pos,
                 "`{metric}` # HELP and # TYPE must appear before # EOF in:\n{body}"
             );
+            let sample_prefix = if kind == "counter" {
+                format!("{metric}_total ")
+            } else {
+                format!("{metric} ")
+            };
+            assert!(
+                body.lines().any(|line| line.starts_with(&sample_prefix)),
+                "missing sample line `{sample_prefix}<value>` in:\n{body}"
+            );
         }
         assert_eq!(
             seen_types.len(),
             expected_types.len(),
             "unexpected extra # TYPE headers: {seen_types:?}"
+        );
+        assert_eq!(
+            seen_helps.len(),
+            expected_types.len(),
+            "unexpected extra # HELP headers: {seen_helps:?}"
         );
     }
 
@@ -3710,17 +3887,70 @@ mod http_tests {
             10 * 1_000_000_000,
         ));
 
-        // 1. Initial scrape: all 4 metrics present, zero duplicates, all at 0.
+        // 1. Initial scrape: all OpenMetrics 1.0 metrics present, zero duplicates, all at 0.
         let (status, content_type, body) = get_metrics(&app).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(content_type, OPENMETRICS_CONTENT_TYPE);
+        assert_eq!(
+            content_type,
+            "application/openmetrics-text; version=1.0.0; charset=utf-8"
+        );
         assert_valid_openmetrics_envelope(&body);
+        assert!(
+            body.contains("kovanica_faucet_requests_total 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_drips_succeeded_total 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_dispensed_atoms_total 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_drips_rejected_total 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_rate_limited_total 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_ip_rate_limited_total 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_address_cooldown_hits_total 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_invalid_address_total 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_low_balance_rejected_total 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_rpc_errors_total 0\n"),
+            "{body}"
+        );
+        assert!(body.contains("kovanica_faucet_balance_atoms 0\n"), "{body}");
+        assert!(
+            body.contains("kovanica_faucet_active_ip_entries 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_active_address_cooldowns 0\n"),
+            "{body}"
+        );
         assert!(body.contains("faucet_drips_succeeded_total 0\n"), "{body}");
         assert!(body.contains("faucet_drips_rejected_total 0\n"), "{body}");
         assert!(body.contains("faucet_rate_limited_total 0\n"), "{body}");
         assert!(body.contains("faucet_balance_atoms 0\n"), "{body}");
 
-        // 2. Successful drip -> succeeded = 1, balance_atoms = stub_balance.
+        // 2. Successful drip -> requests=1, succeeded=1, dispensed_atoms=DISPENSE_ATOMS,
+        //    active_ip_entries=1, active_address_cooldowns=1, balance_atoms=stub_balance.
         let addr_ok = canonical(101);
         let (s1, _) = post_faucet(
             &app,
@@ -3731,7 +3961,7 @@ mod http_tests {
         .await;
         assert_eq!(s1, StatusCode::OK);
 
-        // 3. Invalid address -> rejected = 1.
+        // 3. Invalid address -> requests=2, invalid_address=1, rejected=1, active_ip_entries=2.
         let (s2, _) = post_faucet(
             &app,
             "198.51.100.11:5000",
@@ -3741,7 +3971,8 @@ mod http_tests {
         .await;
         assert_eq!(s2, StatusCode::BAD_REQUEST);
 
-        // 4. Address rate-limited (same address from fresh IP) -> rate_limited = 1.
+        // 4. Address cooldown hit (same address from fresh IP) -> requests=3,
+        //    address_cooldown_hits=1, rate_limited=1, active_ip_entries=3.
         let (s3, _) = post_faucet(
             &app,
             "198.51.100.12:5000",
@@ -3751,7 +3982,8 @@ mod http_tests {
         .await;
         assert_eq!(s3, StatusCode::TOO_MANY_REQUESTS);
 
-        // 5. Explicit node rejection -> rejected = 2 (also consumes 2nd IP slot for .10).
+        // 5. Explicit node rejection -> requests=4, rpc_errors=1, rejected=2
+        //    (consumes 2nd IP slot for .10; rolls back address cooldown so active_address_cooldowns stays 1).
         *fail_submit.lock() = true;
         let (s4, _) = post_faucet(
             &app,
@@ -3762,7 +3994,8 @@ mod http_tests {
         .await;
         assert_eq!(s4, StatusCode::INTERNAL_SERVER_ERROR);
 
-        // 6. IP rate-limited (3rd request from .10 where IP cap is 2) -> rate_limited = 2.
+        // 6. IP rate-limited (3rd request from .10 where IP cap is 2) -> requests=5,
+        //    ip_rate_limited=1, rate_limited=2.
         let (s5, _) = post_faucet(
             &app,
             "198.51.100.10:5002",
@@ -3773,9 +4006,64 @@ mod http_tests {
         assert_eq!(s5, StatusCode::TOO_MANY_REQUESTS);
 
         // 7. Scrape again and verify exact counter/gauge values and envelope integrity.
-        let (status, _, body) = get_metrics(&app).await;
+        let (status, content_type, body) = get_metrics(&app).await;
         assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type, OPENMETRICS_CONTENT_TYPE);
         assert_valid_openmetrics_envelope(&body);
+        assert!(
+            body.contains("kovanica_faucet_requests_total 5\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_drips_succeeded_total 1\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!(
+                "kovanica_faucet_dispensed_atoms_total {DISPENSE_ATOMS}\n"
+            )),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_drips_rejected_total 2\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_rate_limited_total 2\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_ip_rate_limited_total 1\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_address_cooldown_hits_total 1\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_invalid_address_total 1\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_low_balance_rejected_total 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_rpc_errors_total 1\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!("kovanica_faucet_balance_atoms {stub_balance}\n")),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_active_ip_entries 3\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_active_address_cooldowns 1\n"),
+            "{body}"
+        );
         assert!(body.contains("faucet_drips_succeeded_total 1\n"), "{body}");
         assert!(body.contains("faucet_drips_rejected_total 2\n"), "{body}");
         assert!(body.contains("faucet_rate_limited_total 2\n"), "{body}");
@@ -3783,6 +4071,90 @@ mod http_tests {
             body.contains(&format!("faucet_balance_atoms {stub_balance}\n")),
             "{body}"
         );
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_tracks_low_balance_and_leaks_zero_pii_or_secrets() {
+        let low_balance: u64 = 5 * 1_000_000_000;
+        let (rpc, _) = stub_node(low_balance).await;
+        let secret_token = "super-secret-faucet-rpc-token-98765";
+        let signer = SigningKey::from_bytes(&[9u8; 32]);
+        let faucet_address = Address::from_public_key(&PublicKey::from(signer.verifying_key()));
+        let faucet_address_str = faucet_address.to_string();
+        let state = Arc::new(FaucetState {
+            config: FaucetConfig {
+                dispense_amount: DISPENSE_ATOMS,
+                rate_limit_window: 3600,
+                max_requests_per_window: 5,
+                address_rate_limit_window: 86_400,
+                address_max_requests: 1,
+                rpc_url: rpc,
+                rpc_token: Some(secret_token.to_string()),
+                signing_ctx: kovanica_types::SigningContext::new(chain_id::TESTNET),
+                trusted_proxies: proxy::TrustedProxies::parse_list("10.0.0.0/8").unwrap(),
+                min_balance_atoms: 10 * 1_000_000_000,
+                network_tag: resolve_network_tag(chain_id::TESTNET, None),
+            },
+            signer,
+            faucet_address,
+            rate_limiter: RateLimiter::default(),
+            client: reqwest::Client::new(),
+            pending_nonce: Mutex::new(PendingNonce::default()),
+            metrics: FaucetMetrics::default(),
+        });
+        let app = build_router(state);
+
+        let recipient = canonical(205);
+        let client_ip = "203.0.113.77";
+        let (status, _) = post_faucet(
+            &app,
+            "10.0.0.5:4000",
+            Some(client_ip),
+            json!({ "address": recipient }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+        let (m_status, content_type, body) = get_metrics(&app).await;
+        assert_eq!(m_status, StatusCode::OK);
+        assert_eq!(content_type, OPENMETRICS_CONTENT_TYPE);
+        assert_valid_openmetrics_envelope(&body);
+        assert!(
+            body.contains("kovanica_faucet_low_balance_rejected_total 1\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_drips_rejected_total 1\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!("kovanica_faucet_balance_atoms {low_balance}\n")),
+            "{body}"
+        );
+        // Low-balance rejection rolls back the address cooldown reservation.
+        assert!(
+            body.contains("kovanica_faucet_active_address_cooldowns 0\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("kovanica_faucet_active_ip_entries 1\n"),
+            "{body}"
+        );
+
+        // Zero PII, IP, address, or secret token leakage.
+        for forbidden in [
+            recipient.as_str(),
+            faucet_address_str.as_str(),
+            client_ip,
+            "10.0.0.5",
+            secret_token,
+            "kvnc1",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "metrics output must never contain `{forbidden}`, got:\n{body}"
+            );
+        }
     }
 
     #[tokio::test]
