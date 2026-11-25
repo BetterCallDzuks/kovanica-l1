@@ -192,6 +192,7 @@ mod tests {
     use super::*;
     use ed25519_dalek::Signer;
     use fips204::traits::Signer as FipsSigner;
+    use p256::ecdsa::signature::Signer as P256Signer;
 
     #[test]
     fn typed_addresses_are_scheme_separated() {
@@ -208,7 +209,7 @@ mod tests {
     fn webauthn_p256_real_ecdsa_sign_and_verify() {
         let sk = p256::ecdsa::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
         let vk = sk.verifying_key();
-        let pubkey = vk.to_encoded_point(true).as_bytes().to_vec();
+        let pubkey = vk.to_sec1_point(true).as_bytes().to_vec();
         let tx_hash = [0x77u8; 32];
 
         let mut assertion = WebAuthnAssertion {
@@ -218,7 +219,7 @@ mod tests {
             signature: vec![0u8; 64],
         };
         let digest = assertion.signing_payload_digest(&tx_hash);
-        let sig: P256Signature = sk.sign(&digest);
+        let sig: P256Signature = P256Signer::sign(&sk, &digest);
         assertion.signature = sig.to_bytes().to_vec();
 
         assert!(assertion.verify_p256(&tx_hash).is_ok());
