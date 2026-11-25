@@ -343,6 +343,16 @@ fn kind_to_json(kind: &TransactionKind) -> Value {
             "fee_payer": fee_payer.to_string(),
             "inner": kind_to_json(inner),
         }),
+        TransactionKind::RegisterSessionKey { policy } => json!({
+            "type": "register_session_key",
+            "owner": policy.owner.to_string(),
+            "session_pubkey": to_hex(&policy.session_pubkey.0),
+            "expires_round": quantity(policy.expires_round),
+        }),
+        TransactionKind::RevokeSessionKey { session_pubkey } => json!({
+            "type": "revoke_session_key",
+            "session_pubkey": to_hex(session_pubkey),
+        }),
     }
 }
 

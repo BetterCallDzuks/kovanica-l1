@@ -117,6 +117,16 @@ pub enum TransactionKind {
         /// Inner transaction kind (must not be nested `Sponsored`).
         inner: Box<TransactionKind>,
     },
+    /// Register or update a scoped temporary session key policy (Wave C).
+    RegisterSessionKey {
+        /// Scoped session key policy (must have `policy.owner == tx.sender`).
+        policy: crate::SessionKeyPolicy,
+    },
+    /// Revoke an active scoped session key for `tx.sender` (Wave C).
+    RevokeSessionKey {
+        /// 32-byte session public key to revoke.
+        session_pubkey: [u8; 32],
+    },
 }
 
 /// One action inside [`TransactionKind::Batch`].
@@ -385,6 +395,26 @@ fn encode_kind_into(kind: &TransactionKind, data: &mut Vec<u8>) {
             data.push(14);
             data.extend_from_slice(&fee_payer.0);
             encode_kind_into(inner, data);
+        }
+        TransactionKind::RegisterSessionKey { policy } => {
+            data.push(15);
+            data.extend_from_slice(&policy.owner.0);
+            data.extend_from_slice(&policy.session_pubkey.0);
+            data.extend_from_slice(&(policy.allowed_contracts.len() as u32).to_le_bytes());
+            for c in &policy.allowed_contracts {
+                data.extend_from_slice(&c.0);
+            }
+            data.extend_from_slice(&(policy.allowed_methods.len() as u32).to_le_bytes());
+            for m in &policy.allowed_methods {
+                data.extend_from_slice(&(m.len() as u32).to_le_bytes());
+                data.extend_from_slice(m.as_bytes());
+            }
+            data.extend_from_slice(&policy.max_spend_atoms.to_le_bytes());
+            data.extend_from_slice(&policy.expires_round.to_le_bytes());
+        }
+        TransactionKind::RevokeSessionKey { session_pubkey } => {
+            data.push(16);
+            data.extend_from_slice(session_pubkey);
         }
     }
 }

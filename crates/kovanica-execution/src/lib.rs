@@ -867,10 +867,13 @@ impl ExecutionContext {
             ));
         }
 
-        // Wave A gate (Atomic Batch, Sponsored Txs): round-gated so live seed1 never forks.
+        // Wave A/C gate (Atomic Batch, Sponsored Txs, Session Keys): round-gated so live seed1 never forks.
         let is_wave_a_kind = matches!(
             tx.kind,
-            TransactionKind::Batch { .. } | TransactionKind::Sponsored { .. }
+            TransactionKind::Batch { .. }
+                | TransactionKind::Sponsored { .. }
+                | TransactionKind::RegisterSessionKey { .. }
+                | TransactionKind::RevokeSessionKey { .. }
         );
         if is_wave_a_kind
             && !kovanica_params::wave_a_active_from_for_chain(
@@ -1109,6 +1112,22 @@ impl ExecutionContext {
             TransactionKind::Sponsored { .. } => Err(ExecutionError::Validation(
                 "Nested Sponsored transactions are not allowed".to_string(),
             )),
+            TransactionKind::RegisterSessionKey { policy } => {
+                if policy.owner != tx.sender {
+                    Err(ExecutionError::Validation(
+                        "RegisterSessionKey policy.owner must match tx.sender".to_string(),
+                    ))
+                } else {
+                    storage.state().save_session_key(txn, policy)?;
+                    Ok(Vec::new())
+                }
+            }
+            TransactionKind::RevokeSessionKey { session_pubkey } => {
+                storage
+                    .state()
+                    .revoke_session_key(txn, &tx.sender, session_pubkey)?;
+                Ok(Vec::new())
+            }
         };
 
         let (success, error, events) = match result {

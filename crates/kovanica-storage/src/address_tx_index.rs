@@ -358,7 +358,9 @@ fn counterparty(kind: &TransactionKind) -> Option<Address> {
         | TransactionKind::SubmitLightWitness { .. }
         | TransactionKind::ClaimTreasury { .. }
         | TransactionKind::Evidence { .. }
-        | TransactionKind::Batch { .. } => None,
+        | TransactionKind::Batch { .. }
+        | TransactionKind::RegisterSessionKey { .. }
+        | TransactionKind::RevokeSessionKey { .. } => None,
         TransactionKind::Sponsored { inner, .. } => counterparty(inner),
     }
 }
@@ -380,6 +382,8 @@ fn kind_code(kind: &TransactionKind) -> u8 {
         TransactionKind::Evidence { .. } => 12,
         TransactionKind::Batch { .. } => 13,
         TransactionKind::Sponsored { .. } => 14,
+        TransactionKind::RegisterSessionKey { .. } => 15,
+        TransactionKind::RevokeSessionKey { .. } => 16,
     }
 }
 
@@ -400,6 +404,8 @@ fn kind_name(code: u8) -> Option<&'static str> {
         12 => "evidence",
         13 => "batch",
         14 => "sponsored",
+        15 => "register_session_key",
+        16 => "revoke_session_key",
         _ => return None,
     })
 }
@@ -427,7 +433,9 @@ fn kind_amount(kind: &TransactionKind) -> u64 {
         | TransactionKind::ExitLightNode
         | TransactionKind::SubmitLightWitness { .. }
         | TransactionKind::SetCommission { .. }
-        | TransactionKind::Evidence { .. } => 0,
+        | TransactionKind::Evidence { .. }
+        | TransactionKind::RegisterSessionKey { .. }
+        | TransactionKind::RevokeSessionKey { .. } => 0,
     }
 }
 
