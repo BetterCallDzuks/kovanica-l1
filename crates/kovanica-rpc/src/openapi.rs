@@ -773,6 +773,47 @@ pub fn generate_openapi_spec() -> OpenApiSpec {
             }),
         ),
         (
+            "kovanica_getBaseFee",
+            "Get current EIP-1559 dynamic base fee per byte and storage deposit parameters",
+            "Mempool",
+            json!({
+                "type": "array",
+                "items": {},
+                "maxItems": 0
+            }),
+            json!({
+                "type": "object"
+            }),
+        ),
+        (
+            "kovanica_getStorageDeposit",
+            "Get refundable storage deposit accounting for a contract address",
+            "Accounts",
+            json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 1,
+                "maxItems": 1
+            }),
+            json!({
+                "type": "object"
+            }),
+        ),
+        (
+            "kovanica_getSessionKey",
+            "Get a persisted scoped session key policy for (owner, session_pubkey)",
+            "Accounts",
+            json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 2,
+                "maxItems": 2
+            }),
+            json!({
+                "type": ["object", "null"]
+            }),
+        ),
+        (
             "kovanica_mempoolStats",
             "Get mempool pending count, total bytes, and fee-per-byte percentiles",
             "Mempool",

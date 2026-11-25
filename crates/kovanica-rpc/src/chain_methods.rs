@@ -1748,6 +1748,79 @@ pub async fn handle_get_fee_schedule(_params: Value, state: RpcState) -> Result<
     }))
 }
 
+/// `kovanica_getBaseFee()` — current persisted EIP-1559 dynamic base fee per byte
+/// plus bounds and storage deposit pricing parameters (Wave B).
+pub async fn handle_get_base_fee(_params: Value, state: RpcState) -> Result<Value, RpcError> {
+    let base_fee_per_byte = state
+        .storage
+        .begin_read()
+        .ok()
+        .and_then(|txn| state.storage.state().load_base_fee_per_byte(&txn).ok())
+        .unwrap_or(kovanica_params::MIN_BASE_FEE_PER_BYTE);
+    Ok(json!({
+        "base_fee_per_byte": quantity(base_fee_per_byte),
+        "min_base_fee_per_byte": quantity(kovanica_params::MIN_BASE_FEE_PER_BYTE),
+        "max_base_fee_per_byte": quantity(100_000u64),
+        "target_block_bytes": quantity(kovanica_params::TARGET_BLOCK_BYTES as u64),
+        "storage_deposit_per_byte": quantity(kovanica_params::STORAGE_DEPOSIT_PER_BYTE),
+        "default_gas_price_atoms": quantity(kovanica_params::DEFAULT_GAS_PRICE_ATOMS),
+    }))
+}
+
+/// `kovanica_getStorageDeposit([contract_address])` — refundable storage deposit
+/// state (`bytes` and `deposit_atoms`) for a contract (Wave B).
+pub async fn handle_get_storage_deposit(params: Value, state: RpcState) -> Result<Value, RpcError> {
+    let args = params_vec(&params);
+    let chain_id = served_chain_id(&state);
+    let contract = parse_address(required(&args, 0, "contract")?, "contract", chain_id)?;
+    let txn = state
+        .storage
+        .begin_read()
+        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+    let (bytes, deposit_atoms) = state
+        .storage
+        .state()
+        .load_storage_deposit(&txn, &contract)
+        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+    Ok(json!({
+        "contract": contract.to_string(),
+        "bytes": quantity(bytes),
+        "deposit_atoms": quantity(deposit_atoms),
+        "deposit_per_byte": quantity(kovanica_params::STORAGE_DEPOSIT_PER_BYTE),
+    }))
+}
+
+/// `kovanica_getSessionKey([owner_address, session_pubkey_hex])` — look up a
+/// persisted scoped session key policy (Wave C), or `null` if absent/revoked.
+pub async fn handle_get_session_key(params: Value, state: RpcState) -> Result<Value, RpcError> {
+    let args = params_vec(&params);
+    let chain_id = served_chain_id(&state);
+    let owner = parse_address(required(&args, 0, "owner")?, "owner", chain_id)?;
+    let session_pubkey = parse_bytes32(required(&args, 1, "session_pubkey")?, "session_pubkey")?;
+    let txn = state
+        .storage
+        .begin_read()
+        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+    let policy = state
+        .storage
+        .state()
+        .load_session_key(&txn, &owner, &session_pubkey)
+        .map_err(|e| RpcError::InternalError(e.to_string()))?;
+    match policy {
+        Some(p) => Ok(json!({
+            "owner": p.owner.to_string(),
+            "session_pubkey": to_hex(&p.session_pubkey.0),
+            "allowed_contracts": p.allowed_contracts.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            "allowed_methods": p.allowed_methods,
+            "max_spend_atoms": quantity(p.max_spend_atoms),
+            "spent_atoms": quantity(p.spent_atoms),
+            "expires_round": quantity(p.expires_round),
+            "revoked": p.revoked,
+        })),
+        None => Ok(Value::Null),
+    }
+}
+
 /// Overflow-safe nearest-rank percentile over an ascending-sorted `u64` slice.
 ///
 /// Uses `u128` intermediate arithmetic so large slice lengths and `u64::MAX`

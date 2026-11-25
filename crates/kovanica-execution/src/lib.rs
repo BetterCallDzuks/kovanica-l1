@@ -39,6 +39,7 @@ use tracing::{debug, info};
 
 pub mod call_args;
 pub mod contracts;
+pub mod wave_bc;
 pub use call_args::{
     encode_escrow_approve, encode_escrow_create, encode_escrow_refund, encode_escrow_release,
     encode_htlc_claim, encode_htlc_create, encode_htlc_refund, encode_multisig_confirm,
@@ -56,6 +57,7 @@ pub use contracts::{
     is_entry_point, ContractEvent, ContractHost, ContractRunner, WasmCall, ENTRY_POINTS,
 };
 pub use kovanica_runtime::{ExecutionConfig, DEFAULT_CONTRACT_MEMORY_PAGES, MAX_TX_GAS_LIMIT};
+pub use wave_bc::{apply_storage_deposit_in_txn, enforce_session_key_in_txn};
 
 /// Table tracking executed sub-DAG leaders (idempotency).
 const EXECUTED_SUBDAGS: TableDefinition<[u8; 32], u8> =
