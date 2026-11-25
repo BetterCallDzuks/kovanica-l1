@@ -1,16 +1,16 @@
 # External Audit / Seed / DNS — Checklist
 
-Updated 2026-11-25 to reflect merged `BetterCallDzuks/kovanica-l1` `main` (`9391ae8`) — canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, Wasmi execution + CPI (depth 4, reentrancy guard), 47 contract entry points (adding KVP-106 `kovanica-rwa`, `kovanica-scheduler`, and multi-chain `kovanica-bridge` for Bitcoin/Solana/all-EVM), Balanced Fixed Fees (75% burn / 25% miner), Wave A (`Batch`, `Sponsored`), Wave B (EIP-1559 dynamic base fee, refundable `STORAGE_DEPOSITS`), Wave C (`SESSION_KEYS` + `RegisterSessionKey`/`RevokeSessionKey` txs, real `p256` 0.14 ECDSA WebAuthn), Wave D (real `fips204` NIST ML-DSA-65 hybrid PQ), 3-node Mainnet $T_0$ dress rehearsal (`scripts/dress-rehearsal-3node.sh`), and 189-metric / 33-panel / 19-alert monitoring validation. Ecosystem `protect-main-pr-only` rulesets and `.github/workflows/pr-policy.yml` are active across all 5 `BetterCallDzuks/*` repos (`kovanica-l1` `9391ae8`, `kovanica-sdk` `316094c` `v0.8.1`, `kovanica-web` `1479aa7` live on `seed1`, `kovanica-apps` `62dc7fa`, `kovanica-playground` `f19d66e`).
+Updated 2026-11-25 to reflect merged `BetterCallDzuks/kovanica-l1` `main` (`7197a28`) — canonical Hybrid PoW + GHOSTDAG consensus, KovanicaHash, Wasmi execution + CPI (depth 4, reentrancy guard), 47 contract entry points (adding KVP-106 `kovanica-rwa`, `kovanica-scheduler`, and multi-chain `kovanica-bridge` for Bitcoin/Solana/all-EVM), Balanced Fixed Fees (75% burn / 25% miner), Wave A (`Batch`, `Sponsored`), Wave B (EIP-1559 dynamic base fee, refundable `STORAGE_DEPOSITS`), Wave C (`SESSION_KEYS` + `RegisterSessionKey`/`RevokeSessionKey` txs, real `p256` 0.14 ECDSA WebAuthn), Wave D (real `fips204` NIST ML-DSA-65 hybrid PQ), 3-node Mainnet $T_0$ dress rehearsal (`scripts/dress-rehearsal-3node.sh`), and 189-metric / 33-panel / 19-alert monitoring validation. Ecosystem `protect-main-pr-only` rulesets and `.github/workflows/pr-policy.yml` are active across all 5 `BetterCallDzuks/*` repos (`kovanica-l1` `7197a28`, `kovanica-sdk` `3c9c805` `v0.8.1`, `kovanica-web` `1479aa7` live on `seed1`, `kovanica-apps` `62dc7fa`, `kovanica-playground` `f19d66e`).
 
 ## 1. Seed / DNS audit (gating before public launch)
 - [x] Automated DNS probe script (`scripts/check-dns-seeds.sh`) implemented and verified
 - [x] Verify 3+ **kovanica-native** DNS seeds (`testnet.kovanica.online`, `seed1/2/3.kovanica.online`)
-- [x] Verify grey-cloud origin IP resolution (no Cloudflare HTTP proxying / CDN)
-- [ ] Ensure TCP port 8000 reachability across all deployed VPS seeds (via `scripts/cutover-vps-systemd.sh`)
+- [x] Verify grey-cloud origin IP resolution (no Cloudflare HTTP proxying / CDN) for testnet seeds (`testnet`/`seed1`/`seed2`/`seed3`); **NOTE (2026-11-25 probe):** `mainnet.kovanica.online` currently resolves to Cloudflare proxy ranges and must be switched to grey-cloud DNS-only before Mainnet $T_0$
+- [ ] Ensure TCP port 8000 reachability across all deployed VPS seeds (via `scripts/cutover-vps-systemd.sh`) — *2026-11-25 probe: `testnet.kovanica.online` & `seed1.kovanica.online` TCP 8000 OPEN; `seed2.kovanica.online` & `seed3.kovanica.online` TCP 8000 closed/timeout*
 - [ ] Publish each seed's libp2p PeerId and confirm `/p2p/` in the multiaddr matches
 - [x] Confirm `KOVANICA_BOOTNODES` defaults stay empty in code; seeds configured via env/TOML
 
-## 2. External audit scope (mandatory before mainnet $T_0$; internal code verification synced to `BetterCallDzuks/kovanica-l1` `main` `ee908ca`)
+## 2. External audit scope (mandatory before mainnet $T_0$; internal code verification synced to `BetterCallDzuks/kovanica-l1` `main` `7197a28`)
 - [ ] **Consensus (Hybrid PoW + GHOSTDAG, K=5, target 4s):**
   - [ ] Verify KovanicaHash PoW algorithm (BLAKE3 + 2 MiB memory mix scratchpad, `KOVANICA_HASH_MIX_ROUNDS = 1024`) determinism and memory-hardness (`crates/kovanica-types/src/pow.rs:59-175`)
   - [ ] Verify Difficulty Adjustment Algorithm (LWMA DAA, `TARGET_BLOCK_MS = 4000`) stability, time warp resistance, and target clamping (`crates/kovanica-consensus/src/daa.rs:204-518`, `crates/kovanica-params/src/lib.rs:37`)
