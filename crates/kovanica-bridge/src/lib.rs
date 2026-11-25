@@ -18,6 +18,166 @@ use kovanica_common::{Address, Amount, ContractError, ContractResult, Host};
 
 pub const STATE_KEY: &[u8] = b"kvnc/v1/bridge_state";
 
+/// Canonical external chain family supported by `kovanica-bridge` (Wave D).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum BridgeFamily {
+    /// Bitcoin mainnet / UTXO chains (`chain_id = 0`).
+    Bitcoin = 0,
+    /// Ethereum & any EVM-compatible L1/L2 chain (`chain_id = 1, 10, 56, 137, 8453, 42161, ...`).
+    Evm = 1,
+    /// Solana mainnet (`chain_id = 501`).
+    Solana = 2,
+}
+
+/// Static metadata for a canonical external bridge network.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExternalChain {
+    pub chain_id: u64,
+    pub family: BridgeFamily,
+    pub name: &'static str,
+    pub native_wrapped_symbol: &'static str,
+    pub min_confirmations: u32,
+}
+
+/// Canonical external chain IDs (EIP-155 for EVM, `0` for Bitcoin, `501` for Solana).
+pub const CHAIN_ID_BITCOIN: u64 = 0;
+pub const CHAIN_ID_ETHEREUM: u64 = 1;
+pub const CHAIN_ID_OPTIMISM: u64 = 10;
+pub const CHAIN_ID_BNB: u64 = 56;
+pub const CHAIN_ID_POLYGON: u64 = 137;
+pub const CHAIN_ID_SOLANA: u64 = 501;
+pub const CHAIN_ID_BASE: u64 = 8_453;
+pub const CHAIN_ID_ARBITRUM: u64 = 42_161;
+pub const CHAIN_ID_AVALANCHE: u64 = 43_114;
+pub const CHAIN_ID_LINEA: u64 = 59_144;
+pub const CHAIN_ID_BLAST: u64 = 81_457;
+pub const CHAIN_ID_SCROLL: u64 = 534_352;
+
+/// Canonical multi-chain registry covering Bitcoin, Solana, and major EVM chains.
+/// Any other EIP-155 EVM chain ID is also supported via [`chain_family`].
+pub const SUPPORTED_CHAINS: &[ExternalChain] = &[
+    ExternalChain {
+        chain_id: CHAIN_ID_BITCOIN,
+        family: BridgeFamily::Bitcoin,
+        name: "Bitcoin",
+        native_wrapped_symbol: "wBTC",
+        min_confirmations: 6,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_ETHEREUM,
+        family: BridgeFamily::Evm,
+        name: "Ethereum",
+        native_wrapped_symbol: "wETH",
+        min_confirmations: 12,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_OPTIMISM,
+        family: BridgeFamily::Evm,
+        name: "Optimism",
+        native_wrapped_symbol: "wETH",
+        min_confirmations: 20,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_BNB,
+        family: BridgeFamily::Evm,
+        name: "BNB Smart Chain",
+        native_wrapped_symbol: "wBNB",
+        min_confirmations: 15,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_POLYGON,
+        family: BridgeFamily::Evm,
+        name: "Polygon PoS",
+        native_wrapped_symbol: "wPOL",
+        min_confirmations: 64,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_SOLANA,
+        family: BridgeFamily::Solana,
+        name: "Solana",
+        native_wrapped_symbol: "wSOL",
+        min_confirmations: 32,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_BASE,
+        family: BridgeFamily::Evm,
+        name: "Base",
+        native_wrapped_symbol: "wETH",
+        min_confirmations: 20,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_ARBITRUM,
+        family: BridgeFamily::Evm,
+        name: "Arbitrum One",
+        native_wrapped_symbol: "wETH",
+        min_confirmations: 20,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_AVALANCHE,
+        family: BridgeFamily::Evm,
+        name: "Avalanche C-Chain",
+        native_wrapped_symbol: "wAVAX",
+        min_confirmations: 12,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_LINEA,
+        family: BridgeFamily::Evm,
+        name: "Linea",
+        native_wrapped_symbol: "wETH",
+        min_confirmations: 20,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_BLAST,
+        family: BridgeFamily::Evm,
+        name: "Blast",
+        native_wrapped_symbol: "wETH",
+        min_confirmations: 20,
+    },
+    ExternalChain {
+        chain_id: CHAIN_ID_SCROLL,
+        family: BridgeFamily::Evm,
+        name: "Scroll",
+        native_wrapped_symbol: "wETH",
+        min_confirmations: 20,
+    },
+];
+
+/// Classify any external chain ID into Bitcoin, Solana, or EVM (any other EIP-155 chain).
+pub fn chain_family(chain_id: u64) -> BridgeFamily {
+    match chain_id {
+        CHAIN_ID_BITCOIN => BridgeFamily::Bitcoin,
+        CHAIN_ID_SOLANA => BridgeFamily::Solana,
+        _ => BridgeFamily::Evm,
+    }
+}
+
+/// Return recommended relayer confirmation depth for an external chain.
+pub fn min_confirmations(chain_id: u64) -> u32 {
+    SUPPORTED_CHAINS
+        .iter()
+        .find(|c| c.chain_id == chain_id)
+        .map(|c| c.min_confirmations)
+        .unwrap_or(20)
+}
+
+/// Validate an outbound destination payload for the given external chain family.
+/// - **Bitcoin (`0`)**: 20..=90 bytes (raw witness/scriptPubKey or Bech32/Base58 ASCII)
+/// - **Solana (`501`)**: 32-byte raw Ed25519 pubkey or 32..=44-byte Base58 ASCII
+/// - **EVM (all other IDs)**: 20-byte raw address or 42-byte `0x`-prefixed hex ASCII
+pub fn validate_external_destination(chain_id: u64, dest: &[u8]) -> bool {
+    match chain_family(chain_id) {
+        BridgeFamily::Bitcoin => (20..=90).contains(&dest.len()),
+        BridgeFamily::Solana => dest.len() == 32 || (32..=44).contains(&dest.len()),
+        BridgeFamily::Evm => {
+            dest.len() == 20
+                || (dest.len() == 42
+                    && dest.starts_with(b"0x")
+                    && dest[2..].iter().all(|b| b.is_ascii_hexdigit()))
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PendingDeposit {
     pub source_chain_id: u64,
@@ -324,5 +484,30 @@ mod tests {
         host.inner.set_caller(addr(2));
         let nonce = Bridge::request_withdraw(&mut host, 1, vec![0xDE, 0xAD], 500_000).unwrap();
         assert_eq!(nonce, 0);
+    }
+
+    #[test]
+    fn multichain_registry_covers_btc_solana_and_evm_chains() {
+        assert_eq!(chain_family(CHAIN_ID_BITCOIN), BridgeFamily::Bitcoin);
+        assert_eq!(chain_family(CHAIN_ID_SOLANA), BridgeFamily::Solana);
+        assert_eq!(chain_family(CHAIN_ID_ETHEREUM), BridgeFamily::Evm);
+        assert_eq!(chain_family(CHAIN_ID_BASE), BridgeFamily::Evm);
+        assert_eq!(chain_family(CHAIN_ID_ARBITRUM), BridgeFamily::Evm);
+        assert_eq!(chain_family(CHAIN_ID_POLYGON), BridgeFamily::Evm);
+        assert_eq!(chain_family(CHAIN_ID_BNB), BridgeFamily::Evm);
+        assert_eq!(chain_family(999_999), BridgeFamily::Evm);
+
+        assert_eq!(min_confirmations(CHAIN_ID_BITCOIN), 6);
+        assert_eq!(min_confirmations(CHAIN_ID_SOLANA), 32);
+        assert!(validate_external_destination(
+            CHAIN_ID_BITCOIN,
+            b"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        ));
+        assert!(validate_external_destination(CHAIN_ID_SOLANA, &[0x11; 32]));
+        assert!(validate_external_destination(
+            CHAIN_ID_BASE,
+            b"0x1111111111111111111111111111111111111111"
+        ));
+        assert!(!validate_external_destination(CHAIN_ID_BASE, b"bad"));
     }
 }

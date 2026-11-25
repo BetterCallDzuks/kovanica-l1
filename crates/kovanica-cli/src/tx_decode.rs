@@ -307,6 +307,20 @@ fn summarize_kind(kind: &TransactionKind) -> (&'static str, Value) {
                 }),
             )
         }
+        TransactionKind::RegisterSessionKey { policy } => (
+            "RegisterSessionKey",
+            json!({
+                "owner": policy.owner.encode(),
+                "session_pubkey": format!("0x{}", hex::encode(policy.session_pubkey.0)),
+                "expires_round": policy.expires_round,
+            }),
+        ),
+        TransactionKind::RevokeSessionKey { session_pubkey } => (
+            "RevokeSessionKey",
+            json!({
+                "session_pubkey": format!("0x{}", hex::encode(session_pubkey)),
+            }),
+        ),
     }
 }
 

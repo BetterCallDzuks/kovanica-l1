@@ -226,6 +226,7 @@ fn immediate_value(kind: &TransactionKind) -> u64 {
             })
             .fold(0u64, u64::saturating_add),
         TransactionKind::Sponsored { inner, .. } => immediate_value(inner),
+        TransactionKind::RegisterSessionKey { .. } | TransactionKind::RevokeSessionKey { .. } => 0,
     }
 }
 
