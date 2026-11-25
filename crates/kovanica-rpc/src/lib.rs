@@ -664,6 +664,12 @@ impl RpcServer {
             .await;
         self.register_stateful("kovanica_getFeeSchedule", handle_get_fee_schedule)
             .await;
+        self.register_stateful("kovanica_getBaseFee", handle_get_base_fee)
+            .await;
+        self.register_stateful("kovanica_getStorageDeposit", handle_get_storage_deposit)
+            .await;
+        self.register_stateful("kovanica_getSessionKey", handle_get_session_key)
+            .await;
         self.register_stateful("kovanica_mempoolStats", handle_mempool_stats)
             .await;
         self.register_stateful("kovanica_estimateGas", handle_estimate_gas)
@@ -958,6 +964,9 @@ const KNOWN_RPC_METHODS: &[&str] = &[
     "kovanica_getPendingTransactions",
     "kovanica_estimateFee",
     "kovanica_getFeeSchedule",
+    "kovanica_getBaseFee",
+    "kovanica_getStorageDeposit",
+    "kovanica_getSessionKey",
     "kovanica_mempoolStats",
     "kovanica_estimateGas",
     "eth_estimateGas",

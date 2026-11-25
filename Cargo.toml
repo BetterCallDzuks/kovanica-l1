@@ -77,6 +77,8 @@ base64 = "0.22"
 # Crypto
 blake3 = "=1.5.1"
 ed25519-dalek = { version = "2.1", features = ["serde", "rand_core", "batch"] }
+p256 = { version = "0.13", features = ["ecdsa", "sha256"] }
+fips204 = "0.4"
 rand = "0.8"
 hex = "0.4"
 # Comms E2E (client-only): raw-key X25519 + XChaCha20-Poly1305 sealed envelopes.

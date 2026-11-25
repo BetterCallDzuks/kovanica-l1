@@ -1,6 +1,10 @@
 //! Next-Generation Signature Schemes: Passkey/WebAuthn (Wave C #7) &
 //! Post-Quantum ML-DSA-65 Hybrid Envelopes (Wave D #11).
 
+use fips204::ml_dsa_65;
+use fips204::traits::{SerDes, Verifier as FipsVerifier};
+use p256::ecdsa::signature::Verifier as P256Verifier;
+use p256::ecdsa::{Signature as P256Signature, VerifyingKey as P256VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// Canonical signature scheme tag for typed Kovanica accounts.
@@ -83,6 +87,19 @@ impl WebAuthnAssertion {
         h.update(&self.client_data_json);
         *h.finalize().as_bytes()
     }
+
+    /// Verify a real secp256r1 (P-256) ECDSA signature over the domain-separated
+    /// Kovanica WebAuthn payload digest (`signing_payload_digest(tx_hash)`).
+    pub fn verify_p256(&self, tx_hash: &[u8; 32]) -> Result<(), &'static str> {
+        self.validate_structure()?;
+        let vk = P256VerifyingKey::from_sec1_bytes(&self.pubkey)
+            .map_err(|_| "invalid secp256r1 public key point")?;
+        let sig = P256Signature::from_slice(&self.signature)
+            .map_err(|_| "invalid secp256r1 signature encoding")?;
+        let digest = self.signing_payload_digest(tx_hash);
+        vk.verify(&digest, &sig)
+            .map_err(|_| "secp256r1 ECDSA signature verification failed")
+    }
 }
 
 /// Post-Quantum Hybrid envelope pairing Ed25519 with NIST FIPS 204 ML-DSA-65 (Wave D #11).
@@ -139,12 +156,42 @@ impl HybridPqEnvelope {
         vk.verify_strict(&digest, &sig)
             .map_err(|_| "Ed25519 hybrid signature verification failed")
     }
+
+    /// Full hybrid cryptographic verification: verifies BOTH the classical
+    /// Ed25519 signature AND the NIST FIPS 204 ML-DSA-65 signature against
+    /// the provided 1,952-byte ML-DSA-65 public key (whose BLAKE3 hash must
+    /// match `self.pq_pubkey_hash`).
+    pub fn verify_hybrid(&self, pq_pubkey: &[u8], tx_hash: &[u8; 32]) -> Result<(), &'static str> {
+        if pq_pubkey.len() != ML_DSA_65_PUBKEY_BYTES {
+            return Err("invalid ML-DSA-65 public key length (expected 1952 bytes)");
+        }
+        if blake3::hash(pq_pubkey).as_bytes() != &self.pq_pubkey_hash {
+            return Err("ML-DSA-65 public key hash mismatch");
+        }
+        self.validate_and_verify_classical(tx_hash)?;
+        let pk_arr: [u8; ML_DSA_65_PUBKEY_BYTES] = pq_pubkey
+            .try_into()
+            .map_err(|_| "invalid ML-DSA-65 public key length")?;
+        let sig_arr: [u8; ML_DSA_65_SIG_BYTES] = self
+            .pq_signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| "invalid ML-DSA-65 signature length")?;
+        let ml_pk = ml_dsa_65::PublicKey::try_from_bytes(pk_arr)
+            .map_err(|_| "malformed ML-DSA-65 public key")?;
+        let digest = Self::hybrid_digest(&self.ed25519_pubkey, &self.pq_pubkey_hash, tx_hash);
+        if !ml_pk.verify(&digest, &sig_arr, &[]) {
+            return Err("ML-DSA-65 post-quantum signature verification failed");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::Signer;
+    use fips204::traits::Signer as FipsSigner;
 
     #[test]
     fn typed_addresses_are_scheme_separated() {
@@ -158,41 +205,47 @@ mod tests {
     }
 
     #[test]
-    fn webauthn_assertion_validates_structure_and_derives_address() {
-        let assertion = WebAuthnAssertion {
-            pubkey: vec![0x02; SECP256R1_COMPRESSED_PUBKEY_BYTES],
+    fn webauthn_p256_real_ecdsa_sign_and_verify() {
+        let sk = p256::ecdsa::SigningKey::from_slice(&[0x42u8; 32]).unwrap();
+        let vk = sk.verifying_key();
+        let pubkey = vk.to_encoded_point(true).as_bytes().to_vec();
+        let tx_hash = [0x77u8; 32];
+
+        let mut assertion = WebAuthnAssertion {
+            pubkey,
             authenticator_data: vec![0x01; 37],
-            client_data_json: br#"{"type":"webauthn.get","challenge":"abc"}"#.to_vec(),
-            signature: vec![0xAA; 64],
+            client_data_json: br#"{"type":"webauthn.get","challenge":"kovanica"}"#.to_vec(),
+            signature: vec![0u8; 64],
         };
-        assert!(assertion.validate_structure().is_ok());
-        assert_ne!(assertion.derive_address(), [0u8; 32]);
-        assert_ne!(assertion.signing_payload_digest(&[7u8; 32]), [0u8; 32]);
+        let digest = assertion.signing_payload_digest(&tx_hash);
+        let sig: P256Signature = sk.sign(&digest);
+        assertion.signature = sig.to_bytes().to_vec();
+
+        assert!(assertion.verify_p256(&tx_hash).is_ok());
+        assert!(assertion.verify_p256(&[0x78u8; 32]).is_err());
     }
 
     #[test]
-    fn hybrid_pq_envelope_verifies_classical_and_enforces_mldsa65_size() {
+    fn hybrid_pq_envelope_real_mldsa65_and_ed25519_verify() {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
         let pk = sk.verifying_key().to_bytes();
-        let pq_pk_hash = *blake3::hash(&[0x11u8; ML_DSA_65_PUBKEY_BYTES]).as_bytes();
+
+        let (ml_pk, ml_sk) = ml_dsa_65::try_keygen().unwrap();
+        let ml_pk_bytes = ml_pk.into_bytes();
+        let pq_pk_hash = *blake3::hash(&ml_pk_bytes).as_bytes();
         let tx_hash = [0x99u8; 32];
         let digest = HybridPqEnvelope::hybrid_digest(&pk, &pq_pk_hash, &tx_hash);
-        let sig = sk.sign(&digest).to_bytes().to_vec();
+
+        let ed_sig = sk.sign(&digest).to_bytes().to_vec();
+        let pq_sig = ml_sk.try_sign(&digest, &[]).unwrap().to_vec();
 
         let valid = HybridPqEnvelope {
             ed25519_pubkey: pk,
-            ed25519_signature: sig.clone(),
+            ed25519_signature: ed_sig,
             pq_pubkey_hash: pq_pk_hash,
-            pq_signature: vec![0xBB; ML_DSA_65_SIG_BYTES],
+            pq_signature: pq_sig,
         };
-        assert!(valid.validate_and_verify_classical(&tx_hash).is_ok());
-
-        let short_pq = HybridPqEnvelope {
-            ed25519_pubkey: pk,
-            ed25519_signature: sig,
-            pq_pubkey_hash: pq_pk_hash,
-            pq_signature: vec![0xBB; 100],
-        };
-        assert!(short_pq.validate_and_verify_classical(&tx_hash).is_err());
+        assert!(valid.verify_hybrid(&ml_pk_bytes, &tx_hash).is_ok());
+        assert!(valid.verify_hybrid(&ml_pk_bytes, &[0x98u8; 32]).is_err());
     }
 }
