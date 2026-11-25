@@ -1,8 +1,8 @@
 # Kovanica L1 — Pre-Audit Reproduction & Mainnet Pre-Flight Verification (2026-11)
 
-**Verification Date:** 2026-11-23 (UTC)  
-**Repository:** `KovanicaProtokol/kovanica-l1`  
-**Verified Commit:** `3c621df0b07a95f515b2aaac2b0729b495233714` (`3c621df`)  
+**Verification Date:** 2026-11-25 (UTC)  
+**Repository:** `BetterCallDzuks/kovanica-l1`  
+**Verified Commit:** `9391ae805a31ea9625510a4b82bf94ab6d579fc0` (`9391ae8`)  
 **Related Documents:** [`AGENT-RULES.md`](AGENT-RULES.md), [`INTERNAL_PRE_AUDIT_2026_11.md`](INTERNAL_PRE_AUDIT_2026_11.md), [`AUDIT-SCOPE.md`](AUDIT-SCOPE.md), [`MAINNET-FREEZE-CHECKLIST.md`](MAINNET-FREEZE-CHECKLIST.md)
 
 ---
