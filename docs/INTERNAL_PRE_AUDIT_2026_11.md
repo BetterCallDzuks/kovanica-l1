@@ -1,14 +1,14 @@
 # Kovanica Internal Pre-Audit Security Assessment Report (P4-4)
 
 **Audit Team:** Kovanica Core Security & Protocol Engineering (Internal Pre-Audit Handoff)  
-**Audit Period:** 2026-11-05 – 2026-11-23  
-**Report Date:** 2026-11-23  
-**Codebase Commit:** `ee908ca` (`BetterCallDzuks/kovanica-l1` `main`, PR #1 merged — includes `6d07b55` security hardening sweep, Stratum V1 VarDiff/TLS/`IpBanScorer`/`GET /workers`/`mining.extranonce.subscribe`/`mining.ping` & idle eviction, JSON-RPC 2.0 batching, CLI `contract call`/`storage`, and Prometheus/Grafana monitoring suite)  
+**Audit Period:** 2026-11-05 – 2026-11-25  
+**Report Date:** 2026-11-25  
+**Codebase Commit:** `9391ae8` (`BetterCallDzuks/kovanica-l1` `main`, PRs #1–#28 merged — includes Balanced Fixed Fees 75% burn / 25% miner, KVP-106 `kovanica-rwa`, Wave A `Batch`/`Sponsored`/CPI, Wave B EIP-1559 base fee & refundable storage deposits, Wave C `kovanica-scheduler`, `SESSION_KEYS` & `RegisterSessionKey`/`RevokeSessionKey` txs, real `p256` 0.14 WebAuthn ECDSA, Wave D multi-chain `kovanica-bridge` BTC/Solana/all-EVM & real `fips204` NIST ML-DSA-65 hybrid PQ, `kovanica_getFeeSchedule`/`getBaseFee`/`getStorageDeposit`/`getSessionKey` RPC, `dress-rehearsal-3node.sh`, and 189-metric Prometheus/Grafana monitoring suite)  
 **Scope Document:** [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) v2.0  
 **Checklist Document:** [`docs/AUDIT-CHECKLIST.md`](AUDIT-CHECKLIST.md)  
 **Reproduction Report:** [`docs/PRE_AUDIT_REPRODUCTION_2026_11.md`](PRE_AUDIT_REPRODUCTION_2026_11.md)  
 **Auditor Dossier Packager:** `scripts/package-audit-dossier.sh` (`#315`)  
-**Ecosystem Merged `main` Tips (`BetterCallDzuks/*`, `protect-main-pr-only` + `.github/workflows/pr-policy.yml` active on 5/5 repos):** `kovanica-l1` (`ee908ca`), `kovanica-sdk` (`40f0e1d`), `kovanica-web` (`cc2a52a`, live on `https://kovanica.online` & `https://explorer.kovanica.online`), `kovanica-apps` (`b2fa669`), `kovanica-playground` (`358834c`)  
+**Ecosystem Merged `main` Tips (`BetterCallDzuks/*`, `protect-main-pr-only` + `.github/workflows/pr-policy.yml` active on 5/5 repos):** `kovanica-l1` (`9391ae8`), `kovanica-sdk` (`316094c`, `v0.8.1`), `kovanica-web` (`1479aa7`, live on `seed1`), `kovanica-apps` (`62dc7fa`), `kovanica-playground` (`f19d66e`)  
 **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`/`#308`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee` / refreshed release bundle `sha256: 5857c83e1eb911bf30f890079e18370c5dc74986580303795fd2d173c2296377`, network tag `2-24cdb5fadd98b207`)  
 **Chain Registry:** `1` (`kovanica-mainnet`), `2` (`kovanica-testnet`), `3` (`kovanica-devnet`; `1337` retired in `#284`)  
 **Hardening Gates (`P4-6` `#288` & `6d07b55`):** `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0` (`GENESIS_ROUND`); full-state commitment active from round `0` on Mainnet (`chain_id = 1`) and `500_000` on Testnet (`chain_id = 2`)  
@@ -25,8 +25,8 @@
 | **High Findings (Open / Fixed)** | **0 Open** / 3 Fixed (`#233`/`#272` Hybrid Stake Refusal, `#284` Chain `1337` Retirement, `#285` Secret Untracking) |
 | **Medium Findings (Open / Fixed)** | **0 Open** / 2 Fixed (`#279` Faucet Nonce/Rate-Limit Serialization, `#283` Canonical Genesis Bundle) |
 | **Low / Informational** | **0 Open** / 2 Informational notes documented for external auditor (`KOVANICA-I-001` resolved for Mainnet in `6d07b55`) |
-| **Crates in Scope** | 28 core protocol crates (49 workspace crates total: 43 active, 6 stubs) |
-| **Latest Verification Sweep (2026-11-23)** | `cargo clippy --workspace --all-targets -- -D warnings`: **0 warnings**; `cargo test --workspace` (47 non-stratum/cli crates): **1,531 passed, 0 failed, 1 ignored** across 116 suites + `kovanica-execution --doc` **PASS**; `scripts/run-fuzz-smoke.sh`: **14/14 passed**; `cargo deny check`: **PASS**; `python3 scripts/lint_docs.py`: **OK**; `python3 ops/monitoring/validate-monitoring.py`: **PASS** (50 `stratum_*` metrics, 17 Grafana panels, 6 Prometheus alert rules) |
+| **Crates in Scope** | 31 core protocol & contract crates (53 workspace crates total: including `kovanica-rwa`, `kovanica-scheduler`, `kovanica-bridge`) |
+| **Latest Verification Sweep (2026-11-25)** | `cargo fmt --all -- --check` + `cargo clippy --workspace --all-targets -- -D warnings`: **0 warnings**; `cargo test --workspace`: **PASS** (including real `p256` 0.14 ECDSA, `fips204` ML-DSA-65 hybrid PQ, Wave A–D, `wave_bc` execution helpers, and multi-chain bridge tests); `cargo audit` + `cargo deny check`: **PASS** (`RUSTSEC-2026-0387` cleared via `p256` 0.14 / `crypto-bigint` 0.7.11); `gitleaks`: **PASS**; `python3 scripts/lint_docs.py`: **OK**; `python3 ops/monitoring/validate-monitoring.py`: **PASS** (189 exported metrics, 54 `stratum_*` metrics, 33 Grafana panels across Stratum + Ecosystem dashboards, 19 Prometheus alert rules); `bash scripts/dress-rehearsal-3node.sh`: **5/5 PASS** |
 
 **One-sentence summary:** Static and test-backed verification across all 7 [`docs/AUDIT-SCOPE.md`](AUDIT-SCOPE.md) areas on merged `BetterCallDzuks/kovanica-l1` `main` (`ee908ca`) confirms that Hybrid PoW (`KovanicaHash` 2 MiB mix) + GHOSTDAG (`K=5`), `Wasmi` sandbox execution, `NoStake82M` tokenomics, PRO-21 addresses, round-0 hardening gates (`#288`), SIM-1 multi-threaded mempool/node soak (`#316`), JSON-RPC 2.0 batch support (`MAX_JSONRPC_BATCH_SIZE = 32`) with per-item rate-limit accounting, CLI `contract call` / `contract storage` inspection, Stratum V1 `kovanicahash-v1` mining pool gateway (VarDiff, TLS + E2E test, `IpBanScorer` per-IP ban, sanitized `GET /workers`, `mining.extranonce.subscribe`/`mining.set_extranonce`, `mining.ping` & idle session eviction sweep, Prometheus alerts + 17-panel Grafana dashboard), and the `6d07b55` defense-in-depth hardening sweep uphold all protocol invariants with zero open Critical/High issues.
 
