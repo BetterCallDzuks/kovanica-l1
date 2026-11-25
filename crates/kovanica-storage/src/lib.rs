@@ -229,6 +229,14 @@ pub mod tables {
     /// Persisted deterministic fee accounting counters for PRO-53 fee split and burn.
     pub const FEE_ACCOUNTING_STATE: TableDefinition<&'static str, Vec<u8>> =
         TableDefinition::new("fee_accounting_state");
+    /// Persisted scoped session key policies keyed by `(owner_address, session_pubkey)`.
+    /// Value is bincode-serialized `kovanica_types::SessionKeyPolicy` (Wave C).
+    pub const SESSION_KEYS: TableDefinition<([u8; 32], [u8; 32]), Vec<u8>> =
+        TableDefinition::new("session_keys");
+    /// Persisted per-contract refundable storage deposit accounting (Wave B):
+    /// `contract_address` -> `[bytes_le(8) || deposit_atoms_le(8)]`.
+    pub const STORAGE_DEPOSITS: TableDefinition<[u8; 32], [u8; 16]> =
+        TableDefinition::new("storage_deposits");
 
     // Consensus store tables
     pub const DAG_BLOCKS: TableDefinition<[u8; 32], Vec<u8>> = TableDefinition::new("dag_blocks"); // StatementBlock serialized
