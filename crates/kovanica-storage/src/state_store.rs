@@ -756,6 +756,52 @@ impl StateStore {
         }
     }
 
+    /// Persist the live EIP-1559 `base_fee_per_byte` (atoms/byte).
+    pub fn save_base_fee_per_byte(
+        &self,
+        txn: &WriteTransaction,
+        base_fee_per_byte: u64,
+    ) -> Result<(), StateStoreError> {
+        let mut table = txn.open_table(crate::tables::FEE_ACCOUNTING_STATE)?;
+        table.insert(
+            "eip1559_base_fee_per_byte",
+            base_fee_per_byte.to_le_bytes().to_vec(),
+        )?;
+        Ok(())
+    }
+
+    /// Load the live EIP-1559 `base_fee_per_byte` from a write transaction (defaults to `1`).
+    pub fn load_base_fee_per_byte_write(
+        &self,
+        txn: &WriteTransaction,
+    ) -> Result<u64, StateStoreError> {
+        let table = txn.open_table(crate::tables::FEE_ACCOUNTING_STATE)?;
+        let bytes = table
+            .get("eip1559_base_fee_per_byte")?
+            .map(|g| g.value().to_vec());
+        Ok(bytes
+            .and_then(|b| <[u8; 8]>::try_from(b.as_slice()).ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or(1))
+    }
+
+    /// Load the live EIP-1559 `base_fee_per_byte` from a read transaction (defaults to `1`).
+    pub fn load_base_fee_per_byte(&self, txn: &ReadTransaction) -> Result<u64, StateStoreError> {
+        let table_res = txn.open_table(crate::tables::FEE_ACCOUNTING_STATE);
+        let table = match table_res {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(1),
+            Err(e) => return Err(StateStoreError::Table(e)),
+        };
+        let bytes = table
+            .get("eip1559_base_fee_per_byte")?
+            .map(|g| g.value().to_vec());
+        Ok(bytes
+            .and_then(|b| <[u8; 8]>::try_from(b.as_slice()).ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or(1))
+    }
+
     // ============================================================
     // State root operations (for snapshots/light clients)
     // ============================================================

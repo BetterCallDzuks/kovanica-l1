@@ -1719,6 +1719,12 @@ pub async fn handle_get_fee_schedule(_params: Value, state: RpcState) -> Result<
     } else {
         (7_500u64, 2_500u64)
     };
+    let base_fee_per_byte = state
+        .storage
+        .begin_read()
+        .ok()
+        .and_then(|txn| state.storage.state().load_base_fee_per_byte(&txn).ok())
+        .unwrap_or(kovanica_params::MIN_BASE_FEE_PER_BYTE);
     Ok(json!({
         "chain_id": quantity(chain_id),
         "active_from_round": quantity(active_from_round),
@@ -1727,7 +1733,7 @@ pub async fn handle_get_fee_schedule(_params: Value, state: RpcState) -> Result<
         "wave_a_active": wave_a_active,
         "fee_split_burn_bps": burn_bps,
         "fee_split_miner_bps": miner_bps,
-        "base_fee_per_byte": quantity(kovanica_params::MIN_BASE_FEE_PER_BYTE),
+        "base_fee_per_byte": quantity(base_fee_per_byte),
         "target_block_bytes": quantity(kovanica_params::TARGET_BLOCK_BYTES as u64),
         "storage_deposit_per_byte": quantity(kovanica_params::STORAGE_DEPOSIT_PER_BYTE),
         "default_gas_price_atoms": quantity(kovanica_params::DEFAULT_GAS_PRICE_ATOMS),

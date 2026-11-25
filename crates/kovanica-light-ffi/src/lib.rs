@@ -1932,6 +1932,56 @@ pub fn sign_deploy_raw(
     })
 }
 
+/// Sign a 1-tx atomic `Batch(Deploy + Call)` (Wave A) for mobile token/RWA creation.
+///
+/// The `Call` targets `[0u8; 32]`, which L1 resolves to the contract deployed by the
+/// first action in the same batch. `fee` is the explicit total fee in atoms (must cover
+/// the fixed floor sum, e.g., 6 KVNC for Deploy + `token_create`).
+#[uniffi::export]
+#[allow(clippy::too_many_arguments)]
+pub fn sign_batch_deploy_call_raw(
+    keystore_json: String,
+    passphrase: String,
+    chain_id: u64,
+    code_hex: String,
+    method: String,
+    args_hex: String,
+    gas_limit: u64,
+    nonce: u64,
+    fee: u64,
+) -> Result<String, LightFfiError> {
+    let passphrase = SecretString::new(passphrase);
+    let (signing_key, sender) = open_signing_key(&keystore_json, passphrase.as_str())?;
+    let code = parse_hex_bytes(&code_hex, "code")?;
+    let args = parse_hex_bytes(&args_hex, "args")?;
+    let ctx = kovanica_types::SigningContext::new(chain_id);
+    let kind = kovanica_types::TransactionKind::Batch {
+        actions: vec![
+            kovanica_types::BatchAction::Deploy { code },
+            kovanica_types::BatchAction::Call {
+                contract: kovanica_types::Address([0u8; 32]),
+                value: 0,
+                method,
+                args,
+                gas_limit,
+            },
+        ],
+    };
+    let mut tx = kovanica_types::Transaction {
+        sender,
+        nonce,
+        kind,
+        fee,
+        signature: kovanica_types::crypto::Signature([0u8; 64]),
+        hash: kovanica_types::Hash::zero(),
+    };
+    let hash = tx.signing_hash(&ctx);
+    tx.signature = kovanica_crypto::sign(&signing_key, &hash.0);
+    tx.hash = hash;
+    let raw = bincode::serialize(&tx).map_err(failed)?;
+    Ok(format!("0x{}", hex::encode(raw)))
+}
+
 /// Sign a light-node bond. The stake does not enter the validator committee.
 #[uniffi::export]
 pub fn sign_bond_raw(
