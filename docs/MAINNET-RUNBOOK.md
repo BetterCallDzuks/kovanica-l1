@@ -3,7 +3,7 @@
 > **Network:** kovanica-mainnet (chain ID `1`)
 > **Ticker:** KVNC (9 decimals; `1 KVNC = 10^9` atoms)
 > **Consensus:** Hybrid PoW + GHOSTDAG. Stake is not used for consensus.
-> **Status:** Operational draft. Frozen parameters are locked. Ceremony addresses are **OPEN**. Launch date is 1.1.2027. The clock time that day is **OPEN**.
+> **Status:** Operational runbook. Frozen parameters, ceremony addresses (`1-f35df34c92001436`), public RPC hostname (`rpc.kovanica.online`), and treasury custody (single founder) are locked. Launch time is **2027-01-01 12:00 UTC**. Only grey-cloud DNS cutover for `mainnet.kovanica.online` remains **OPEN**.
 > **Consensus impact:** None. This runbook tells operators how to start clients. It does not change consensus bytes, genesis files, or a live deploy.
 
 Read [`AGENT-RULES.md`](AGENT-RULES.md) before acting on this document. Key generation and the genesis file set are in [`KEY-CEREMONY.md`](KEY-CEREMONY.md) and [`GENESIS-CEREMONY.md`](GENESIS-CEREMONY.md). Mining mechanics are in [`MINING.md`](MINING.md).
@@ -57,21 +57,21 @@ The DAA aims at 4 seconds and clamps to those two bit values. Operators do not w
 
 ---
 
-## 3. OPEN items that block launch
+## 3. Launch ceremony & operational parameters
 
-Launch waits on [`KEY-CEREMONY.md`](KEY-CEREMONY.md). Until these are real, keep the committed `mainnet/genesis.json` template untouched. It still contains `PLACEHOLDER_MAINNET_*` and the node refuses to run it.
+The offline mainnet genesis ceremony (`#290`) was executed on `2026-11-17` with public artifacts committed under `mainnet/` (`SHA256SUMS`, `genesis.json`, `genesis_validators.toml`, `founder_premine.hex`, `bootnodes.toml`). Remaining launch decisions were locked on `2026-11-25`:
 
 | Item | State |
 |---|---|
-| Founder PRO-21 address | **OPEN** |
-| Treasury PRO-21 address | **OPEN** |
-| Bootstrap seeds (address + 32-byte public key, count 1..=20, recommend 3–5) | **OPEN** |
+| Founder PRO-21 address | `kvnc2yuzlhwfvp7v44yje2cgtfy540q8vv6c780ug3xfel36kswhpwnfthzxvdag` (locked in `mainnet/genesis.json`) |
+| Treasury PRO-21 address | `kvncd2xkjdt78kyqc4ekret0wr3dnnrr3wyxdwmykkwujrpp3l3l6p80mk2dgdag` (locked in `mainnet/genesis.json`) |
+| Bootstrap seeds (address + 32-byte public key, count 1..=20, recommend 3–5) | **5 bootstrap seeds locked** in `mainnet/genesis_validators.toml` (`stake = 0`) |
 | Mainnet network tag `1-<16 hex chars>` | **`1-f35df34c92001436`** (ceremony executed 2026-11-17; bundle `/tmp/kovanica-mainnet-genesis.tar.gz` sha256 `d0ac07ba0bbe7fff87f3a7713a19239ceebb201944b4984d579a1f5f60edd7bf`) |
-| DNS A/AAAA for `mainnet.kovanica.online` | **OPEN** (name and port are frozen; the host record is not published here) |
-| Extra seed DNS names | **OPEN** |
-| Public RPC hostname | **OPEN** |
-| Exact UTC start on 1.1.2027 | **OPEN** |
-| Treasury custodians | **OPEN** |
+| DNS A/AAAA for `mainnet.kovanica.online` | **OPEN** (name and port `8000` are frozen; switch from Cloudflare proxy to grey-cloud DNS-only before $T_0$) |
+| Extra seed DNS names | **None** (single primary bootnode `mainnet.kovanica.online:8000`; confirmed Toni 2026-11-25) |
+| Public RPC hostname | **`rpc.kovanica.online`** (confirmed Toni 2026-11-25) |
+| Exact UTC start on 1.1.2027 | **`12:00 UTC`** (confirmed Toni 2026-11-25) |
+| Treasury custodians | **Single founder** (offline cold key; confirmed Toni 2026-11-25) |
 
 `OPEN` is a marker in this document. Do not put the word `OPEN` into a config or a genesis file.
 
@@ -196,7 +196,7 @@ Same genesis and the same tag as the seeds. `run_validator = false`. Mining stay
 
 ## 7. Launch window
 
-Public launch is **1.1.2027**. The UTC minute is **OPEN**. Agree it in writing before the day, then:
+Public launch is **2027-01-01 at 12:00 UTC** (confirmed Toni 2026-11-25). Then:
 
 1. At least 15 minutes before that minute, start seeds with empty data directories that contain only the ceremony files and a fresh `p2p_node.key` created by the process. Do not copy a chain ID 2 data directory.
 2. At the agreed minute, start miners and RPC nodes.
@@ -325,7 +325,7 @@ Leave `genesis_validators.toml`, `founder_premine.hex`, `bootnodes.toml`, the co
 
 ## 10. Launch checklist
 
-- [ ] Ceremony sign-off in [`KEY-CEREMONY.md`](KEY-CEREMONY.md) is complete (no remaining **OPEN** address).
+- [x] Ceremony sign-off in [`KEY-CEREMONY.md`](KEY-CEREMONY.md) is complete (`1-f35df34c92001436`, no remaining **OPEN** address).
 - [ ] `sha256sum -c SHA256SUMS` matches on every operator’s copy.
 - [ ] `network-tag` is the same `1-` value on every node.
 - [ ] `mainnet.kovanica.online` resolves grey-cloud and accepts TCP `8000`.
@@ -335,6 +335,6 @@ Leave `genesis_validators.toml`, `founder_premine.hex`, `bootnodes.toml`, the co
 - [ ] `kovanica node sync` shows height advancing and `Sync` = `in sync`.
 - [ ] `ops/prometheus/alerts.yml` is loaded, and `KVCNNodeDown` is clear.
 - [ ] RPC write methods require the bearer token.
-- [ ] Launch calendar day is 1.1.2027, and the UTC minute was agreed (replaces **OPEN**).
+- [x] Launch calendar day is 2027-01-01, and the UTC start time is locked at **12:00 UTC**.
 
 This runbook does not authorize a deploy, a tag move, or a genesis commit. Those stay with Toni.
