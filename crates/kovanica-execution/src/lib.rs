@@ -565,6 +565,20 @@ impl ExecutionContext {
                         .state()
                         .save_fee_accounting_state(&txn, &fee_state)?;
 
+                    // Update live EIP-1559 dynamic base_fee_per_byte based on sub-DAG payload bytes.
+                    let subdag_bytes: usize = subdag
+                        .blocks
+                        .iter()
+                        .flat_map(|b| b.transactions.iter())
+                        .map(|t| bincode::serialized_size(t).unwrap_or(0) as usize)
+                        .sum();
+                    let prev_base_fee = storage.state().load_base_fee_per_byte_write(&txn)?;
+                    let next_base_fee =
+                        kovanica_fee::next_base_fee_per_byte(prev_base_fee, subdag_bytes);
+                    storage
+                        .state()
+                        .save_base_fee_per_byte(&txn, next_base_fee)?;
+
                     candidate_staking.committed_leader_height =
                         candidate_staking.committed_leader_height.saturating_add(1);
                     candidate_staking.total_mining_issued = mining_state.cumulative_mining_issued;
