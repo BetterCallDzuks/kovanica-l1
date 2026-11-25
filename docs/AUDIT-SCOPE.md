@@ -1,10 +1,10 @@
 # Kovanica External Security Audit — Scope Document
 
-**Version:** 2.0  
-**Date:** 2026-11-21  
+**Version:** 2.1  
+**Date:** 2026-11-25  
 **Codebase:** `kovanica` (Hybrid PoW + GHOSTDAG, account-based, Wasmi execution)  
-**Repository:** `https://github.com/KovanicaDAG/kovanica-l1`  
-**Pinned Commit (`main`):** `e72d8e1ab224df7e6c7b11c5af3b7d4715cbb5c0`  
+**Repository:** `https://github.com/BetterCallDzuks/kovanica-l1`  
+**Pinned Commit (`main`):** `7197a28` (Waves A–D, Balanced Fixed Fees, KVP-106 RWA, Multi-Chain Bridge, real `p256` 0.14 & `fips204` ML-DSA-65)  
 **License:** GPL-3.0-or-later  
 **Native Coin:** **KVNC** (9 decimals; `ONE_KVNC = 10^9`)  
 
@@ -173,8 +173,8 @@ $$\text{TOTAL\_SUPPLY} = \text{PREMINE } (0.2\text{M}) + \text{TREASURY } (8\tex
 
 ## 6. Repository & Build Pinning
 
-- **Repository:** `https://github.com/KovanicaDAG/kovanica-l1`
-- **Branch / Pinned Commit:** `main` @ `e72d8e1ab224df7e6c7b11c5af3b7d4715cbb5c0` (post-`#308`–`#322`, where `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0`)
+- **Repository:** `https://github.com/BetterCallDzuks/kovanica-l1`
+- **Branch / Pinned Commit:** `main` @ `7197a28` (post-Waves A–D, Balanced Fixed Fees, KVP-106 `kovanica-rwa`, `kovanica-scheduler`, multi-chain `kovanica-bridge`, real `p256` 0.14 ECDSA & `fips204` 0.4 ML-DSA-65; `GAS/CONTRACT/SIZE_LIMITS/SLASHING_ACTIVE_FROM_ROUND = 0`)
 - **Automated Auditor Dossier Packager:** `bash scripts/package-audit-dossier.sh` (`#315`, produces `target/audit-package/kovanica-audit-dossier-<sha>.tar.gz` with embedded `scripts/auditor-reproduce.sh`)
 - **Testnet Genesis Bundle:** `kovanica-testnet-genesis.tar.gz` (`#283`/`#287`/`#308`, `sha256: a2c5ed9213a25cd3ed2ca99a1db80dc8d9403856d27e0f84916d3e253ddaebee` / refreshed release bundle `sha256: 5857c83e1eb911bf30f890079e18370c5dc74986580303795fd2d173c2296377`, network tag `2-24cdb5fadd98b207`)
 - **Build Instructions:**
@@ -185,6 +185,8 @@ $$\text{TOTAL\_SUPPLY} = \text{PREMINE } (0.2\text{M}) + \text{TREASURY } (8\tex
 - **Key Pinned Dependencies:**
   - `wasmi = "0.40"`
   - `ed25519-dalek = "2.1"`
+  - `p256 = "0.14"` (WebAuthn / Passkey ECDSA verification)
+  - `fips204 = "0.4"` (NIST ML-DSA-65 hybrid post-quantum signatures)
   - `blake3 = "=1.5.1"`
   - `libp2p = "0.54"`
   - `redb = "2.1"`
