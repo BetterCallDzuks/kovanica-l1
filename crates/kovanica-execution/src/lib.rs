@@ -8681,4 +8681,163 @@ mod tests {
             assert_eq!(fee_state.cumulative_fees_to_miners, 0);
         }
     }
+
+    #[test]
+    fn wave_a_atomic_batch_and_sponsored_gasless_e2e_on_mainnet() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path().join("test.redb")).unwrap();
+        let signing_ctx = SigningContext::new(kovanica_params::CHAIN_ID_MAINNET);
+        let mut ctx = ExecutionContext::with_signing_context(signing_ctx);
+
+        let sender_key = SigningKey::from_bytes(&[31u8; 32]);
+        let sender = Address::from_public_key(&PublicKey(sender_key.verifying_key().to_bytes()));
+        let sponsor_key = SigningKey::from_bytes(&[32u8; 32]);
+        let sponsor = Address::from_public_key(&PublicKey(sponsor_key.verifying_key().to_bytes()));
+        let recv_a = Address([0xA1; 32]);
+        let recv_b = Address([0xB2; 32]);
+
+        let write_txn = storage.begin_write().unwrap();
+        storage
+            .state()
+            .set_account(
+                &write_txn,
+                &sender,
+                &Account {
+                    balance: 2_000,
+                    nonce: 0,
+                    code_hash: [0u8; 32],
+                    code: Vec::new(),
+                },
+            )
+            .unwrap();
+        storage
+            .state()
+            .set_account(
+                &write_txn,
+                &sponsor,
+                &Account {
+                    balance: 10 * kovanica_params::ONE_KVNC,
+                    nonce: 0,
+                    code_hash: [0u8; 32],
+                    code: Vec::new(),
+                },
+            )
+            .unwrap();
+        write_txn.commit().unwrap();
+
+        let batch_inner = TransactionKind::Batch {
+            actions: vec![
+                kovanica_types::BatchAction::Transfer {
+                    to: recv_a,
+                    amount: 1_200,
+                },
+                kovanica_types::BatchAction::Transfer {
+                    to: recv_b,
+                    amount: 800,
+                },
+            ],
+        };
+        let mut tx_ok = Transaction {
+            sender,
+            nonce: 0,
+            kind: TransactionKind::Sponsored {
+                fee_payer: sponsor,
+                fee_payer_signature: Signature([0u8; 64]),
+                inner: Box::new(batch_inner),
+            },
+            fee: 50_000,
+            signature: Signature([0u8; 64]),
+            hash: Hash::zero(),
+        };
+        let h = tx_ok.signing_hash(&signing_ctx);
+        tx_ok.signature = kovanica_crypto::sign(&sender_key, &h.0);
+        tx_ok.hash = h;
+        let sh = tx_ok.sponsor_signing_hash(&signing_ctx).unwrap();
+        let ssig = kovanica_crypto::sign(&sponsor_key, &sh.0);
+        if let TransactionKind::Sponsored {
+            ref mut fee_payer_signature,
+            ..
+        } = tx_ok.kind
+        {
+            *fee_payer_signature = ssig;
+        }
+
+        let mut tx_fail = Transaction {
+            sender,
+            nonce: 1,
+            kind: TransactionKind::Sponsored {
+                fee_payer: sponsor,
+                fee_payer_signature: Signature([0u8; 64]),
+                inner: Box::new(TransactionKind::Batch {
+                    actions: vec![
+                        kovanica_types::BatchAction::Transfer {
+                            to: recv_a,
+                            amount: 1,
+                        },
+                        kovanica_types::BatchAction::Transfer {
+                            to: recv_b,
+                            amount: 999_999,
+                        },
+                    ],
+                }),
+            },
+            fee: 50_000,
+            signature: Signature([0u8; 64]),
+            hash: Hash::zero(),
+        };
+        let h2 = tx_fail.signing_hash(&signing_ctx);
+        tx_fail.signature = kovanica_crypto::sign(&sender_key, &h2.0);
+        tx_fail.hash = h2;
+        let sh2 = tx_fail.sponsor_signing_hash(&signing_ctx).unwrap();
+        let ssig2 = kovanica_crypto::sign(&sponsor_key, &sh2.0);
+        if let TransactionKind::Sponsored {
+            ref mut fee_payer_signature,
+            ..
+        } = tx_fail.kind
+        {
+            *fee_payer_signature = ssig2;
+        }
+
+        let txs = vec![tx_ok, tx_fail];
+        let digest = StatementBlock::compute_digest(0, 1, &[], &txs);
+        let block = StatementBlock {
+            author: 0,
+            round: 1,
+            parents: Vec::new(),
+            transactions: txs,
+            statements: Vec::new(),
+            signature: Signature([0u8; 64]),
+            digest,
+            merkle_root: Default::default(),
+        };
+        let subdag = CommittedSubDag {
+            leader: block.clone(),
+            blocks: vec![block],
+            leader_round: 1,
+            leader_author: 0,
+            non_blue: vec![],
+        };
+        let res = ctx.execute_committed_subdag(&subdag, &storage).unwrap();
+        assert_eq!(res.receipts.len(), 2);
+        assert!(res.receipts[0].success, "sponsored batch #1 must succeed");
+        assert!(!res.receipts[1].success, "overdraft batch #2 must fail");
+
+        let read = storage.begin_read().unwrap();
+        let sender_after = storage.state().get_account(&read, &sender).unwrap();
+        assert_eq!(sender_after.balance, 0);
+        assert_eq!(sender_after.nonce, 2);
+        let sponsor_after = storage.state().get_account(&read, &sponsor).unwrap();
+        assert_eq!(
+            sponsor_after.balance,
+            10 * kovanica_params::ONE_KVNC - 100_000
+        );
+        assert_eq!(
+            storage.state().get_account(&read, &recv_a).unwrap().balance,
+            1_200
+        );
+        assert_eq!(
+            storage.state().get_account(&read, &recv_b).unwrap().balance,
+            800
+        );
+    }
 }

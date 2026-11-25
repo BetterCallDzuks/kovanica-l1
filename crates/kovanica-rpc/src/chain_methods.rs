@@ -1712,6 +1712,8 @@ pub async fn handle_get_fee_schedule(_params: Value, state: RpcState) -> Result<
         .unwrap_or(0);
     let active_from_round = kovanica_params::fixed_fees_active_from_round_for_chain(chain_id);
     let active = kovanica_params::fixed_fees_active_from_for_chain(chain_id, tip_height);
+    let wave_a_active_from_round = kovanica_params::wave_a_active_from_round_for_chain(chain_id);
+    let wave_a_active = kovanica_params::wave_a_active_from_for_chain(chain_id, tip_height);
     let (burn_bps, miner_bps) = if chain_id == kovanica_params::CHAIN_ID_DEVNET {
         (10_000u64, 0u64)
     } else {
@@ -1721,8 +1723,14 @@ pub async fn handle_get_fee_schedule(_params: Value, state: RpcState) -> Result<
         "chain_id": quantity(chain_id),
         "active_from_round": quantity(active_from_round),
         "active": active,
+        "wave_a_active_from_round": quantity(wave_a_active_from_round),
+        "wave_a_active": wave_a_active,
         "fee_split_burn_bps": burn_bps,
         "fee_split_miner_bps": miner_bps,
+        "base_fee_per_byte": quantity(kovanica_params::MIN_BASE_FEE_PER_BYTE),
+        "target_block_bytes": quantity(kovanica_params::TARGET_BLOCK_BYTES as u64),
+        "storage_deposit_per_byte": quantity(kovanica_params::STORAGE_DEPOSIT_PER_BYTE),
+        "default_gas_price_atoms": quantity(kovanica_params::DEFAULT_GAS_PRICE_ATOMS),
         "fixed_fees": {
             "deploy": quantity(kovanica_params::FIXED_FEE_CONTRACT_DEPLOY),
             "token_create": quantity(kovanica_params::FIXED_FEE_TOKEN_CREATE),
