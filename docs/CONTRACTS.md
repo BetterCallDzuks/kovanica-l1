@@ -1,7 +1,8 @@
 # Kovanica Contract Layer (Lane 3b)
 
 The contract crates — `kovanica-htlc`, `kovanica-vault`, `kovanica-multisig`,
-`kovanica-token`, and `kovanica-name-registry` — are ordinary Rust libraries with a **typed API** and, on
+`kovanica-token`, `kovanica-nft`, `kovanica-escrow`, `kovanica-name-registry`,
+`kovanica-rwa`, `kovanica-scheduler`, and `kovanica-bridge` — are ordinary Rust libraries with a **typed API** and, on
 `wasm32-unknown-unknown`, a fixed set of `extern "C"` **entry-point exports**.
 Lane 3b wires them into the real execution path through
 `kovanica-execution::contracts`; `kovanica-runtime` provides the gas-metered Wasmi
@@ -157,7 +158,7 @@ for it, so the ABI stays unchanged). It must be empty, `https://…`, or a
 `InvalidInput`. Wallets that decode the state read it as a trailing `String`
 after `paused` and treat its absence as "no icon".
 
-## 4. Dispatch entry points (the 19 names)
+## 4. Dispatch entry points (the 47 names)
 
 `kovanica-execution::contracts::ENTRY_POINTS` is the authoritative list. The native
 dispatcher, the wasm exports, and this table must stay in sync (enforced by the
@@ -182,13 +183,41 @@ dispatcher, the wasm exports, and this table must stay in sync (enforced by the
 | `token_transfer_from` | `(Address, Address, Amount)` | `()` |
 | `token_mint` | `(Address, Amount)` | `()` |
 | `token_burn` | `(Amount,)` | `()` |
+| `nft_create_collection` | `(String, String, String, u64)` | `()` |
+| `nft_mint` | `(Address, String)` | `TokenId` |
+| `nft_transfer` | `(Address, TokenId)` | `()` |
+| `nft_approve` | `(Address, TokenId)` | `()` |
+| `nft_transfer_from` | `(Address, Address, TokenId)` | `()` |
+| `nft_set_base_uri` | `(String,)` | `()` |
+| `nft_burn` | `(TokenId,)` | `()` |
 | `token_init_pool` | `(Amount kuna_in, Amount tokens_in, u16 fee_bps)` | `Amount` (LP) |
 | `token_buy` | `(Amount amount_in, Amount min_out)` | `Amount` (tokens out) |
 | `token_sell` | `(Amount amount_in, Amount min_out)` | `Amount` (KVNC out) |
+| `escrow_create` | `(Address, Address, Amount, Timestamp)` | `EscrowId` |
+| `escrow_approve` | `(EscrowId,)` | `()` |
+| `escrow_release` | `(EscrowId,)` | `()` |
+| `escrow_refund` | `(EscrowId,)` | `()` |
+| `name_register` | `(String, Vec<String>)` | `()` |
+| `name_resolve` | `(String,)` | `Option<NameRecord>` |
+| `name_update_endpoints` | `(String, Vec<String>)` | `()` |
+| `name_transfer` | `(String, Address)` | `()` |
+| `rwa_create` | `(String, String, AssetClass, String, u32, String, [u8; 32], String, u8, Amount, Amount)` | `()` |
+| `rwa_mint` | `(Address, Amount)` | `()` |
+| `rwa_transfer` | `(Address, Amount)` | `()` |
+| `rwa_burn` | `(Amount,)` | `()` |
+| `rwa_freeze` | `(Address, bool)` | `()` |
+| `rwa_update_metadata` | `([u8; 32], String)` | `()` |
+| `scheduler_create_job` | `(Address, String, Vec<u8>, u64, u64, Amount)` | `JobId` |
+| `scheduler_execute_job` | `(JobId,)` | `Vec<u8>` |
+| `scheduler_cancel_job` | `(JobId,)` | `()` |
+| `bridge_init` | `(Vec<Address>, u32, Amount)` | `()` |
+| `bridge_attest_mint` | `(u64, [u8; 32], Address, Amount)` | `bool` |
+| `bridge_request_withdraw` | `(u64, Vec<u8>, Amount)` | `u64` |
+| `bridge_set_paused` | `(bool,)` | `()` |
 
 **Entry-point gating is active from genesis.** `kovanica_types::CONTRACT_HARDENING_ACTIVE_FROM_ROUND`
 is `0` since P4-6 (2026-11-17), so a wasm `Call` whose `method` is not one of
-the 19 names above is rejected **before** the interpreter runs — the same set
+the 47 names above is rejected **before** the interpreter runs — the same set
 the native `dispatch_entry` path already enforced. There is no pre-activation
 window on a fresh chain: the check applies to every call.
 

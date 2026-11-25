@@ -285,6 +285,8 @@ impl StateStore {
             let _ = write_txn.open_table(crate::tables::EMISSION_POLICY)?;
             let _ = write_txn.open_table(crate::tables::MINING_REWARD_STATE)?;
             let _ = write_txn.open_table(crate::tables::FEE_ACCOUNTING_STATE)?;
+            let _ = write_txn.open_table(crate::tables::SESSION_KEYS)?;
+            let _ = write_txn.open_table(crate::tables::STORAGE_DEPOSITS)?;
         }
         write_txn.commit().map_err(StorageError::Commit)?;
         Ok(Self { pruning })
@@ -1909,6 +1911,127 @@ impl StateStore {
         Ok(removed)
     }
 
+    // ============================================================
+    // Session keys (Wave C) & refundable storage deposits (Wave B)
+    // ============================================================
+
+    /// Persist a scoped session key policy keyed by `(owner, session_pubkey)`.
+    pub fn save_session_key(
+        &self,
+        txn: &WriteTransaction,
+        policy: &kovanica_types::SessionKeyPolicy,
+    ) -> Result<(), StateStoreError> {
+        let mut table = txn.open_table(crate::tables::SESSION_KEYS)?;
+        let encoded = bincode::serialize(policy)?;
+        table.insert((policy.owner.0, policy.session_pubkey.0), encoded)?;
+        Ok(())
+    }
+
+    /// Load a scoped session key policy for `(owner, session_pubkey)`.
+    pub fn load_session_key(
+        &self,
+        txn: &ReadTransaction,
+        owner: &Address,
+        session_pubkey: &[u8; 32],
+    ) -> Result<Option<kovanica_types::SessionKeyPolicy>, StateStoreError> {
+        let table = match txn.open_table(crate::tables::SESSION_KEYS) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let result = match table.get((owner.0, *session_pubkey))? {
+            Some(v) => Ok(Some(bincode::deserialize(&v.value())?)),
+            None => Ok(None),
+        };
+        result
+    }
+
+    /// Load a scoped session key policy inside an active write transaction.
+    pub fn load_session_key_write(
+        &self,
+        txn: &WriteTransaction,
+        owner: &Address,
+        session_pubkey: &[u8; 32],
+    ) -> Result<Option<kovanica_types::SessionKeyPolicy>, StateStoreError> {
+        let table = txn.open_table(crate::tables::SESSION_KEYS)?;
+        let result = match table.get((owner.0, *session_pubkey))? {
+            Some(v) => Ok(Some(bincode::deserialize(&v.value())?)),
+            None => Ok(None),
+        };
+        drop(table);
+        result
+    }
+
+    /// Revoke (delete) a scoped session key policy. Returns `true` if one existed.
+    pub fn revoke_session_key(
+        &self,
+        txn: &WriteTransaction,
+        owner: &Address,
+        session_pubkey: &[u8; 32],
+    ) -> Result<bool, StateStoreError> {
+        let mut table = txn.open_table(crate::tables::SESSION_KEYS)?;
+        let existed = table.remove((owner.0, *session_pubkey))?.is_some();
+        Ok(existed)
+    }
+
+    /// Persist a contract's active storage byte count and refundable deposit (in atoms).
+    pub fn save_storage_deposit(
+        &self,
+        txn: &WriteTransaction,
+        contract: &Address,
+        bytes: u64,
+        deposit_atoms: u64,
+    ) -> Result<(), StateStoreError> {
+        let mut encoded = [0u8; 16];
+        encoded[..8].copy_from_slice(&bytes.to_le_bytes());
+        encoded[8..16].copy_from_slice(&deposit_atoms.to_le_bytes());
+        let mut table = txn.open_table(crate::tables::STORAGE_DEPOSITS)?;
+        table.insert(contract.0, encoded)?;
+        Ok(())
+    }
+
+    /// Load `(bytes, deposit_atoms)` for a contract, returning `(0, 0)` if absent.
+    pub fn load_storage_deposit(
+        &self,
+        txn: &ReadTransaction,
+        contract: &Address,
+    ) -> Result<(u64, u64), StateStoreError> {
+        let table = match txn.open_table(crate::tables::STORAGE_DEPOSITS) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok((0, 0)),
+            Err(e) => return Err(e.into()),
+        };
+        match table.get(contract.0)? {
+            Some(v) => {
+                let raw = v.value();
+                let bytes = u64::from_le_bytes(raw[..8].try_into().unwrap_or([0; 8]));
+                let deposit = u64::from_le_bytes(raw[8..16].try_into().unwrap_or([0; 8]));
+                Ok((bytes, deposit))
+            }
+            None => Ok((0, 0)),
+        }
+    }
+
+    /// Load `(bytes, deposit_atoms)` for a contract inside a write transaction.
+    pub fn load_storage_deposit_write(
+        &self,
+        txn: &WriteTransaction,
+        contract: &Address,
+    ) -> Result<(u64, u64), StateStoreError> {
+        let table = txn.open_table(crate::tables::STORAGE_DEPOSITS)?;
+        let result = match table.get(contract.0)? {
+            Some(v) => {
+                let raw = v.value();
+                let bytes = u64::from_le_bytes(raw[..8].try_into().unwrap_or([0; 8]));
+                let deposit = u64::from_le_bytes(raw[8..16].try_into().unwrap_or([0; 8]));
+                Ok((bytes, deposit))
+            }
+            None => Ok((0, 0)),
+        };
+        drop(table);
+        result
+    }
+
     /// Get the current pruning configuration.
     pub fn pruning_config(&self) -> &PruningConfig {
         &self.pruning
@@ -3432,6 +3555,104 @@ mod prune_tests {
             let state = store.load_mining_reward_state(&txn).unwrap().unwrap();
             assert!(state.terminal_payout_done);
             assert_eq!(state.terminal_payout_block_index, Some(598_600_000));
+        }
+    }
+
+    #[test]
+    fn session_keys_and_storage_deposits_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::create(dir.path().join("wave_bc.redb")).unwrap();
+        let store = StateStore::new(&db).unwrap();
+
+        let owner = Address([0x11; 32]);
+        let session_pubkey = [0x22; 32];
+        let contract = Address([0x33; 32]);
+
+        let policy = kovanica_types::SessionKeyPolicy {
+            owner,
+            session_pubkey: Address(session_pubkey),
+            allowed_contracts: vec![contract],
+            allowed_methods: vec!["rwa_transfer".to_string()],
+            max_spend_atoms: 10_000_000_000,
+            spent_atoms: 0,
+            expires_round: 500_000,
+            revoked: false,
+        };
+
+        // Initially absent / zero
+        {
+            let txn = db.begin_read().unwrap();
+            assert_eq!(
+                store
+                    .load_session_key(&txn, &owner, &session_pubkey)
+                    .unwrap(),
+                None
+            );
+            assert_eq!(store.load_storage_deposit(&txn, &contract).unwrap(), (0, 0));
+        }
+
+        // Save both
+        {
+            let txn = db.begin_write().unwrap();
+            store.save_session_key(&txn, &policy).unwrap();
+            store
+                .save_storage_deposit(&txn, &contract, 2048, 204_800_000)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        // Verify read & write-txn read
+        {
+            let txn = db.begin_read().unwrap();
+            let loaded = store
+                .load_session_key(&txn, &owner, &session_pubkey)
+                .unwrap()
+                .unwrap();
+            assert_eq!(loaded, policy);
+            assert_eq!(
+                store.load_storage_deposit(&txn, &contract).unwrap(),
+                (2048, 204_800_000)
+            );
+        }
+
+        // Revoke session key and update storage deposit
+        {
+            let txn = db.begin_write().unwrap();
+            assert_eq!(
+                store
+                    .load_session_key_write(&txn, &owner, &session_pubkey)
+                    .unwrap(),
+                Some(policy)
+            );
+            assert_eq!(
+                store.load_storage_deposit_write(&txn, &contract).unwrap(),
+                (2048, 204_800_000)
+            );
+            assert!(store
+                .revoke_session_key(&txn, &owner, &session_pubkey)
+                .unwrap());
+            assert!(!store
+                .revoke_session_key(&txn, &owner, &session_pubkey)
+                .unwrap());
+            store
+                .save_storage_deposit(&txn, &contract, 1024, 102_400_000)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+
+        // Verify post-revocation & post-refund
+        {
+            let txn = db.begin_read().unwrap();
+            assert_eq!(
+                store
+                    .load_session_key(&txn, &owner, &session_pubkey)
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                store.load_storage_deposit(&txn, &contract).unwrap(),
+                (1024, 102_400_000)
+            );
         }
     }
 }
