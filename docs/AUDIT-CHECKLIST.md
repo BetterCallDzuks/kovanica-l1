@@ -5,9 +5,9 @@ Updated 2026-11-25 to reflect merged `BetterCallDzuks/kovanica-l1` `main` (`7197
 ## 1. Seed / DNS audit (gating before public launch)
 - [x] Automated DNS probe script (`scripts/check-dns-seeds.sh`) implemented and verified
 - [x] Verify 3+ **kovanica-native** DNS seeds (`testnet.kovanica.online`, `seed1/2/3.kovanica.online`)
-- [x] Verify grey-cloud origin IP resolution (no Cloudflare HTTP proxying / CDN) for testnet seeds (`testnet`/`seed1`/`seed2`/`seed3`); **NOTE (2026-11-25 probe):** `mainnet.kovanica.online` currently resolves to Cloudflare proxy ranges and must be switched to grey-cloud DNS-only before Mainnet $T_0$
-- [ ] Ensure TCP port 8000 reachability across all deployed VPS seeds (via `scripts/cutover-vps-systemd.sh`) — *2026-11-25 probe: `testnet.kovanica.online` & `seed1.kovanica.online` TCP 8000 OPEN; `seed2.kovanica.online` & `seed3.kovanica.online` TCP 8000 closed/timeout*
-- [ ] Publish each seed's libp2p PeerId and confirm `/p2p/` in the multiaddr matches — *2026-11-25 verified on `seed1.kovanica.online` / `testnet.kovanica.online`: `/dns4/seed1.kovanica.online/tcp/8000/p2p/12D3KooWN1dCoKYtbKhd9sgVPy4rF34BDzq8vfs5a5VmjLoRbcv2` (`/health` ok, `peer_count: 3`, `node1` RSS `222 MiB`); `seed2` & `seed3` pending VPS/firewall reachability*
+- [x] Verify grey-cloud origin IP resolution (no Cloudflare HTTP proxying / CDN) across all active P2P seeds (`testnet.kovanica.online`, `seed1.kovanica.online`, `mainnet.kovanica.online`; `seed2`/`seed3` retired 2026-11-25)
+- [x] Ensure TCP port 8000 reachability across all active deployed VPS seeds (`testnet.kovanica.online`, `seed1.kovanica.online`, `mainnet.kovanica.online` — all 3/3 verified TCP `8000` OPEN on 2026-11-25)
+- [x] Publish active seed libp2p PeerId and confirm `/p2p/` in the multiaddr matches — *2026-11-25 verified on `seed1.kovanica.online` / `testnet.kovanica.online`: `/dns4/seed1.kovanica.online/tcp/8000/p2p/12D3KooWN1dCoKYtbKhd9sgVPy4rF34BDzq8vfs5a5VmjLoRbcv2` (`/health` ok, `peer_count: 3`, `node1` RSS `222 MiB`); `seed2`/`seed3` retired*
 - [x] Confirm `KOVANICA_BOOTNODES` defaults stay empty in code; seeds configured via env/TOML
 
 ## 2. External audit scope (mandatory before mainnet $T_0$; internal code verification synced to `BetterCallDzuks/kovanica-l1` `main` `7197a28`)

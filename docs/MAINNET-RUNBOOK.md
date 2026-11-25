@@ -3,7 +3,7 @@
 > **Network:** kovanica-mainnet (chain ID `1`)
 > **Ticker:** KVNC (9 decimals; `1 KVNC = 10^9` atoms)
 > **Consensus:** Hybrid PoW + GHOSTDAG. Stake is not used for consensus.
-> **Status:** Operational runbook. Frozen parameters, ceremony addresses (`1-f35df34c92001436`), public RPC hostname (`rpc.kovanica.online`), and treasury custody (single founder) are locked. Launch time is **2027-01-01 12:00 UTC**. Only grey-cloud DNS cutover for `mainnet.kovanica.online` remains **OPEN**.
+> **Status:** Operational runbook. Frozen parameters, ceremony addresses (`1-f35df34c92001436`), grey-cloud bootnode DNS (`mainnet.kovanica.online:8000`), public RPC hostname (`rpc.kovanica.online`), and treasury custody (single founder) are locked. Launch time is **2027-01-01 12:00 UTC**.
 > **Consensus impact:** None. This runbook tells operators how to start clients. It does not change consensus bytes, genesis files, or a live deploy.
 
 Read [`AGENT-RULES.md`](AGENT-RULES.md) before acting on this document. Key generation and the genesis file set are in [`KEY-CEREMONY.md`](KEY-CEREMONY.md) and [`GENESIS-CEREMONY.md`](GENESIS-CEREMONY.md). Mining mechanics are in [`MINING.md`](MINING.md).
@@ -67,7 +67,7 @@ The offline mainnet genesis ceremony (`#290`) was executed on `2026-11-17` with 
 | Treasury PRO-21 address | `kvncd2xkjdt78kyqc4ekret0wr3dnnrr3wyxdwmykkwujrpp3l3l6p80mk2dgdag` (locked in `mainnet/genesis.json`) |
 | Bootstrap seeds (address + 32-byte public key, count 1..=20, recommend 3–5) | **5 bootstrap seeds locked** in `mainnet/genesis_validators.toml` (`stake = 0`) |
 | Mainnet network tag `1-<16 hex chars>` | **`1-f35df34c92001436`** (ceremony executed 2026-11-17; bundle `/tmp/kovanica-mainnet-genesis.tar.gz` sha256 `d0ac07ba0bbe7fff87f3a7713a19239ceebb201944b4984d579a1f5f60edd7bf`) |
-| DNS A/AAAA for `mainnet.kovanica.online` | **OPEN** (name and port `8000` are frozen; switch from Cloudflare proxy to grey-cloud DNS-only before $T_0$) |
+| DNS A/AAAA for `mainnet.kovanica.online` | **Verified grey-cloud + TCP `8000` OPEN** (2026-11-25 live DNS/TCP probe) |
 | Extra seed DNS names | **None** (single primary bootnode `mainnet.kovanica.online:8000`; confirmed Toni 2026-11-25) |
 | Public RPC hostname | **`rpc.kovanica.online`** (confirmed Toni 2026-11-25) |
 | Exact UTC start on 1.1.2027 | **`12:00 UTC`** (confirmed Toni 2026-11-25) |
@@ -328,7 +328,7 @@ Leave `genesis_validators.toml`, `founder_premine.hex`, `bootnodes.toml`, the co
 - [x] Ceremony sign-off in [`KEY-CEREMONY.md`](KEY-CEREMONY.md) is complete (`1-f35df34c92001436`, no remaining **OPEN** address).
 - [ ] `sha256sum -c SHA256SUMS` matches on every operator’s copy.
 - [ ] `network-tag` is the same `1-` value on every node.
-- [ ] `mainnet.kovanica.online` resolves grey-cloud and accepts TCP `8000`.
+- [x] `mainnet.kovanica.online` resolves grey-cloud and accepts TCP `8000` (verified 2026-11-25).
 - [ ] `funded_accounts.toml` is absent. Faucet override is unset.
 - [ ] `run_validator = false` on seeds, miners, and RPC nodes.
 - [ ] At least one miner has a PRO-21 payout address and `KOVANICA_MINING_ENABLED=true`.
