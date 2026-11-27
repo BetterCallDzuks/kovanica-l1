@@ -3,8 +3,8 @@
 Status: **Interna verifikacija i specifikacija završena** (`docs/AUDIT-SCOPE.md`, `docs/AUDIT-CHECKLIST.md`); eksterni audit **nije izvršen** — obavezan prije mainnet $T_0$ lansiranja.
 
 Identitet projekta: **kovanica** (nezavisni Rust Layer-1, od-scratch; NE kovanica-protocol, NE stariji Kovanica repo).
-Repozitorij: `https://github.com/BetterCallDzuks/kovanica-l1` (`main` branch, commit `7197a28`, Waves A–D + Balanced Fixed Fees + KVP-106 RWA + Multi-Chain Bridge + real `p256` 0.14 & `fips204` ML-DSA-65).
-Datum poziva: 2026-11-25.
+Repozitorij: `https://github.com/BetterCallDzuks/kovanica-l1` (`main` branch, commit `80eec39`, Waves A–D + Balanced Fixed Fees + KVP-106 RWA + Multi-Chain Bridge + real `p256` 0.14 & `fips204` ML-DSA-65 + locked Mainnet $T_0$ / `rpc.kovanica.online` / treasury custody / `seed1` PeerId).
+Datum poziva: 2026-11-27.
 
 ---
 
@@ -37,7 +37,7 @@ Datum poziva: 2026-11-25.
 
 ### P2 — P2P mreža i otpornost na napade (blokira mrežnu stabilnost)
 9. **P2P transport & Gossipsub**: `crates/kovanica-network/` — kanonski port **8000**, TCP + Noise + Yamux; ocjenjivanje peer-ova (peer scoring), otpornost na Sybil i eclipse napade.
-10. **DNS seed redundantnost**: grey-cloud razrješenje (bez Cloudflare proxyja) za `testnet.kovanica.online` i `seed1/2/3.kovanica.online`.
+10. **DNS seed razrješenje**: grey-cloud razrješenje (bez Cloudflare proxyja, TCP `:8000`) za `testnet.kovanica.online`, `seed1.kovanica.online` i `mainnet.kovanica.online` (`seed2` i `seed3` povučeni — single-seed `seed1` topologija).
 11. **Sistemska izolacija (Systemd sandboxing)**: `ops/systemd/kovanica-node.service` (`MemoryMax=3G`, `ProtectSystem=strict`, sistemski filtri) za siguran rad unutar 2–4 GB RAM budžeta.
 
 ---
