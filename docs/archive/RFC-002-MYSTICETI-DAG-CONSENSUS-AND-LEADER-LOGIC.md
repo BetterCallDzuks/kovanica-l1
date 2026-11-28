@@ -10,7 +10,7 @@
   - Skip certificates: [`crates/kovanica-consensus/src/skip.rs`](../../crates/kovanica-consensus/src/skip.rs), [`crates/kovanica-types/src/timeout.rs`](../../crates/kovanica-types/src/timeout.rs)
   - MysticGhost linearizer: [`crates/kovanica-consensus/src/mysticghost.rs`](../../crates/kovanica-consensus/src/mysticghost.rs), [`crates/kovanica-consensus/src/ghostdag_scoped.rs`](../../crates/kovanica-consensus/src/ghostdag_scoped.rs)
   - Mergeset & DAG store: [`crates/kovanica-dag/src/dag_store.rs`](../../crates/kovanica-dag/src/dag_store.rs), [`crates/kovanica-dag/src/mergeset.rs`](../../crates/kovanica-dag/src/mergeset.rs)
-  - Previous related RFCs: [`RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md`](./RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md), [`RFC-011-SKIP-CERTIFICATES.md`](./RFC-011-SKIP-CERTIFICATES.md)
+  - Previous related RFCs: [`RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md`](../rfcs/RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md), [`RFC-011-SKIP-CERTIFICATES.md`](../rfcs/RFC-011-SKIP-CERTIFICATES.md)
 
 ---
 

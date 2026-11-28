@@ -9,7 +9,7 @@
   - Light client lottery: [`crates/kovanica-staking/src/light.rs`](../../crates/kovanica-staking/src/light.rs)
   - Committee definitions: [`crates/kovanica-types/src/committee.rs`](../../crates/kovanica-types/src/committee.rs)
   - Slashing evidence: [`crates/kovanica-types/src/evidence.rs`](../../crates/kovanica-types/src/evidence.rs)
-  - Slashing RFC: [`docs/rfcs/RFC-010-PRODUCTION-SLASHING.md`](./RFC-010-PRODUCTION-SLASHING.md)
+  - Slashing RFC: [`docs/rfcs/RFC-010-PRODUCTION-SLASHING.md`](../rfcs/RFC-010-PRODUCTION-SLASHING.md)
   - Tokenomics summary: [`docs/TOKENOMICS.md`](../TOKENOMICS.md), [`AGENTS.md`](../../AGENTS.md)
 
 ---
