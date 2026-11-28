@@ -2751,7 +2751,8 @@ impl StratumGateway {
 
                     // Reconstruct header with session payout
                     let payout = session.payout_address();
-                    let mut candidate_header = job.reconstruct_header(nonce, payout);
+                    let ntime = ntime_opt.and_then(|nt| u64::from_str_radix(nt.trim_start_matches(\"0x\"), 16).ok());
+                    let mut candidate_header = job.reconstruct_header(nonce, payout, ntime);
                     let preimage = candidate_header.preimage();
                     let pow_hash =
                         tokio::task::spawn_blocking(move || compute_pow_hash_reusable(&preimage))
