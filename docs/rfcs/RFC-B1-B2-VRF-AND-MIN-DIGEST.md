@@ -3,12 +3,12 @@
 - **Status:** Draft / Gated (TASKLIST item 15)
 - **Crate Scope:** `kovanica-crypto`, `kovanica-consensus`, `kovanica-dag`
 - **Primary References:**
-  - VRF implementation: [`crates/kovanica-crypto/src/lib.rs`](file:///crates/kovanica-crypto/src/lib.rs)
-  - Consensus VRF election: [`crates/kovanica-consensus/src/engine.rs`](file:///crates/kovanica-consensus/src/engine.rs)
-  - Min-digest replacement: [`crates/kovanica-dag/src/dag_store.rs`](file:///crates/kovanica-dag/src/dag_store.rs)
+  - VRF implementation: [`crates/kovanica-crypto/src/lib.rs`](../../crates/kovanica-crypto/src/lib.rs)
+  - Consensus VRF election: [`crates/kovanica-consensus/src/engine.rs`](../../crates/kovanica-consensus/src/engine.rs)
+  - Min-digest replacement: [`crates/kovanica-dag/src/dag_store.rs`](../../crates/kovanica-dag/src/dag_store.rs)
   - Related RFCs:
-    - [`RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md`](file:///docs/rfcs/RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md)
-    - [`RFC-003-STAKING-EPOCHS-AND-VALIDATOR-LIFECYCLE.md`](file:///docs/rfcs/RFC-003-STAKING-EPOCHS-AND-VALIDATOR-LIFECYCLE.md)
+    - [`RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md`](../archive/RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md)
+    - [`RFC-003-STAKING-EPOCHS-AND-VALIDATOR-LIFECYCLE.md`](../archive/RFC-003-STAKING-EPOCHS-AND-VALIDATOR-LIFECYCLE.md)
 
 ---
 

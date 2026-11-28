@@ -3,12 +3,12 @@
 - **Status:** Canonical / Active (Ground-Truth Specification)
 - **Crate Scope:** `kovanica-execution`, `kovanica-runtime`, `kovanica-common`, contract crates (`htlc`, `vault`, `multisig`, `token`, `name-registry`)
 - **Primary References:**
-  - Execution pipeline: [`crates/kovanica-execution/src/lib.rs`](file:///crates/kovanica-execution/src/lib.rs)
-  - Contract host layer: [`crates/kovanica-execution/src/contracts.rs`](file:///crates/kovanica-execution/src/contracts.rs)
-  - Argument encoding: [`crates/kovanica-execution/src/call_args.rs`](file:///crates/kovanica-execution/src/call_args.rs)
-  - Wasmi interpreter runtime: [`crates/kovanica-runtime/src/lib.rs`](file:///crates/kovanica-runtime/src/lib.rs)
-  - Contract traits & ABI: [`crates/kovanica-common/src/lib.rs`](file:///crates/kovanica-common/src/lib.rs), [`crates/kovanica-common/src/wasm.rs`](file:///crates/kovanica-common/src/wasm.rs)
-  - Specifications: [`docs/CONTRACTS.md`](file:///docs/CONTRACTS.md), [`docs/GAS_SCHEDULE.md`](file:///docs/GAS_SCHEDULE.md)
+  - Execution pipeline: [`crates/kovanica-execution/src/lib.rs`](../../crates/kovanica-execution/src/lib.rs)
+  - Contract host layer: [`crates/kovanica-execution/src/contracts.rs`](../../crates/kovanica-execution/src/contracts.rs)
+  - Argument encoding: [`crates/kovanica-execution/src/call_args.rs`](../../crates/kovanica-execution/src/call_args.rs)
+  - Wasmi interpreter runtime: [`crates/kovanica-runtime/src/lib.rs`](../../crates/kovanica-runtime/src/lib.rs)
+  - Contract traits & ABI: [`crates/kovanica-common/src/lib.rs`](../../crates/kovanica-common/src/lib.rs), [`crates/kovanica-common/src/wasm.rs`](../../crates/kovanica-common/src/wasm.rs)
+  - Specifications: [`docs/CONTRACTS.md`](../CONTRACTS.md), [`docs/GAS_SCHEDULE.md`](../GAS_SCHEDULE.md)
 
 ---
 
@@ -173,13 +173,13 @@ crates/
 
 ## 7. Točne reference u kodu
 
-- Glavna petlja izvršavanja: [`crates/kovanica-execution/src/lib.rs:1-120`](file:///crates/kovanica-execution/src/lib.rs#L1-L120)
-- Upravljanje ContractHostom i skrbništvom: [`crates/kovanica-execution/src/contracts.rs:17-150`](file:///crates/kovanica-execution/src/contracts.rs#L17-L150)
-- Serijalizacija argumenata ugovora: [`crates/kovanica-execution/src/call_args.rs:1-85`](file:///crates/kovanica-execution/src/call_args.rs#L1-L85)
-- Wasmi runtime i kontrola goriva: [`crates/kovanica-runtime/src/lib.rs:25-95`](file:///crates/kovanica-runtime/src/lib.rs#L25-L95)
-- Zajednički ABI i importi: [`crates/kovanica-common/src/wasm.rs:1-120`](file:///crates/kovanica-common/src/wasm.rs#L1-L120)
+- Glavna petlja izvršavanja: [`crates/kovanica-execution/src/lib.rs:1-120`](../../crates/kovanica-execution/src/lib.rs#L1-L120)
+- Upravljanje ContractHostom i skrbništvom: [`crates/kovanica-execution/src/contracts.rs:17-150`](../../crates/kovanica-execution/src/contracts.rs#L17-L150)
+- Serijalizacija argumenata ugovora: [`crates/kovanica-execution/src/call_args.rs:1-85`](../../crates/kovanica-execution/src/call_args.rs#L1-L85)
+- Wasmi runtime i kontrola goriva: [`crates/kovanica-runtime/src/lib.rs:25-95`](../../crates/kovanica-runtime/src/lib.rs#L25-L95)
+- Zajednički ABI i importi: [`crates/kovanica-common/src/wasm.rs:1-120`](../../crates/kovanica-common/src/wasm.rs#L1-L120)
 - Nativni ugovori:
-  - HTLC logika: [`crates/kovanica-htlc/src/lib.rs`](file:///crates/kovanica-htlc/src/lib.rs)
-  - Vault logika: [`crates/kovanica-vault/src/lib.rs`](file:///crates/kovanica-vault/src/lib.rs)
-  - Multisig logika: [`crates/kovanica-multisig/src/lib.rs`](file:///crates/kovanica-multisig/src/lib.rs)
-  - Token logika: [`crates/kovanica-token/src/lib.rs`](file:///crates/kovanica-token/src/lib.rs)
+  - HTLC logika: [`crates/kovanica-htlc/src/lib.rs`](../../crates/kovanica-htlc/src/lib.rs)
+  - Vault logika: [`crates/kovanica-vault/src/lib.rs`](../../crates/kovanica-vault/src/lib.rs)
+  - Multisig logika: [`crates/kovanica-multisig/src/lib.rs`](../../crates/kovanica-multisig/src/lib.rs)
+  - Token logika: [`crates/kovanica-token/src/lib.rs`](../../crates/kovanica-token/src/lib.rs)

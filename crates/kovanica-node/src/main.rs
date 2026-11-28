@@ -5415,7 +5415,7 @@ impl BlockManagerTrait for NodeBlockManager {
 /// This mirrors the live committer's `get_previous_tips`; both places must
 /// stay consistent.
 ///
-// TODO(M4): replay currently stops using the *global* `last_committed` in the
+// TODO(#34): replay currently stops using the *global* `last_committed` in the
 // mergeset walk, so recovery of an older sub-DAG can be truncated by a newer
 // commit. Review whether replay should pass an explicit stop-round (the
 // sub-DAG's own leader) instead; leave behaviour unchanged until that is
@@ -6256,9 +6256,9 @@ const NODE_IDENTITY_FILE: &str = "p2p_node.key";
 /// is worse than not starting. Only a non-validator node with no key
 /// configured gets an ephemeral identity (it never signs consensus messages).
 ///
-/// TODO(remote signer): the seed should live in an external signer; the
-/// `Signer` abstraction is owned by consensus. Until then the seed file must
-/// be `0600` and is zeroized after parsing.
+// TODO(#35): the seed should live in an external signer; the
+// `Signer` abstraction is owned by consensus. Until then the seed file must
+// be `0600` and is zeroized after parsing.
 fn load_validator_key(path: Option<&str>, run_validator: bool) -> Result<(SigningKey, PublicKey)> {
     match path {
         Some(path) => {

@@ -425,6 +425,23 @@ Detailed architectural specifications and operational runbooks:
 
 ---
 
+## 6.5 Versioning
+
+The Kovanica project uses three independent versioning schemes:
+
+| Scheme | What it versions | Example | Source of truth |
+|--------|-----------------|---------|-----------------|
+| **Rust workspace** | All `kovanica-*` crates in `kovanica-l1` | `0.3.0` | `kovanica-l1/Cargo.toml` (`version.workspace`) |
+| **Node release** | `kovanica-node` binary releases (per network tag) | `v0.3.0-node` | Git tag `v0.3.0-node` on `kovanica-l1` |
+| **Mainnet RC** | Mainnet release candidate | `v1.0.0-mainnet` | Planned Git tag on `kovanica-l1` |
+| **TS SDK** | `kovanica-sdk` TypeScript package | `v0.3.0` | `kovanica-sdk/package.json` |
+
+The Rust workspace version (`0.3.0`) applies to all crates in `kovanica-l1` and is bumped together. The node release tag (`v0.3.0-node`) is a prebuilt binary artifact for a specific network tag (e.g. chain 2 testnet `2-24cdb5fadd98b207`) and is independent of the Rust workspace version. The mainnet RC tag (`v1.0.0-mainnet`) will be created at mainnet launch (`1.1.2027`).
+
+In `STATE.md`, the reference to `kovanica-sdk ... (v0.3.0)` refers to the **TypeScript SDK package** (`kovanica-sdk/package.json`), not the Rust workspace crate.
+
+---
+
 ## 7. Status, Security & License
 
 - **Project Status:** Mainnet Release Candidate / Freeze (`v1.0.0-mainnet`). Consensus parameters frozen; external security audit scoped for KovanicaHash and Wasmi.

@@ -3,13 +3,13 @@
 - **Status:** Canonical / Active (Ground-Truth Specification)
 - **Crate Scope:** `kovanica-rpc`, `kovanica-keystore`, `kovanica-types`
 - **Primary References:**
-  - RPC server & routing: [`crates/kovanica-rpc/src/lib.rs`](file:///crates/kovanica-rpc/src/lib.rs)
-  - Standard chain methods: [`crates/kovanica-rpc/src/chain_methods.rs`](file:///crates/kovanica-rpc/src/chain_methods.rs)
-  - Contract handlers: [`crates/kovanica-rpc/src/rpc_methods.rs`](file:///crates/kovanica-rpc/src/rpc_methods.rs)
-  - Middleware & security: [`crates/kovanica-rpc/src/rpc_middleware.rs`](file:///crates/kovanica-rpc/src/rpc_middleware.rs)
-  - Keystore engine: [`crates/kovanica-keystore/src/lib.rs`](file:///crates/kovanica-keystore/src/lib.rs)
-  - File permissions: [`crates/kovanica-keystore/src/perms.rs`](file:///crates/kovanica-keystore/src/perms.rs)
-  - Address encoding rules: [`crates/kovanica-types/src/address.rs`](file:///crates/kovanica-types/src/address.rs)
+  - RPC server & routing: [`crates/kovanica-rpc/src/lib.rs`](../../crates/kovanica-rpc/src/lib.rs)
+  - Standard chain methods: [`crates/kovanica-rpc/src/chain_methods.rs`](../../crates/kovanica-rpc/src/chain_methods.rs)
+  - Contract handlers: [`crates/kovanica-rpc/src/rpc_methods.rs`](../../crates/kovanica-rpc/src/rpc_methods.rs)
+  - Middleware & security: [`crates/kovanica-rpc/src/rpc_middleware.rs`](../../crates/kovanica-rpc/src/rpc_middleware.rs)
+  - Keystore engine: [`crates/kovanica-keystore/src/lib.rs`](../../crates/kovanica-keystore/src/lib.rs)
+  - File permissions: [`crates/kovanica-keystore/src/perms.rs`](../../crates/kovanica-keystore/src/perms.rs)
+  - Address encoding rules: [`crates/kovanica-types/src/address.rs`](../../crates/kovanica-types/src/address.rs)
 
 ---
 
@@ -172,9 +172,9 @@ Kako bi se spriječilo da drugi procesi ili korisnici na istom poslužitelju pro
 
 ## 7. Točne reference u kodu
 
-- Pokretanje i registar RPC metoda: [`crates/kovanica-rpc/src/lib.rs:40-160`](file:///crates/kovanica-rpc/src/lib.rs#L40-L160)
-- Rukovanje standardnim chain pozivima: [`crates/kovanica-rpc/src/chain_methods.rs:1-120`](file:///crates/kovanica-rpc/src/chain_methods.rs#L1-L120)
-- Posrednički sloj i rate limiting: [`crates/kovanica-rpc/src/rpc_middleware.rs:1-85`](file:///crates/kovanica-rpc/src/rpc_middleware.rs#L1-L85)
-- Keystore v2 enkripcija i KDF: [`crates/kovanica-keystore/src/lib.rs:25-95`](file:///crates/kovanica-keystore/src/lib.rs#L25-L95)
-- Sigurnosna prava pristupa datotekama: [`crates/kovanica-keystore/src/perms.rs:1-80`](file:///crates/kovanica-keystore/src/perms.rs#L1-L80)
-- Parsiranje i validacija bech32 adrese: [`crates/kovanica-types/src/address.rs:8-95`](file:///crates/kovanica-types/src/address.rs#L8-L95)
+- Pokretanje i registar RPC metoda: [`crates/kovanica-rpc/src/lib.rs:40-160`](../../crates/kovanica-rpc/src/lib.rs#L40-L160)
+- Rukovanje standardnim chain pozivima: [`crates/kovanica-rpc/src/chain_methods.rs:1-120`](../../crates/kovanica-rpc/src/chain_methods.rs#L1-L120)
+- Posrednički sloj i rate limiting: [`crates/kovanica-rpc/src/rpc_middleware.rs:1-85`](../../crates/kovanica-rpc/src/rpc_middleware.rs#L1-L85)
+- Keystore v2 enkripcija i KDF: [`crates/kovanica-keystore/src/lib.rs:25-95`](../../crates/kovanica-keystore/src/lib.rs#L25-L95)
+- Sigurnosna prava pristupa datotekama: [`crates/kovanica-keystore/src/perms.rs:1-80`](../../crates/kovanica-keystore/src/perms.rs#L1-L80)
+- Parsiranje i validacija bech32 adrese: [`crates/kovanica-types/src/address.rs:8-95`](../../crates/kovanica-types/src/address.rs#L8-L95)

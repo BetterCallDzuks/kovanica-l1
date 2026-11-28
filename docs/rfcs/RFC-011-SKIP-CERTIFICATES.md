@@ -3,12 +3,12 @@
 - **Status:** Implemented (2026-10-23, wire change)
 - **Crate Scope:** `kovanica-consensus`, `kovanica-types`, `kovanica-network`
 - **Primary References:**
-  - Skip verification: [`crates/kovanica-consensus/src/skip.rs`](file:///crates/kovanica-consensus/src/skip.rs)
-  - Timeout and SkipCert types: [`crates/kovanica-types/src/timeout.rs`](file:///crates/kovanica-types/src/timeout.rs)
-  - Committer integration: [`crates/kovanica-consensus/src/committer.rs`](file:///crates/kovanica-consensus/src/committer.rs)
+  - Skip verification: [`crates/kovanica-consensus/src/skip.rs`](../../crates/kovanica-consensus/src/skip.rs)
+  - Timeout and SkipCert types: [`crates/kovanica-types/src/timeout.rs`](../../crates/kovanica-types/src/timeout.rs)
+  - Committer integration: [`crates/kovanica-consensus/src/committer.rs`](../../crates/kovanica-consensus/src/committer.rs)
   - Related RFCs:
-    - [`RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md`](file:///docs/rfcs/RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md)
-    - [`RFC-006-P2P-NETWORK-PROTOCOL-AND-MEMPOOL.md`](file:///docs/rfcs/RFC-006-P2P-NETWORK-PROTOCOL-AND-MEMPOOL.md)
+    - [`RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md`](../archive/RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md)
+    - [`RFC-006-P2P-NETWORK-PROTOCOL-AND-MEMPOOL.md`](./RFC-006-P2P-NETWORK-PROTOCOL-AND-MEMPOOL.md)
 
 ---
 
