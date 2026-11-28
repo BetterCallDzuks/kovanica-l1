@@ -4,13 +4,13 @@
 - **Crate Scope:** `kovanica-staking`, `kovanica-types`, `kovanica-consensus`, `kovanica-execution`
 - **Tracks:** TASKLIST item 8, Linear PRO-12, PRO-19
 - **Primary References:**
-  - Staking slashing logic: [`crates/kovanica-staking/src/lib.rs`](file:///crates/kovanica-staking/src/lib.rs)
-  - Equivocation evidence: [`crates/kovanica-types/src/evidence.rs`](file:///crates/kovanica-types/src/evidence.rs)
-  - Engine equivocation check: [`crates/kovanica-consensus/src/engine.rs`](file:///crates/kovanica-consensus/src/engine.rs)
-  - Execution processing: [`crates/kovanica-execution/src/lib.rs`](file:///crates/kovanica-execution/src/lib.rs)
+  - Staking slashing logic: [`crates/kovanica-staking/src/lib.rs`](../../crates/kovanica-staking/src/lib.rs)
+  - Equivocation evidence: [`crates/kovanica-types/src/evidence.rs`](../../crates/kovanica-types/src/evidence.rs)
+  - Engine equivocation check: [`crates/kovanica-consensus/src/engine.rs`](../../crates/kovanica-consensus/src/engine.rs)
+  - Execution processing: [`crates/kovanica-execution/src/lib.rs`](../../crates/kovanica-execution/src/lib.rs)
   - Related RFCs:
-    - [`RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md`](file:///docs/rfcs/RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md)
-    - [`RFC-003-STAKING-EPOCHS-AND-VALIDATOR-LIFECYCLE.md`](file:///docs/rfcs/RFC-003-STAKING-EPOCHS-AND-VALIDATOR-LIFECYCLE.md)
+    - [`RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md`](../archive/RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md)
+    - [`RFC-003-STAKING-EPOCHS-AND-VALIDATOR-LIFECYCLE.md`](../archive/RFC-003-STAKING-EPOCHS-AND-VALIDATOR-LIFECYCLE.md)
 
 ---
 

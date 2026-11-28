@@ -3,13 +3,13 @@
 - **Status:** Implemented (2026-10-22)
 - **Crate Scope:** `kovanica-network`, `kovanica-consensus`, `kovanica-storage`
 - **Primary References:**
-  - Network block sync: [`crates/kovanica-network/src/block_sync.rs`](file:///crates/kovanica-network/src/block_sync.rs)
-  - Committer logic: [`crates/kovanica-consensus/src/committer.rs`](file:///crates/kovanica-consensus/src/committer.rs)
-  - Vote storage: [`crates/kovanica-storage/src/consensus_store.rs`](file:///crates/kovanica-storage/src/consensus_store.rs)
+  - Network block sync: [`crates/kovanica-network/src/block_sync.rs`](../../crates/kovanica-network/src/block_sync.rs)
+  - Committer logic: [`crates/kovanica-consensus/src/committer.rs`](../../crates/kovanica-consensus/src/committer.rs)
+  - Vote storage: [`crates/kovanica-storage/src/consensus_store.rs`](../../crates/kovanica-storage/src/consensus_store.rs)
   - Related RFCs:
-    - [`RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md`](file:///docs/rfcs/RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md)
-    - [`RFC-005-STATE-COMMITMENT-PRUNING-AND-VERIFIABLE-STATE-SYNC.md`](file:///docs/rfcs/RFC-005-STATE-COMMITMENT-PRUNING-AND-VERIFIABLE-STATE-SYNC.md)
-    - [`RFC-006-P2P-NETWORK-PROTOCOL-AND-MEMPOOL.md`](file:///docs/rfcs/RFC-006-P2P-NETWORK-PROTOCOL-AND-MEMPOOL.md)
+    - [`RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md`](../archive/RFC-002-MYSTICETI-DAG-CONSENSUS-AND-LEADER-LOGIC.md)
+    - [`RFC-005-STATE-COMMITMENT-PRUNING-AND-VERIFIABLE-STATE-SYNC.md`](./RFC-005-STATE-COMMITMENT-PRUNING-AND-VERIFIABLE-STATE-SYNC.md)
+    - [`RFC-006-P2P-NETWORK-PROTOCOL-AND-MEMPOOL.md`](./RFC-006-P2P-NETWORK-PROTOCOL-AND-MEMPOOL.md)
 
 ---
 

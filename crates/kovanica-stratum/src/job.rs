@@ -67,13 +67,21 @@ impl Job {
         }
     }
 
-    /// Reconstruct candidate `BlockHeader` for share evaluation with candidate `nonce`
-    /// and optional worker `payout`.
-    pub fn reconstruct_header(&self, nonce: u64, payout: Option<Address>) -> BlockHeader {
+    /// Reconstruct candidate `BlockHeader` for share evaluation with candidate `nonce`,
+    /// optional worker `payout`, and optional miner-submitted `ntime` (timestamp).
+    pub fn reconstruct_header(
+        &self,
+        nonce: u64,
+        payout: Option<Address>,
+        ntime: Option<u64>,
+    ) -> BlockHeader {
         let mut header = self.header.clone();
         header.nonce = nonce;
         if let Some(p) = payout {
             header.payout = Some(p);
+        }
+        if let Some(t) = ntime {
+            header.timestamp = t;
         }
         header
     }

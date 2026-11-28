@@ -24,6 +24,7 @@ use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::{exponential_buckets, Histogram};
 use prometheus_client::registry::Registry;
 use rustls::pki_types::CertificateDer;
+use rustls::version::{TLS12, TLS13};
 use serde_json::{json, Value};
 use tokio::io::{
     AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf,
@@ -33,6 +34,7 @@ use tokio::sync::{mpsc, Notify, Semaphore};
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, info_span, warn, Instrument};
+use zeroize::Zeroizing;
 
 /// Maximum length in bytes of a single inbound Stratum V1 line (4 KiB).
 /// Prevents slowloris / unbounded `read_line` allocation OOM attacks.
@@ -2751,7 +2753,9 @@ impl StratumGateway {
 
                     // Reconstruct header with session payout
                     let payout = session.payout_address();
-                    let mut candidate_header = job.reconstruct_header(nonce, payout);
+                    let ntime = ntime_opt
+                        .and_then(|nt| u64::from_str_radix(nt.trim_start_matches("0x"), 16).ok());
+                    let mut candidate_header = job.reconstruct_header(nonce, payout, ntime);
                     let preimage = candidate_header.preimage();
                     let pow_hash =
                         tokio::task::spawn_blocking(move || compute_pow_hash_reusable(&preimage))
@@ -2993,8 +2997,10 @@ impl StratumGateway {
 
         let cert_data = std::fs::read(cert_path)
             .context(format!("failed to read TLS cert: {}", cert_path.display()))?;
-        let key_data = std::fs::read(key_path)
-            .context(format!("failed to read TLS key: {}", key_path.display()))?;
+        let key_data = Zeroizing::new(
+            std::fs::read(key_path)
+                .context(format!("failed to read TLS key: {}", key_path.display()))?,
+        );
 
         let certs = parse_many(&cert_data)?
             .into_iter()
@@ -3030,7 +3036,7 @@ impl StratumGateway {
             anyhow::bail!("no valid private keys found in {}", key_path.display());
         }
 
-        let mut config = rustls::ServerConfig::builder()
+        let mut config = rustls::ServerConfig::builder_with_protocol_versions(&[&TLS13, &TLS12])
             .with_no_client_auth()
             .with_single_cert(certs, keys.into_iter().next().unwrap())
             .map_err(|e| anyhow::anyhow!("failed to build TLS config: {}", e))?;

@@ -5,12 +5,12 @@
 - **Status:** Legacy / non-consensus under ADR 0003 — chains 1 and 2 have no stake, validator set or slashing
 - **Crate Scope:** `kovanica-staking`, `kovanica-types`, `kovanica-crypto`
 - **Primary References:**
-  - Staking engine: [`crates/kovanica-staking/src/lib.rs`](file:///crates/kovanica-staking/src/lib.rs)
-  - Light client lottery: [`crates/kovanica-staking/src/light.rs`](file:///crates/kovanica-staking/src/light.rs)
-  - Committee definitions: [`crates/kovanica-types/src/committee.rs`](file:///crates/kovanica-types/src/committee.rs)
-  - Slashing evidence: [`crates/kovanica-types/src/evidence.rs`](file:///crates/kovanica-types/src/evidence.rs)
-  - Slashing RFC: [`docs/rfcs/RFC-010-PRODUCTION-SLASHING.md`](file:///docs/rfcs/RFC-010-PRODUCTION-SLASHING.md)
-  - Tokenomics summary: [`docs/TOKENOMICS.md`](file:///docs/TOKENOMICS.md), [`AGENTS.md`](file:///AGENTS.md)
+  - Staking engine: [`crates/kovanica-staking/src/lib.rs`](../../crates/kovanica-staking/src/lib.rs)
+  - Light client lottery: [`crates/kovanica-staking/src/light.rs`](../../crates/kovanica-staking/src/light.rs)
+  - Committee definitions: [`crates/kovanica-types/src/committee.rs`](../../crates/kovanica-types/src/committee.rs)
+  - Slashing evidence: [`crates/kovanica-types/src/evidence.rs`](../../crates/kovanica-types/src/evidence.rs)
+  - Slashing RFC: [`docs/rfcs/RFC-010-PRODUCTION-SLASHING.md`](../rfcs/RFC-010-PRODUCTION-SLASHING.md)
+  - Tokenomics summary: [`docs/TOKENOMICS.md`](../TOKENOMICS.md), [`AGENTS.md`](../../AGENTS.md)
 
 ---
 
@@ -148,9 +148,9 @@ Prilikom svakog potvrđenog lidera (`CommittedSubDag`), izvršni sloj poziva:
 
 ## 7. Točne reference u kodu
 
-- Tokenomika i konstante emisije: [`crates/kovanica-staking/src/lib.rs:38-96`](file:///crates/kovanica-staking/src/lib.rs#L38-L96)
-- Ulaganje, provizija i unbonding: [`crates/kovanica-staking/src/lib.rs:101-169`](file:///crates/kovanica-staking/src/lib.rs#L101-L169)
-- Izračun nagrade bloka (`block_reward`): [`crates/kovanica-staking/src/lib.rs:179-190`](file:///crates/kovanica-staking/src/lib.rs#L179-L190)
-- Logika rezanja i zatvora: [`crates/kovanica-staking/src/lib.rs:380-420`](file:///crates/kovanica-staking/src/lib.rs#L380-L420)
-- Struktura dokaza ekvivokacije: [`crates/kovanica-types/src/evidence.rs:15-80`](file:///crates/kovanica-types/src/evidence.rs#L15-L80)
-- Integracija laganih čvorova i VRF-a: [`crates/kovanica-staking/src/light.rs:20-75`](file:///crates/kovanica-staking/src/light.rs#L20-L75)
+- Tokenomika i konstante emisije: [`crates/kovanica-staking/src/lib.rs:38-96`](../../crates/kovanica-staking/src/lib.rs#L38-L96)
+- Ulaganje, provizija i unbonding: [`crates/kovanica-staking/src/lib.rs:101-169`](../../crates/kovanica-staking/src/lib.rs#L101-L169)
+- Izračun nagrade bloka (`block_reward`): [`crates/kovanica-staking/src/lib.rs:179-190`](../../crates/kovanica-staking/src/lib.rs#L179-L190)
+- Logika rezanja i zatvora: [`crates/kovanica-staking/src/lib.rs:380-420`](../../crates/kovanica-staking/src/lib.rs#L380-L420)
+- Struktura dokaza ekvivokacije: [`crates/kovanica-types/src/evidence.rs:15-80`](../../crates/kovanica-types/src/evidence.rs#L15-L80)
+- Integracija laganih čvorova i VRF-a: [`crates/kovanica-staking/src/light.rs:20-75`](../../crates/kovanica-staking/src/light.rs#L20-L75)

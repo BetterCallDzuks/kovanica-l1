@@ -3,11 +3,11 @@
 - **Status:** Canonical / Active (Ground-Truth Specification)
 - **Crate Scope:** `kovanica-storage`, `kovanica-types`, `kovanica-network`
 - **Primary References:**
-  - State store engine: [`crates/kovanica-storage/src/state_store.rs`](file:///crates/kovanica-storage/src/state_store.rs)
-  - Storage main handle: [`crates/kovanica-storage/src/lib.rs`](file:///crates/kovanica-storage/src/lib.rs)
-  - Account Sparse Merkle Tree: [`crates/kovanica-types/src/account_tree.rs`](file:///crates/kovanica-types/src/account_tree.rs)
-  - Light client commitment & seals: [`crates/kovanica-types/src/light_client.rs`](file:///crates/kovanica-types/src/light_client.rs)
-  - Network state sync: [`crates/kovanica-network/src/state_sync.rs`](file:///crates/kovanica-network/src/state_sync.rs)
+  - State store engine: [`crates/kovanica-storage/src/state_store.rs`](../../crates/kovanica-storage/src/state_store.rs)
+  - Storage main handle: [`crates/kovanica-storage/src/lib.rs`](../../crates/kovanica-storage/src/lib.rs)
+  - Account Sparse Merkle Tree: [`crates/kovanica-types/src/account_tree.rs`](../../crates/kovanica-types/src/account_tree.rs)
+  - Light client commitment & seals: [`crates/kovanica-types/src/light_client.rs`](../../crates/kovanica-types/src/light_client.rs)
+  - Network state sync: [`crates/kovanica-network/src/state_sync.rs`](../../crates/kovanica-network/src/state_sync.rs)
 
 ---
 
@@ -158,9 +158,9 @@ Prilikom uvoza kroz `StateStore::import_verified_snapshot`:
 
 ## 7. Točne reference u kodu
 
-- Upravljanje stanjem i snapshot logika: [`crates/kovanica-storage/src/state_store.rs:70-170`](file:///crates/kovanica-storage/src/state_store.rs#L70-L170)
-- Izračun aux-state digesta: [`crates/kovanica-storage/src/state_store.rs:114-143`](file:///crates/kovanica-storage/src/state_store.rs#L114-L143)
-- Sparse Merkle Tree implementacija: [`crates/kovanica-types/src/account_tree.rs:15-120`](file:///crates/kovanica-types/src/account_tree.rs#L15-L120)
-- Definicija i verifikacija pečata: [`crates/kovanica-types/src/light_client.rs:40-95`](file:///crates/kovanica-types/src/light_client.rs#L40-L95)
-- Tablice trajne pohrane: [`crates/kovanica-storage/src/lib.rs:35-50`](file:///crates/kovanica-storage/src/lib.rs#L35-L50)
-- Sidro ulova u committeru: [`crates/kovanica-consensus/src/committer.rs:209-221`](file:///crates/kovanica-consensus/src/committer.rs#L209-L221)
+- Upravljanje stanjem i snapshot logika: [`crates/kovanica-storage/src/state_store.rs:70-170`](../../crates/kovanica-storage/src/state_store.rs#L70-L170)
+- Izračun aux-state digesta: [`crates/kovanica-storage/src/state_store.rs:114-143`](../../crates/kovanica-storage/src/state_store.rs#L114-L143)
+- Sparse Merkle Tree implementacija: [`crates/kovanica-types/src/account_tree.rs:15-120`](../../crates/kovanica-types/src/account_tree.rs#L15-L120)
+- Definicija i verifikacija pečata: [`crates/kovanica-types/src/light_client.rs:40-95`](../../crates/kovanica-types/src/light_client.rs#L40-L95)
+- Tablice trajne pohrane: [`crates/kovanica-storage/src/lib.rs:35-50`](../../crates/kovanica-storage/src/lib.rs#L35-L50)
+- Sidro ulova u committeru: [`crates/kovanica-consensus/src/committer.rs:209-221`](../../crates/kovanica-consensus/src/committer.rs#L209-L221)

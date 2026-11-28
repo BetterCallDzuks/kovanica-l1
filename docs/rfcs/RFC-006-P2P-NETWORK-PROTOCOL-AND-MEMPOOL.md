@@ -3,12 +3,12 @@
 - **Status:** Canonical / Active (Ground-Truth Specification)
 - **Crate Scope:** `kovanica-network`, `kovanica-mempool`, `kovanica-types`
 - **Primary References:**
-  - Network service: [`crates/kovanica-network/src/service.rs`](file:///crates/kovanica-network/src/service.rs)
-  - Gossipsub topics: [`crates/kovanica-network/src/topics.rs`](file:///crates/kovanica-network/src/topics.rs)
-  - Block sync protocol: [`crates/kovanica-network/src/block_sync.rs`](file:///crates/kovanica-network/src/block_sync.rs)
-  - Peer scoring & validation: [`crates/kovanica-network/src/scoring.rs`](file:///crates/kovanica-network/src/scoring.rs), [`crates/kovanica-network/src/validation.rs`](file:///crates/kovanica-network/src/validation.rs)
-  - Mempool engine: [`crates/kovanica-mempool/src/lib.rs`](file:///crates/kovanica-mempool/src/lib.rs)
-  - Related RFC: [`docs/rfcs/RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md`](file:///docs/rfcs/RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md)
+  - Network service: [`crates/kovanica-network/src/service.rs`](../../crates/kovanica-network/src/service.rs)
+  - Gossipsub topics: [`crates/kovanica-network/src/topics.rs`](../../crates/kovanica-network/src/topics.rs)
+  - Block sync protocol: [`crates/kovanica-network/src/block_sync.rs`](../../crates/kovanica-network/src/block_sync.rs)
+  - Peer scoring & validation: [`crates/kovanica-network/src/scoring.rs`](../../crates/kovanica-network/src/scoring.rs), [`crates/kovanica-network/src/validation.rs`](../../crates/kovanica-network/src/validation.rs)
+  - Mempool engine: [`crates/kovanica-mempool/src/lib.rs`](../../crates/kovanica-mempool/src/lib.rs)
+  - Related RFC: [`docs/rfcs/RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md`](./RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md)
 
 ---
 
@@ -150,9 +150,9 @@ U modulu `crates/kovanica-network/src/scoring.rs` implementirano je praćenje po
 
 ## 6. Točne reference u kodu
 
-- Konfiguracija mrežnog servisa: [`crates/kovanica-network/src/service.rs:50-210`](file:///crates/kovanica-network/src/service.rs#L50-L210)
-- Definicije Gossipsub tema: [`crates/kovanica-network/src/topics.rs:1-50`](file:///crates/kovanica-network/src/topics.rs#L1-L50)
-- Protokol sinkronizacije blokova: [`crates/kovanica-network/src/block_sync.rs:25-130`](file:///crates/kovanica-network/src/block_sync.rs#L25-L130)
-- Prijem i prioritizacija u mempoolu: [`crates/kovanica-mempool/src/lib.rs:75-230`](file:///crates/kovanica-mempool/src/lib.rs#L75-L230)
-- Konfiguracija i granice mempoola: [`crates/kovanica-mempool/src/lib.rs:794-825`](file:///crates/kovanica-mempool/src/lib.rs#L794-L825)
-- Vraćanje transakcija iz crvenih blokova: [`crates/kovanica-mempool/src/lib.rs:286-310`](file:///crates/kovanica-mempool/src/lib.rs#L286-L310)
+- Konfiguracija mrežnog servisa: [`crates/kovanica-network/src/service.rs:50-210`](../../crates/kovanica-network/src/service.rs#L50-L210)
+- Definicije Gossipsub tema: [`crates/kovanica-network/src/topics.rs:1-50`](../../crates/kovanica-network/src/topics.rs#L1-L50)
+- Protokol sinkronizacije blokova: [`crates/kovanica-network/src/block_sync.rs:25-130`](../../crates/kovanica-network/src/block_sync.rs#L25-L130)
+- Prijem i prioritizacija u mempoolu: [`crates/kovanica-mempool/src/lib.rs:75-230`](../../crates/kovanica-mempool/src/lib.rs#L75-L230)
+- Konfiguracija i granice mempoola: [`crates/kovanica-mempool/src/lib.rs:794-825`](../../crates/kovanica-mempool/src/lib.rs#L794-L825)
+- Vraćanje transakcija iz crvenih blokova: [`crates/kovanica-mempool/src/lib.rs:286-310`](../../crates/kovanica-mempool/src/lib.rs#L286-L310)

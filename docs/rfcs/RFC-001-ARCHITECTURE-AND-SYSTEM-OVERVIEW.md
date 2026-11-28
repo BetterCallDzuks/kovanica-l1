@@ -5,11 +5,11 @@
 - **Status:** Canonical for repository layout; consensus sections are legacy (chains 1 and 2 run Hybrid PoW + GHOSTDAG, ADR 0003)
 - **Crate Scope:** Entire Workspace (27 crates)
 - **Primary References:**
-  - Workspace root: [`Cargo.toml`](file:///crates/../Cargo.toml)
-  - Core entrypoint: [`crates/kovanica-node/src/main.rs`](file:///crates/kovanica-node/src/main.rs), [`crates/kovanica-node/src/config.rs`](file:///crates/kovanica-node/src/config.rs)
-  - Shared types: [`crates/kovanica-types/src/lib.rs`](file:///crates/kovanica-types/src/lib.rs)
-  - Common runtime contracts: [`crates/kovanica-common/src/lib.rs`](file:///crates/kovanica-common/src/lib.rs)
-  - Baseline architecture: [`docs/ARCHITECTURE.md`](file:///docs/ARCHITECTURE.md), [`AGENTS.md`](file:///AGENTS.md)
+  - Workspace root: [`Cargo.toml`](../../crates/../Cargo.toml)
+  - Core entrypoint: [`crates/kovanica-node/src/main.rs`](../../crates/kovanica-node/src/main.rs), [`crates/kovanica-node/src/config.rs`](../../crates/kovanica-node/src/config.rs)
+  - Shared types: [`crates/kovanica-types/src/lib.rs`](../../crates/kovanica-types/src/lib.rs)
+  - Common runtime contracts: [`crates/kovanica-common/src/lib.rs`](../../crates/kovanica-common/src/lib.rs)
+  - Baseline architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md), [`AGENTS.md`](../../AGENTS.md)
 
 ---
 
@@ -185,8 +185,8 @@ Obrada podataka kroz Kovanica L1 slijedi strogo definiran slijed:
 
 ## 6. Točne reference u kodu
 
-- Granice konfiguracije čvora: [`crates/kovanica-node/src/config.rs`](file:///crates/kovanica-node/src/config.rs#L10-L150)
-- Orkestracija podizanja podsustava: [`crates/kovanica-node/src/main.rs`](file:///crates/kovanica-node/src/main.rs#L120-L450)
-- Kanonski tipovi i konstante: [`crates/kovanica-types/src/lib.rs`](file:///crates/kovanica-types/src/lib.rs#L55-L165)
-- Standardni formati adresa: [`crates/kovanica-types/src/address.rs`](file:///crates/kovanica-types/src/address.rs#L8-L45)
-- Upravljanje bazom i tablicama: [`crates/kovanica-storage/src/lib.rs`](file:///crates/kovanica-storage/src/lib.rs#L35-L95)
+- Granice konfiguracije čvora: [`crates/kovanica-node/src/config.rs`](../../crates/kovanica-node/src/config.rs#L10-L150)
+- Orkestracija podizanja podsustava: [`crates/kovanica-node/src/main.rs`](../../crates/kovanica-node/src/main.rs#L120-L450)
+- Kanonski tipovi i konstante: [`crates/kovanica-types/src/lib.rs`](../../crates/kovanica-types/src/lib.rs#L55-L165)
+- Standardni formati adresa: [`crates/kovanica-types/src/address.rs`](../../crates/kovanica-types/src/address.rs#L8-L45)
+- Upravljanje bazom i tablicama: [`crates/kovanica-storage/src/lib.rs`](../../crates/kovanica-storage/src/lib.rs#L35-L95)

@@ -5,12 +5,12 @@
 - **Status:** Legacy / Superseded for chains 1 and 2 by ADR 0003 (Hybrid PoW + GHOSTDAG)
 - **Crate Scope:** `kovanica-consensus`, `kovanica-dag`, `kovanica-types`
 - **Primary References:**
-  - Committer core: [`crates/kovanica-consensus/src/committer.rs`](file:///crates/kovanica-consensus/src/committer.rs)
-  - Engine orchestration: [`crates/kovanica-consensus/src/engine.rs`](file:///crates/kovanica-consensus/src/engine.rs)
-  - Skip certificates: [`crates/kovanica-consensus/src/skip.rs`](file:///crates/kovanica-consensus/src/skip.rs), [`crates/kovanica-types/src/timeout.rs`](file:///crates/kovanica-types/src/timeout.rs)
-  - MysticGhost linearizer: [`crates/kovanica-consensus/src/mysticghost.rs`](file:///crates/kovanica-consensus/src/mysticghost.rs), [`crates/kovanica-consensus/src/ghostdag_scoped.rs`](file:///crates/kovanica-consensus/src/ghostdag_scoped.rs)
-  - Mergeset & DAG store: [`crates/kovanica-dag/src/dag_store.rs`](file:///crates/kovanica-dag/src/dag_store.rs), [`crates/kovanica-dag/src/mergeset.rs`](file:///crates/kovanica-dag/src/mergeset.rs)
-  - Previous related RFCs: [`RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md`](file:///docs/rfcs/RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md), [`RFC-011-SKIP-CERTIFICATES.md`](file:///docs/rfcs/RFC-011-SKIP-CERTIFICATES.md)
+  - Committer core: [`crates/kovanica-consensus/src/committer.rs`](../../crates/kovanica-consensus/src/committer.rs)
+  - Engine orchestration: [`crates/kovanica-consensus/src/engine.rs`](../../crates/kovanica-consensus/src/engine.rs)
+  - Skip certificates: [`crates/kovanica-consensus/src/skip.rs`](../../crates/kovanica-consensus/src/skip.rs), [`crates/kovanica-types/src/timeout.rs`](../../crates/kovanica-types/src/timeout.rs)
+  - MysticGhost linearizer: [`crates/kovanica-consensus/src/mysticghost.rs`](../../crates/kovanica-consensus/src/mysticghost.rs), [`crates/kovanica-consensus/src/ghostdag_scoped.rs`](../../crates/kovanica-consensus/src/ghostdag_scoped.rs)
+  - Mergeset & DAG store: [`crates/kovanica-dag/src/dag_store.rs`](../../crates/kovanica-dag/src/dag_store.rs), [`crates/kovanica-dag/src/mergeset.rs`](../../crates/kovanica-dag/src/mergeset.rs)
+  - Previous related RFCs: [`RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md`](../rfcs/RFC-009-VOTE-TRANSFER-OVER-BLOCK-SYNC.md), [`RFC-011-SKIP-CERTIFICATES.md`](../rfcs/RFC-011-SKIP-CERTIFICATES.md)
 
 ---
 
@@ -180,9 +180,9 @@ Kako korisnici ne bi gubili poslane transakcije koje su završile u "crvenim" bl
 
 ## 7. Točne reference u kodu
 
-- Mysticeti Committer logika: [`crates/kovanica-consensus/src/committer.rs:22-135`](file:///crates/kovanica-consensus/src/committer.rs#L22-L135)
-- Kauzalna povijest bez duplikata: [`crates/kovanica-consensus/src/committer.rs:185-223`](file:///crates/kovanica-consensus/src/committer.rs#L185-L223)
-- Skip certifikati i timeout verifikacija: [`crates/kovanica-consensus/src/skip.rs:58-115`](file:///crates/kovanica-consensus/src/skip.rs#L58-L115)
-- MysticGhost konfiguracija i parametri: [`crates/kovanica-consensus/src/mysticghost.rs:13-37`](file:///crates/kovanica-consensus/src/mysticghost.rs#L13-L37)
-- Upravljanje DAG skladištem: [`crates/kovanica-dag/src/dag_store.rs:40-180`](file:///crates/kovanica-dag/src/dag_store.rs#L40-L180)
-- Ekstrakcija mergeseta: [`crates/kovanica-dag/src/mergeset.rs:15-65`](file:///crates/kovanica-dag/src/mergeset.rs#L15-L65)
+- Mysticeti Committer logika: [`crates/kovanica-consensus/src/committer.rs:22-135`](../../crates/kovanica-consensus/src/committer.rs#L22-L135)
+- Kauzalna povijest bez duplikata: [`crates/kovanica-consensus/src/committer.rs:185-223`](../../crates/kovanica-consensus/src/committer.rs#L185-L223)
+- Skip certifikati i timeout verifikacija: [`crates/kovanica-consensus/src/skip.rs:58-115`](../../crates/kovanica-consensus/src/skip.rs#L58-L115)
+- MysticGhost konfiguracija i parametri: [`crates/kovanica-consensus/src/mysticghost.rs:13-37`](../../crates/kovanica-consensus/src/mysticghost.rs#L13-L37)
+- Upravljanje DAG skladištem: [`crates/kovanica-dag/src/dag_store.rs:40-180`](../../crates/kovanica-dag/src/dag_store.rs#L40-L180)
+- Ekstrakcija mergeseta: [`crates/kovanica-dag/src/mergeset.rs:15-65`](../../crates/kovanica-dag/src/mergeset.rs#L15-L65)
